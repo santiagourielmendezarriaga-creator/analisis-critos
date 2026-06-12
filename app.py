@@ -7,7 +7,7 @@ from datetime import datetime
 
 # ==================== CONFIGURACIÓN TELEGRAM ====================
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
-TELEGRAM_CHAT_ID = "5835990242"
+TELEGRAM_CHAT_ID = "5835990242"  # tu ID personal
 
 def enviar_telegram(mensaje):
     try:
@@ -20,56 +20,30 @@ def enviar_telegram(mensaje):
         response = requests.post(url, data=data, timeout=10)
         return response.status_code == 200
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error al enviar: {e}")
         return False
 
-# ==================== CONFIGURACIÓN DE LA APP ====================
-st.set_page_config(page_title="CriptoAnalizador con Alertas", layout="wide")
-st.title("🪙 Analizador de Criptomonedas con Alertas Telegram")
-
-if "ultima_alerta" not in st.session_state:
-    st.session_state.ultima_alerta = ""
-if "ultimo_precio" not in st.session_state:
-    st.session_state.ultimo_precio = 0
-
-st.sidebar.header("⚙️ Configuración")
-intervalo = st.sidebar.slider("Actualizar cada (segundos)", 15, 60, 30)
-incluir_expertos = st.sidebar.checkbox("📰 Incluir análisis de expertos", value=True)
-
-st.sidebar.success("""
-📱 **ALERTAS TELEGRAM ACTIVADAS**
-Recibirás mensajes cuando:
-- La señal cambie a COMPRAR o VENDER
-- El precio se mueva más de 5%
-""")
-
-CRIPTOS = ["Bitcoin", "Ethereum", "Solana", "Cardano", "Dogecoin", "XRP"]
-st.sidebar.subheader("📊 Selecciona Criptomoneda")
-cripto_seleccionada = st.sidebar.selectbox("Para análisis y alertas", CRIPTOS)
-
-CRIPTO_IDS = {
-    "Bitcoin": "bitcoin",
-    "Ethereum": "ethereum",
-    "Solana": "solana",
-    "Cardano": "cardano",
-    "Dogecoin": "dogecoin",
-    "XRP": "ripple"
+# ==================== LISTA DE CRIPTOMONEDAS A VIGILAR ====================
+CRIPTO_CONFIG = {
+    "Bitcoin": {"id": "bitcoin", "ultima_senal": ""},
+    "Ethereum": {"id": "ethereum", "ultima_senal": ""},
+    "Solana": {"id": "solana", "ultima_senal": ""},
+    "Dogecoin": {"id": "dogecoin", "ultima_senal": ""},
+    "Cardano": {"id": "cardano", "ultima_senal": ""},
+    "XRP": {"id": "ripple", "ultima_senal": ""}
 }
-coin_id = CRIPTO_IDS[cripto_seleccionada]
 
-if "historial_precios" not in st.session_state:
-    st.session_state.historial_precios = []
-if "datos_historicos" not in st.session_state:
-    st.session_state.datos_historicos = {cid: [] for cid in CRIPTO_IDS.values()}
-
-def obtener_precio():
+# ==================== FUNCIONES ====================
+def obtener_precio_individual(coin_id):
     try:
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd&include_24hr_change=true"
         response = requests.get(url, timeout=10)
         data = response.json()
-        precio = data[coin_id]["usd"]
-        cambio = data[coin_id].get("usd_24h_change", 0)
-        return precio, cambio
+        if coin_id in data:
+            precio = data[coin_id]["usd"]
+            cambio = data[coin_id].get("usd_24h_change", 0)
+            return precio, cambio
+        return None, None
     except:
         return None, None
 
@@ -112,96 +86,91 @@ def calcular_senal(precio, cambio, fng_valor, historial):
             puntaje -= 10
     puntaje = max(0, min(100, puntaje))
     if puntaje >= 65:
-        return f"🟢 COMPRAR", puntaje
+        return "🟢 COMPRAR", puntaje
     elif puntaje >= 55:
-        return f"🟡 CONSIDERAR COMPRA", puntaje
+        return "🟡 CONSIDERAR COMPRA", puntaje
     elif puntaje <= 35:
-        return f"🔴 VENDER", puntaje
+        return "🔴 VENDER", puntaje
     elif puntaje <= 45:
-        return f"🟠 CONSIDERAR VENTA", puntaje
+        return "🟠 CONSIDERAR VENTA", puntaje
     else:
-        return f"⚪ MANTENER", puntaje
+        return "⚪ MANTENER", puntaje
 
-col1, col2 = st.columns([2, 2])
-with col1:
-    st.subheader("📊 Panel de Control")
-    precio_placeholder = st.empty()
-    cambio_placeholder = st.empty()
-    fng_placeholder = st.empty()
-with col2:
-    st.subheader(f"📈 Señal para {cripto_seleccionada}")
-    senal_placeholder = st.empty()
-    puntaje_placeholder = st.empty()
-grafica_placeholder = st.empty()
-status_placeholder = st.empty()
+# ==================== CONFIGURACIÓN STREAMLIT ====================
+st.set_page_config(page_title="CriptoAlertas Múltiples", layout="wide")
+st.title("🪙 CriptoAnalizador Multi-Monitoreo con Alertas Telegram")
 
-if st.sidebar.button("▶️ INICIAR MONITOREO CON ALERTAS", type="primary"):
-    st.success("✅ Alertas Telegram activadas.")
+st.sidebar.header("⚙️ Configuración")
+intervalo = st.sidebar.slider("Actualizar cada (segundos)", 15, 60, 30)
+st.sidebar.success("📱 Alertas activadas para: " + ", ".join(CRIPTO_CONFIG.keys()))
+
+# Inicializar estado
+if "historiales" not in st.session_state:
+    st.session_state.historiales = {nombre: [] for nombre in CRIPTO_CONFIG.keys()}
+if "ultimo_precio" not in st.session_state:
+    st.session_state.ultimo_precio = {}
+
+# Mostrar tabla
+placeholder_tabla = st.empty()
+ultima_actualizacion = st.empty()
+
+# Botón de inicio
+if st.sidebar.button("▶️ INICIAR MONITOREO MULTI", type="primary"):
+    st.success("Monitoreando todas las criptomonedas...")
+    fng_valor, fng_texto = obtener_fear_greed()
+    if not fng_valor:
+        fng_valor, fng_texto = 50, "Neutral"
+    
     while True:
-        precio, cambio = obtener_precio()
-        fng_valor, fng_texto = obtener_fear_greed()
-        if precio:
-            st.session_state.historial_precios.append(precio)
-            if len(st.session_state.historial_precios) > 30:
-                st.session_state.historial_precios = st.session_state.historial_precios[-30:]
-            st.session_state.datos_historicos[coin_id].append({"hora": datetime.now(), "precio": precio})
-            if len(st.session_state.datos_historicos[coin_id]) > 30:
-                st.session_state.datos_historicos[coin_id] = st.session_state.datos_historicos[coin_id][-30:]
+        filas = []
+        for nombre, config in CRIPTO_CONFIG.items():
+            coin_id = config["id"]
+            precio, cambio = obtener_precio_individual(coin_id)
+            if precio is None:
+                continue
             
-            senal, puntaje = calcular_senal(precio, cambio, fng_valor, st.session_state.historial_precios)
+            st.session_state.historiales[nombre].append(precio)
+            if len(st.session_state.historiales[nombre]) > 30:
+                st.session_state.historiales[nombre] = st.session_state.historiales[nombre][-30:]
             
-            precio_placeholder.metric("💰 Precio", f"${precio:,.2f}")
-            cambio_color = "🟢" if cambio and cambio > 0 else "🔴" if cambio and cambio < 0 else "⚪"
-            cambio_placeholder.metric(f"{cambio_color} Cambio 24h", f"{cambio:+.2f}%" if cambio else "N/A")
-            if fng_valor:
-                fng_emoji = "😨" if fng_valor < 25 else "😟" if fng_valor < 40 else "😐" if fng_valor < 60 else "😊" if fng_valor < 75 else "🤑"
-                fng_placeholder.metric(f"{fng_emoji} Fear & Greed", f"{fng_valor}/100", fng_texto)
+            senal, puntaje = calcular_senal(precio, cambio, fng_valor, st.session_state.historiales[nombre])
             
-            color_fondo = "#00ff0040" if "COMPRAR" in senal else "#ff000040" if "VENDER" in senal else "#ffff0040" if "CONSIDERAR" in senal else "#88888840"
-            senal_placeholder.markdown(f"""
-            <div style="background-color:{color_fondo}; padding:20px; border-radius:10px; text-align:center">
-                <h1 style="font-size:40px; margin:0">{senal}</h1>
-                <p style="font-size:16px; margin:5px 0">Puntaje: {puntaje}/100</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # ALERTA TELEGRAM
-            if senal != st.session_state.ultima_alerta:
+            # Alerta si cambió a COMPRAR o VENDER
+            if senal != config["ultima_senal"] and senal in ["🟢 COMPRAR", "🔴 VENDER"]:
                 mensaje = f"""
 🚨 <b>ALERTA CRIPTO</b> 🚨
 
-🪙 <b>{cripto_seleccionada}</b>
+🪙 <b>{nombre}</b>
 📊 <b>{senal}</b>
 💰 Precio: ${precio:,.2f}
 📈 Cambio 24h: {cambio:+.2f}%
 😨 Fear & Greed: {fng_valor}/100 ({fng_texto})
-
-Puntaje: {puntaje}/100
+📊 Puntaje: {puntaje}/100
                 """
-                if enviar_telegram(mensaje):
-                    status_placeholder.success(f"📱 Alerta enviada a Telegram: {senal}")
-                else:
-                    status_placeholder.warning("⚠️ No se pudo enviar la alerta")
-                st.session_state.ultima_alerta = senal
+                enviar_telegram(mensaje)
+                config["ultima_senal"] = senal
             
-            if st.session_state.ultimo_precio > 0:
-                cambio_porcentaje = abs(precio - st.session_state.ultimo_precio) / st.session_state.ultimo_precio * 100
-                if cambio_porcentaje > 5:
-                    direccion = "⬆️ SUBIÓ" if precio > st.session_state.ultimo_precio else "⬇️ BAJÓ"
-                    mensaje = f"⚠️ <b>MOVIMIENTO BRUSCO</b>\n🪙 {cripto_seleccionada}\n{direccion} {cambio_porcentaje:.1f}%\n💰 Ahora: ${precio:,.2f}"
-                    enviar_telegram(mensaje)
-            st.session_state.ultimo_precio = precio
+            # Movimiento brusco
+            ultimo = st.session_state.ultimo_precio.get(nombre, precio)
+            if ultimo > 0:
+                variacion = abs(precio - ultimo) / ultimo * 100
+                if variacion > 5:
+                    direccion = "⬆️ SUBIÓ" if precio > ultimo else "⬇️ BAJÓ"
+                    enviar_telegram(f"⚠️ <b>MOVIMIENTO BRUSCO</b>\n🪙 {nombre}\n{direccion} {variacion:.1f}%\n💰 Ahora: ${precio:,.2f}")
+            st.session_state.ultimo_precio[nombre] = precio
             
-            if len(st.session_state.datos_historicos[coin_id]) > 1:
-                df = pd.DataFrame(st.session_state.datos_historicos[coin_id])
-                fig = px.line(df, x="hora", y="precio", title=f"Tendencia de {cripto_seleccionada}", markers=True)
-                fig.update_layout(height=300)
-                grafica_placeholder.plotly_chart(fig, use_container_width=True)
-            
-            status_placeholder.info(f"🕐 Actualizado: {datetime.now().strftime('%H:%M:%S')}")
-        else:
-            status_placeholder.error("❌ Error al obtener datos")
+            filas.append({
+                "Cripto": nombre,
+                "Precio": f"${precio:,.2f}",
+                "24h %": f"{cambio:+.2f}%",
+                "Señal": senal,
+                "Puntaje": f"{puntaje}/100"
+            })
+        
+        placeholder_tabla.dataframe(pd.DataFrame(filas), use_container_width=True)
+        ultima_actualizacion.info(f"🕐 Actualizado: {datetime.now().strftime('%H:%M:%S')} | Fear & Greed: {fng_valor}/100 ({fng_texto})")
+        
         time.sleep(intervalo)
         st.rerun()
 else:
-    st.info("👈 Configura y presiona 'INICIAR MONITOREO CON ALERTAS'")
+    st.info("👈 Presiona 'INICIAR MONITOREO MULTI' para empezar a recibir alertas de todas las criptomonedas.")
