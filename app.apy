@@ -7,8 +7,8 @@ from datetime import datetime
 
 # ==================== CONFIGURACIÓN TELEGRAM ====================
 # ⚠️ REEMPLAZA ESTOS VALORES CON LOS TUYOS ⚠️
-TELEGRAM_TOKEN = "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"  # Tu token de BotFather
-TELEGRAM_CHAT_ID = "123456789"  # Tu chat_id de @userinfobot
+TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"  # Tu token de BotFather
+TELEGRAM_CHAT_ID = "5835990242"  # Tu chat_id de @userinfobot
 
 def enviar_telegram(mensaje):
     """Envía mensaje a Telegram"""
