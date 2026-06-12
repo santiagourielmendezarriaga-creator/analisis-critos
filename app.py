@@ -6,12 +6,10 @@ import time
 from datetime import datetime
 
 # ==================== CONFIGURACIÓN TELEGRAM ====================
-# ⚠️ REEMPLAZA ESTOS VALORES CON LOS TUYOS ⚠️
-TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"  # Tu token de BotFather
-TELEGRAM_CHAT_ID = "5835990242"  # Tu chat_id de @userinfobot
+TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
+TELEGRAM_CHAT_ID = "5835990242"
 
 def enviar_telegram(mensaje):
-    """Envía mensaje a Telegram"""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         data = {
@@ -22,20 +20,18 @@ def enviar_telegram(mensaje):
         response = requests.post(url, data=data, timeout=10)
         return response.status_code == 200
     except Exception as e:
-        print(f"Error al enviar: {e}")
+        print(f"Error: {e}")
         return False
 
 # ==================== CONFIGURACIÓN DE LA APP ====================
 st.set_page_config(page_title="CriptoAnalizador con Alertas", layout="wide")
 st.title("🪙 Analizador de Criptomonedas con Alertas Telegram")
 
-# Estado para no enviar la misma alerta repetida
 if "ultima_alerta" not in st.session_state:
     st.session_state.ultima_alerta = ""
 if "ultimo_precio" not in st.session_state:
     st.session_state.ultimo_precio = 0
 
-# Configuración lateral
 st.sidebar.header("⚙️ Configuración")
 intervalo = st.sidebar.slider("Actualizar cada (segundos)", 15, 60, 30)
 incluir_expertos = st.sidebar.checkbox("📰 Incluir análisis de expertos", value=True)
@@ -47,12 +43,10 @@ Recibirás mensajes cuando:
 - El precio se mueva más de 5%
 """)
 
-# Lista de criptomonedas
 CRIPTOS = ["Bitcoin", "Ethereum", "Solana", "Cardano", "Dogecoin", "XRP"]
 st.sidebar.subheader("📊 Selecciona Criptomoneda")
 cripto_seleccionada = st.sidebar.selectbox("Para análisis y alertas", CRIPTOS)
 
-# Mapeo de nombres a IDs
 CRIPTO_IDS = {
     "Bitcoin": "bitcoin",
     "Ethereum": "ethereum",
@@ -63,15 +57,12 @@ CRIPTO_IDS = {
 }
 coin_id = CRIPTO_IDS[cripto_seleccionada]
 
-# Inicializar historial
 if "historial_precios" not in st.session_state:
     st.session_state.historial_precios = []
 if "datos_historicos" not in st.session_state:
     st.session_state.datos_historicos = {cid: [] for cid in CRIPTO_IDS.values()}
 
-# ==================== FUNCIONES ====================
 def obtener_precio():
-    """Obtiene precio de la criptomoneda seleccionada"""
     try:
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd&include_24hr_change=true"
         response = requests.get(url, timeout=10)
@@ -83,7 +74,6 @@ def obtener_precio():
         return None, None
 
 def obtener_fear_greed():
-    """Obtiene Fear & Greed Index"""
     try:
         url = "https://api.alternative.me/fng/"
         response = requests.get(url, timeout=10)
@@ -95,10 +85,7 @@ def obtener_fear_greed():
         return None, None
 
 def calcular_senal(precio, cambio, fng_valor, historial):
-    """Calcula señal basada en múltiples factores"""
     puntaje = 50
-    
-    # Fear & Greed (0-24 = comprar, 75-100 = vender)
     if fng_valor:
         if fng_valor < 25:
             puntaje += 25
@@ -108,8 +95,6 @@ def calcular_senal(precio, cambio, fng_valor, historial):
             puntaje -= 25
         elif fng_valor > 60:
             puntaje -= 15
-    
-    # Cambio 24h
     if cambio:
         if cambio > 3:
             puntaje += 10
@@ -119,90 +104,68 @@ def calcular_senal(precio, cambio, fng_valor, historial):
             puntaje -= 10
         elif cambio < -1:
             puntaje -= 5
-    
-    # Tendencia (si hay historial)
     if len(historial) >= 5:
         promedio = sum(historial[-5:]) / 5
         if precio > promedio:
             puntaje += 10
         else:
             puntaje -= 10
-    
     puntaje = max(0, min(100, puntaje))
-    
     if puntaje >= 65:
-        return f"🟢 COMPRAR", puntaje, f"Puntaje: {puntaje}/100 - Buen momento para comprar"
+        return f"🟢 COMPRAR", puntaje
     elif puntaje >= 55:
-        return f"🟡 CONSIDERAR COMPRA", puntaje, f"Puntaje: {puntaje}/100 - Podría ser buen momento"
+        return f"🟡 CONSIDERAR COMPRA", puntaje
     elif puntaje <= 35:
-        return f"🔴 VENDER", puntaje, f"Puntaje: {puntaje}/100 - Considera vender"
+        return f"🔴 VENDER", puntaje
     elif puntaje <= 45:
-        return f"🟠 CONSIDERAR VENTA", puntaje, f"Puntaje: {puntaje}/100 - Precaución"
+        return f"🟠 CONSIDERAR VENTA", puntaje
     else:
-        return f"⚪ MANTENER", puntaje, f"Puntaje: {puntaje}/100 - Sin señal clara"
+        return f"⚪ MANTENER", puntaje
 
-# ==================== INTERFAZ ====================
 col1, col2 = st.columns([2, 2])
-
 with col1:
     st.subheader("📊 Panel de Control")
     precio_placeholder = st.empty()
     cambio_placeholder = st.empty()
     fng_placeholder = st.empty()
-
 with col2:
     st.subheader(f"📈 Señal para {cripto_seleccionada}")
     senal_placeholder = st.empty()
     puntaje_placeholder = st.empty()
-
 grafica_placeholder = st.empty()
 status_placeholder = st.empty()
 
-# Botón de inicio
 if st.sidebar.button("▶️ INICIAR MONITOREO CON ALERTAS", type="primary"):
-    st.success("✅ Alertas Telegram activadas. Recibirás mensajes en tu celular.")
-    
+    st.success("✅ Alertas Telegram activadas.")
     while True:
-        # Obtener datos
         precio, cambio = obtener_precio()
         fng_valor, fng_texto = obtener_fear_greed()
-        
         if precio:
-            # Actualizar historial
             st.session_state.historial_precios.append(precio)
             if len(st.session_state.historial_precios) > 30:
                 st.session_state.historial_precios = st.session_state.historial_precios[-30:]
-            
-            st.session_state.datos_historicos[coin_id].append({
-                "hora": datetime.now(),
-                "precio": precio
-            })
+            st.session_state.datos_historicos[coin_id].append({"hora": datetime.now(), "precio": precio})
             if len(st.session_state.datos_historicos[coin_id]) > 30:
                 st.session_state.datos_historicos[coin_id] = st.session_state.datos_historicos[coin_id][-30:]
             
-            # Calcular señal
-            senal, puntaje, descripcion = calcular_senal(precio, cambio, fng_valor, st.session_state.historial_precios)
+            senal, puntaje = calcular_senal(precio, cambio, fng_valor, st.session_state.historial_precios)
             
-            # Mostrar en pantalla
             precio_placeholder.metric("💰 Precio", f"${precio:,.2f}")
             cambio_color = "🟢" if cambio and cambio > 0 else "🔴" if cambio and cambio < 0 else "⚪"
             cambio_placeholder.metric(f"{cambio_color} Cambio 24h", f"{cambio:+.2f}%" if cambio else "N/A")
-            
             if fng_valor:
                 fng_emoji = "😨" if fng_valor < 25 else "😟" if fng_valor < 40 else "😐" if fng_valor < 60 else "😊" if fng_valor < 75 else "🤑"
                 fng_placeholder.metric(f"{fng_emoji} Fear & Greed", f"{fng_valor}/100", fng_texto)
             
-            # Mostrar señal con formato
             color_fondo = "#00ff0040" if "COMPRAR" in senal else "#ff000040" if "VENDER" in senal else "#ffff0040" if "CONSIDERAR" in senal else "#88888840"
             senal_placeholder.markdown(f"""
             <div style="background-color:{color_fondo}; padding:20px; border-radius:10px; text-align:center">
                 <h1 style="font-size:40px; margin:0">{senal}</h1>
-                <p style="font-size:16px; margin:5px 0">{descripcion}</p>
+                <p style="font-size:16px; margin:5px 0">Puntaje: {puntaje}/100</p>
             </div>
             """, unsafe_allow_html=True)
             
-            # ==================== ALERTAS TELEGRAM ====================
-            # Alerta cuando la señal cambia significativamente
+            # ALERTA TELEGRAM
             if senal != st.session_state.ultima_alerta:
                 mensaje = f"""
 🚨 <b>ALERTA CRIPTO</b> 🚨
@@ -213,65 +176,32 @@ if st.sidebar.button("▶️ INICIAR MONITOREO CON ALERTAS", type="primary"):
 📈 Cambio 24h: {cambio:+.2f}%
 😨 Fear & Greed: {fng_valor}/100 ({fng_texto})
 
-{descripcion}
-
-📱 App: {st.session_state.get("app_url", "tu app")}
+Puntaje: {puntaje}/100
                 """
                 if enviar_telegram(mensaje):
                     status_placeholder.success(f"📱 Alerta enviada a Telegram: {senal}")
                 else:
                     status_placeholder.warning("⚠️ No se pudo enviar la alerta")
-                
                 st.session_state.ultima_alerta = senal
             
-            # Alerta por cambio brusco de precio (+5% o -5%)
             if st.session_state.ultimo_precio > 0:
                 cambio_porcentaje = abs(precio - st.session_state.ultimo_precio) / st.session_state.ultimo_precio * 100
                 if cambio_porcentaje > 5:
                     direccion = "⬆️ SUBIÓ" if precio > st.session_state.ultimo_precio else "⬇️ BAJÓ"
-                    mensaje = f"""
-⚠️ <b>MOVIMIENTO BRUSCO</b> ⚠️
-
-🪙 {cripto_seleccionada}
-{direccion} {cambio_porcentaje:.1f}%
-💰 Antes: ${st.session_state.ultimo_precio:,.2f}
-💰 Ahora: ${precio:,.2f}
-                    """
+                    mensaje = f"⚠️ <b>MOVIMIENTO BRUSCO</b>\n🪙 {cripto_seleccionada}\n{direccion} {cambio_porcentaje:.1f}%\n💰 Ahora: ${precio:,.2f}"
                     enviar_telegram(mensaje)
-            
             st.session_state.ultimo_precio = precio
             
-            # Gráfica de tendencia
             if len(st.session_state.datos_historicos[coin_id]) > 1:
                 df = pd.DataFrame(st.session_state.datos_historicos[coin_id])
-                fig = px.line(df, x="hora", y="precio", 
-                             title=f"Tendencia de {cripto_seleccionada}",
-                             markers=True)
+                fig = px.line(df, x="hora", y="precio", title=f"Tendencia de {cripto_seleccionada}", markers=True)
                 fig.update_layout(height=300)
                 grafica_placeholder.plotly_chart(fig, use_container_width=True)
             
-            status_placeholder.info(f"🕐 Actualizado: {datetime.now().strftime('%H:%M:%S')} | Próxima alerta si la señal cambia")
-            
+            status_placeholder.info(f"🕐 Actualizado: {datetime.now().strftime('%H:%M:%S')}")
         else:
             status_placeholder.error("❌ Error al obtener datos")
-        
         time.sleep(intervalo)
         st.rerun()
-
 else:
     st.info("👈 Configura y presiona 'INICIAR MONITOREO CON ALERTAS'")
-    st.markdown("""
-    ### 📱 ¿Cómo funcionan las alertas?
-    
-    1. **Configura tu bot de Telegram** (sigue las instrucciones arriba)
-    2. **Presiona INICIAR**
-    3. **Recibirás mensajes en tu celular** cuando:
-       - La señal cambie a COMPRAR o VENDER
-       - El precio suba o baje más de 5%
-    
-    ### 🔑 Configuración necesaria:
-    
-    En el código, reemplaza:
-    - `TELEGRAM_TOKEN` con el que te dio @BotFather
-    - `TELEGRAM_CHAT_ID` con el que te dio @userinfobot
-    """)
