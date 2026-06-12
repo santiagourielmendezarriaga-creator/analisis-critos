@@ -1,7 +1,1 @@
-streamlit
 requests
-beautifulsoup4
-pandas
-plotly
-numpy
-fear-and-greed-crypto
