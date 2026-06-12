@@ -9,21 +9,26 @@ import random
 from collections import deque
 from datetime import datetime
 
-# ==================== CONFIGURACIÓN ====================
+# ==================== CONFIGURACIÓN TELEGRAM ====================
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
 TELEGRAM_CHAT_ID = "5835990242"
 
 def send_telegram(message, parse_mode="Markdown"):
+    """Envía mensaje a Telegram y retorna True si éxito."""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": parse_mode}
         r = requests.post(url, json=payload, timeout=10)
-        return r.status_code == 200
+        if r.status_code == 200:
+            return True
+        else:
+            st.error(f"Telegram error: {r.status_code}")
+            return False
     except Exception as e:
-        st.error(f"Error Telegram: {e}")
+        st.error(f"Telegram exception: {e}")
         return False
 
-# --- Estrategia ---
+# ==================== ESTRATEGIA ====================
 BUY_THRESHOLD = 60
 SELL_THRESHOLD = 45
 STOP_LOSS_PCT = 5.0
@@ -35,9 +40,9 @@ COMMISSION_PCT = 0.1
 SLIPPAGE_PCT = 0.05
 REFRESH_INTERVAL_SEC = 60
 HEARTBEAT_CYCLES = 30
-MIN_HISTORY_LEN = 2  # <<--- CAMBIADO DE 5 A 2
+MIN_HISTORY_LEN = 3   # Reducido de 5 a 3 para empezar a operar antes
 
-# --- Datos de simulación ---
+# ==================== DATOS DE SIMULACIÓN (FALLBACK) ====================
 REAL_BASES = {"BTC": 63000, "ETH": 1670}
 SIM_PRICES = {"BTC": 63000, "ETH": 1670}
 SIM_CHANGES = {"BTC": 0.0, "ETH": 0.0}
@@ -58,8 +63,12 @@ if "balance" not in st.session_state:
     st.session_state.last_trade_day = datetime.now().day
     st.session_state.use_real = True
     st.session_state.last_fail = 0
+    st.session_state.last_score = {"BTC": 50, "ETH": 50}
 
+# Crear carpeta para logs
 os.makedirs("data", exist_ok=True)
+
+# Cargar historial de trades
 if os.path.exists("data/trades.csv") and not st.session_state.trades:
     try:
         df = pd.read_csv("data/trades.csv")
@@ -68,7 +77,7 @@ if os.path.exists("data/trades.csv") and not st.session_state.trades:
     except:
         pass
 
-# ==================== FUNCIONES DE MERCADO (BINANCE + FALLBACK) ====================
+# ==================== FUNCIONES DE MERCADO ====================
 def get_binance_price(symbol):
     try:
         pair = f"{symbol}USDT"
@@ -83,15 +92,14 @@ def get_binance_price(symbol):
 
 def get_price(symbol):
     now = time.time()
-    # Modo real: intentar Binance
-    if st.session_state.use_real and (now - st.session_state.last_fail > 120):  # reintento cada 2 min
+    if st.session_state.use_real and (now - st.session_state.last_fail > 120):
         price, change = get_binance_price(symbol)
         if price and ((symbol=="BTC" and 30000<price<100000) or (symbol=="ETH" and 500<price<5000)):
             return price, change, "real"
         else:
             st.session_state.last_fail = now
             st.session_state.use_real = False
-    # Modo simulado (realista)
+    # Simulación realista
     base = REAL_BASES[symbol]
     last_price = SIM_PRICES.get(symbol, base)
     change_pct = random.uniform(-0.015, 0.015)
@@ -191,19 +199,22 @@ def record_trade():
 
 def check_stop_loss(symbol, current_price):
     entry = st.session_state.entry_price.get(symbol, 0)
-    if entry == 0: return False
+    if entry == 0:
+        return False
     loss = (current_price - entry) / entry * 100
     return loss <= -STOP_LOSS_PCT
 
 def check_take_profit(symbol, current_price):
     entry = st.session_state.entry_price.get(symbol, 0)
-    if entry == 0: return False
+    if entry == 0:
+        return False
     profit = (current_price - entry) / entry * 100
     return profit >= TAKE_PROFIT_PCT
 
 def check_trailing_stop(symbol, current_price):
     entry = st.session_state.entry_price.get(symbol, 0)
-    if entry == 0: return False
+    if entry == 0:
+        return False
     high = st.session_state.highest_price.get(symbol, current_price)
     if current_price > high:
         st.session_state.highest_price[symbol] = current_price
@@ -211,15 +222,16 @@ def check_trailing_stop(symbol, current_price):
     stop_price = high * (1 - TRAILING_STOP_PCT / 100)
     return current_price <= stop_price
 
-def execute_trade(symbol, action, price):
+# ==================== EJECUCIÓN DE ÓRDENES ====================
+def execute_trade(symbol, action, price, exit_reason=""):
     if action == "BUY":
         if not can_trade():
-            return "❌ Límite diario de operaciones alcanzado"
+            return None, "❌ Límite diario de operaciones alcanzado"
         amount_usdt = min(MAX_POSITION_SIZE_USDT, st.session_state.balance)
         if amount_usdt <= 0:
-            return "❌ Saldo insuficiente"
-        eff_price = price * (1 + SLIPPAGE_PCT/100)
-        commission = amount_usdt * COMMISSION_PCT/100
+            return None, "❌ Saldo insuficiente"
+        eff_price = price * (1 + SLIPPAGE_PCT / 100)
+        commission = amount_usdt * COMMISSION_PCT / 100
         amount_after = amount_usdt - commission
         qty = amount_after / eff_price
         st.session_state.balance -= amount_usdt
@@ -227,25 +239,38 @@ def execute_trade(symbol, action, price):
         st.session_state.entry_price[symbol] = eff_price
         st.session_state.highest_price[symbol] = eff_price
         record_trade()
-        return (f"🟢 *COMPRA* {symbol}\nCantidad: {qty:.6f}\nPrecio efectivo: ${eff_price:.2f}\n"
-                f"Comisión: ${commission:.2f}\nSaldo restante: ${st.session_state.balance:.2f}")
-    else:
+        msg = (f"🟢 *COMPRA* {symbol}\n"
+               f"Cantidad: {qty:.6f}\n"
+               f"Precio efectivo: ${eff_price:.2f}\n"
+               f"Comisión: ${commission:.2f}\n"
+               f"Saldo restante: ${st.session_state.balance:.2f}")
+        if exit_reason:
+            msg += f"\n*Motivo:* {exit_reason}"
+        return qty, msg
+    else:  # SELL
         qty = st.session_state.positions.get(symbol, 0)
         if qty <= 0:
-            return "❌ No hay posición para vender"
-        eff_price = price * (1 - SLIPPAGE_PCT/100)
+            return None, "❌ No hay posición para vender"
+        eff_price = price * (1 - SLIPPAGE_PCT / 100)
         gross = qty * eff_price
-        commission = gross * COMMISSION_PCT/100
+        commission = gross * COMMISSION_PCT / 100
         net = gross - commission
         st.session_state.balance += net
         st.session_state.positions[symbol] = 0
         record_trade()
-        return (f"🔴 *VENTA* {symbol}\nCantidad: {qty:.6f}\nPrecio efectivo: ${eff_price:.2f}\n"
-                f"Comisión: ${commission:.2f}\nNeto: ${net:.2f}\nSaldo nuevo: ${st.session_state.balance:.2f}")
+        msg = (f"🔴 *VENTA* {symbol}\n"
+               f"Cantidad: {qty:.6f}\n"
+               f"Precio efectivo: ${eff_price:.2f}\n"
+               f"Comisión: ${commission:.2f}\n"
+               f"Neto: ${net:.2f}\n"
+               f"Saldo nuevo: ${st.session_state.balance:.2f}")
+        if exit_reason:
+            msg += f"\n*Motivo:* {exit_reason}"
+        return qty, msg
 
 # ==================== INTERFAZ STREAMLIT ====================
 st.set_page_config(page_title="Crypto Trading Bot Pro", layout="wide")
-st.title("🤖 Crypto Trading Bot Pro - Binance + Simulación")
+st.title("🤖 Crypto Trading Bot Pro - Alertas Garantizadas")
 
 st.sidebar.header("⚙️ Configuración")
 refresh = st.sidebar.slider("Intervalo (segundos)", 30, 180, REFRESH_INTERVAL_SEC)
@@ -271,7 +296,7 @@ if st.sidebar.button("Reiniciar simulación"):
 
 if st.sidebar.button("📢 Enviar alerta de prueba"):
     send_telegram("🧪 Alerta de prueba - Bot activo")
-    st.success("Enviado")
+    st.success("Alerta enviada a Telegram")
 
 if st.session_state.use_real:
     st.success("✅ Modo REAL (Binance)")
@@ -298,19 +323,28 @@ st.session_state.cycle_count += 1
 now = time.time()
 gap = now - st.session_state.last_cycle_time
 if gap > 300:
-    send_telegram(f"⚠️ Reanudación tras {gap:.0f}s")
+    send_telegram(f"⚠️ Reanudación tras {gap:.0f}s de inactividad")
 st.session_state.last_cycle_time = now
 if st.session_state.cycle_count % HEARTBEAT_CYCLES == 0:
-    send_telegram(f"💓 Heartbeat ciclo {st.session_state.cycle_count} | Fuente: {'Real' if st.session_state.use_real else 'Sim'}")
+    send_telegram(f"💓 Heartbeat - Ciclo {st.session_state.cycle_count} | Fuente: {'Real' if st.session_state.use_real else 'Sim'}")
 
-# ==================== DECISIONES ====================
+# ==================== DECISIONES Y ALERTAS ====================
 for sym in ["BTC", "ETH"]:
     price, change, source = price_data[sym]
-    if price == 0: continue
+    if price == 0:
+        continue
     hist = list(st.session_state.price_history[sym])
-    if len(hist) < MIN_HISTORY_LEN: continue
+    if len(hist) < MIN_HISTORY_LEN:
+        continue
     score = calculate_score(price, change, fng, hist)
     
+    # Alerta por cambio significativo de puntaje
+    last_score = st.session_state.last_score.get(sym, 50)
+    if abs(score - last_score) >= 3:
+        send_telegram(f"📊 *{sym}* Puntaje cambió: {last_score:.1f} → {score:.1f}")
+        st.session_state.last_score[sym] = score
+    
+    # Señal base
     if score >= buy_th:
         action = "BUY"
     elif score <= sell_th:
@@ -318,37 +352,37 @@ for sym in ["BTC", "ETH"]:
     else:
         action = "HOLD"
     
+    # Gestión de riesgos
     exit_reason = None
     if st.session_state.positions.get(sym, 0) > 0:
         if check_stop_loss(sym, price):
             action = "SELL"
-            exit_reason = "Stop Loss"
+            exit_reason = f"Stop Loss ({STOP_LOSS_PCT}%)"
         elif check_take_profit(sym, price):
             action = "SELL"
-            exit_reason = "Take Profit"
+            exit_reason = f"Take Profit ({TAKE_PROFIT_PCT}%)"
         elif check_trailing_stop(sym, price):
             action = "SELL"
-            exit_reason = "Trailing Stop"
+            exit_reason = f"Trailing Stop ({TRAILING_STOP_PCT}%)"
     
+    # Ejecutar orden si cambia la acción
     last_act = st.session_state.last_action.get(sym)
     if (action != last_act and action in ("BUY", "SELL")):
-        msg = execute_trade(sym, action, price)
+        qty, msg = execute_trade(sym, action, price, exit_reason)
         if msg:
-            if exit_reason:
-                msg += f"\n*Motivo:* {exit_reason}"
             send_telegram(msg)
             st.session_state.trades.append((datetime.now(), msg))
             with open("data/trades.csv", "a") as f:
                 f.write(f"{datetime.now().isoformat()},{msg.replace(chr(10), ' ')}\n")
         st.session_state.last_action[sym] = action
 
-# ==================== MOSTRAR ====================
+# ==================== MOSTRAR INTERFAZ ====================
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("📊 Señales en Vivo")
     rows = []
     for sym in ["BTC", "ETH"]:
-        name = "Bitcoin" if sym=="BTC" else "Ethereum"
+        name = "Bitcoin" if sym == "BTC" else "Ethereum"
         price, change, source = price_data.get(sym, (0,0,""))
         if price == 0:
             rows.append({"Moneda": name, "Precio": "Error", "24h %": "N/A", "Score": "N/A", "Señal": "ERROR"})
@@ -377,13 +411,14 @@ with col1:
     st.caption(f"Ciclo: {st.session_state.cycle_count} | Fuente: {'Real' if source=='real' else 'Sim'}")
 
 with col2:
-    st.subheader("📜 Últimas operaciones")
+    st.subheader("📜 Historial de Operaciones")
     if st.session_state.trades:
         for ts, msg in reversed(st.session_state.trades[-15:]):
             st.text(f"{ts.strftime('%H:%M:%S')} - {msg[:80]}...")
     else:
-        st.caption("Aún sin operaciones")
+        st.caption("Aún sin operaciones. Esperando cambios de señal.")
 
+# ==================== AUTO REFRESCO ====================
 if auto:
     time.sleep(refresh)
     st.rerun()
