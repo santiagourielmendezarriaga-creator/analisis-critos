@@ -20,108 +20,123 @@ def send_telegram(msg, parse_mode="Markdown"):
     except:
         return False
 
-# ==================== OBTENER DATOS DE BITSO (REALES, SIN API KEY) ====================
+# ==================== OBTENER DATOS DE BITSO (REALES) ====================
 def get_bitso_ticker(book="btc_mxn"):
-    """Obtiene precio y cambio 24h de Bitso. Retorna (precio, cambio_porcentaje) o (None,None) si falla."""
+    """Devuelve (precio, cambio_porcentaje_24h) o (None, None) si falla."""
     try:
-        url = f"https://api.bitso.com/api/v3/ticker/?book={book}"
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            payload = data["payload"]
-            price = float(payload["last"])
-            change = float(payload["change"])  # cambio absoluto, necesitamos porcentaje
-            # Calcular cambio porcentual (Bitso no lo da directamente, lo calculamos)
-            # Podemos usar la vela de 24h, pero más simple: change_percent = (price - open_24h)/open_24h *100
-            # Obtener open 24h desde OHLC
-            ohlc_url = f"https://api.bitso.com/api/v3/ohlc/?book={book}&time_window=24_hours"
-            ohlc_resp = requests.get(ohlc_url, timeout=10)
-            if ohlc_resp.status_code == 200:
-                ohlc_data = ohlc_resp.json()
-                if ohlc_data["payload"]:
-                    open_24h = float(ohlc_data["payload"][0]["open"])
-                    change_pct = (price - open_24h) / open_24h * 100
-                    return price, change_pct
-            return price, 0.0
+        # Obtener ticker
+        url_ticker = f"https://api.bitso.com/api/v3/ticker/?book={book}"
+        resp = requests.get(url_ticker, timeout=10)
+        if resp.status_code != 200:
+            return None, None
+        data = resp.json()
+        payload = data.get("payload")
+        if not payload:
+            return None, None
+        last = float(payload.get("last", 0))
+        if last == 0:
+            return None, None
+
+        # Obtener cambio porcentual usando la vela de 24h
+        url_ohlc = f"https://api.bitso.com/api/v3/ohlc/?book={book}&time_window=24_hours"
+        resp_ohlc = requests.get(url_ohlc, timeout=10)
+        if resp_ohlc.status_code == 200:
+            ohlc_data = resp_ohlc.json()
+            if ohlc_data.get("payload") and len(ohlc_data["payload"]) > 0:
+                open_24h = float(ohlc_data["payload"][0]["open"])
+                change_pct = (last - open_24h) / open_24h * 100
+                return last, change_pct
+        return last, 0.0
     except Exception as e:
-        print(f"Error Bitso: {e}")
-    return None, None
+        print(f"Bitso error: {e}")
+        return None, None
 
 def get_fear_greed():
-    """Índice de miedo y codicia (Alternative.me)"""
     try:
         resp = requests.get("https://api.alternative.me/fng/", timeout=10)
         if resp.status_code == 200:
             data = resp.json()
-            value = int(data["data"][0]["value"])
-            classification = data["data"][0]["value_classification"]
-            return value, classification
+            return int(data["data"][0]["value"]), data["data"][0]["value_classification"]
     except:
         pass
     return 50, "Neutral"
 
-# ==================== PARÁMETROS DE LA ESTRATEGIA ====================
-BUY_THRESHOLD = 55          # Compra cuando score >= 55
-SELL_THRESHOLD = 45         # Vende cuando score <= 45
-STOP_LOSS_PCT = 2.0         # Stop loss 2%
-TAKE_PROFIT_PCT = 3.0       # Take profit 3%
-TRAILING_STOP_PCT = 1.5     # Trailing stop 1.5%
-MAX_POSITION_SIZE_MXN = 500.0   # Máximo por operación (500 MXN)
-MAX_DAILY_TRADES = 100      # Máximas operaciones por día
-COMMISSION_PCT = 0.1        # Comisión 0.1%
-SLIPPAGE_PCT = 0.05         # Deslizamiento 0.05%
-REFRESH_INTERVAL_SEC = 30   # Actualizar cada 30 segundos
-HEARTBEAT_CYCLES = 30       # Latido cada 30 ciclos
-MIN_HISTORY_LEN = 2         # Datos necesarios para calcular tendencia
-
-# ==================== SIMULACIÓN DE RESPALDO (SI BITSO FALLA) ====================
-# Precios base aproximados
+# ==================== SIMULACIÓN DE RESPALDO ====================
 BACKUP_PRICES = {"BTC": 1_070_000, "ETH": 28_000}
 backup_prices = {"BTC": 1_070_000, "ETH": 28_000}
 backup_changes = {"BTC": 0.0, "ETH": 0.0}
 
 def get_simulated_price(symbol):
-    """Genera precios simulados realistas (fallback)"""
     base = BACKUP_PRICES[symbol]
     last = backup_prices.get(symbol, base)
     change_pct = random.uniform(-0.008, 0.008)
     new_price = last * (1 + change_pct)
     new_price = max(base * 0.9, min(base * 1.1, new_price))
-    sim_change = backup_changes.get(symbol, 0.0)
-    sim_change += random.uniform(-0.2, 0.2)
+    sim_change = backup_changes.get(symbol, 0.0) + random.uniform(-0.2, 0.2)
     sim_change = max(-5, min(5, sim_change))
     backup_prices[symbol] = new_price
     backup_changes[symbol] = sim_change
     return new_price, sim_change
 
-# ==================== INDICADORES Y PUNTAJE ====================
+# ==================== PARÁMETROS ====================
+BUY_THRESHOLD = 55
+SELL_THRESHOLD = 45
+STOP_LOSS_PCT = 2.0
+TAKE_PROFIT_PCT = 3.0
+TRAILING_STOP_PCT = 1.5
+MAX_POSITION_SIZE_MXN = 500.0
+MAX_DAILY_TRADES = 100
+COMMISSION_PCT = 0.1
+SLIPPAGE_PCT = 0.05
+REFRESH_INTERVAL_SEC = 30
+HEARTBEAT_CYCLES = 30
+MIN_HISTORY_LEN = 2
+
+# ==================== INDICADORES ====================
 def calculate_score(price, change_24h, fear, price_history):
     score = 50
-    # Fear & Greed (aporta hasta ±20)
     score += (50 - fear) * 0.4
-    # Cambio 24h (aporta hasta ±12)
     score += change_24h * 1.2
-    # Tendencia simple (si hay al menos 2 precios)
     if len(price_history) >= 2:
         trend = price_history[-1] - price_history[-2]
-        if trend > 0:
-            score += 8
-        else:
-            score -= 8
+        score += 8 if trend > 0 else -8
     return max(0, min(100, score))
 
-# ==================== PERSISTENCIA DE ESTADO ====================
+# ==================== PERSISTENCIA ====================
 STATE_FILE = "bot_state.json"
 
 def save_state(state):
+    # Convertir deques y datetime a estructuras JSON
+    to_save = {
+        "balance": state["balance"],
+        "positions": state["positions"],
+        "trades": [(t.isoformat(), m) for t, m in state["trades"][-100:]],
+        "price_history": {k: list(v) for k, v in state["price_history"].items()},
+        "last_action": state["last_action"],
+        "last_prices": state["last_prices"],
+        "entry_price": state["entry_price"],
+        "highest_price": state["highest_price"],
+        "daily_trades": state["daily_trades"],
+        "last_trade_day": state["last_trade_day"],
+        "cycle": state["cycle"],
+        "last_score": state["last_score"]
+    }
     with open(STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
+        json.dump(to_save, f, indent=2)
 
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+                # Asegurar claves faltantes (para compatibilidad)
+                if "last_score" not in data:
+                    data["last_score"] = {"BTC": 50, "ETH": 50}
+                if "price_history" not in data:
+                    data["price_history"] = {"BTC": [], "ETH": []}
+                if "trades" not in data:
+                    data["trades"] = []
+                return data
         except:
             pass
     return None
@@ -134,21 +149,6 @@ def can_trade(state):
         state["last_trade_day"] = now_day
     return state["daily_trades"] < MAX_DAILY_TRADES
 
-def check_stop_loss(entry, current_price):
-    if entry == 0: return False
-    return (current_price - entry) / entry * 100 <= -STOP_LOSS_PCT
-
-def check_take_profit(entry, current_price):
-    if entry == 0: return False
-    return (current_price - entry) / entry * 100 >= TAKE_PROFIT_PCT
-
-def check_trailing_stop(entry, highest, current_price):
-    if entry == 0: return False
-    if current_price > highest:
-        return False
-    return current_price <= highest * (1 - TRAILING_STOP_PCT / 100)
-
-# ==================== EJECUCIÓN DE ÓRDENES (SIMULADA) ====================
 def execute_trade(symbol, action, price, state, exit_reason=""):
     if action == "BUY":
         if not can_trade(state):
@@ -164,18 +164,14 @@ def execute_trade(symbol, action, price, state, exit_reason=""):
         state["entry_price"][symbol] = eff_price
         state["highest_price"][symbol] = eff_price
         state["daily_trades"] += 1
-        msg = (f"🟢 *COMPRA* {symbol}\n"
-               f"Cantidad: {qty:.6f}\n"
-               f"Precio: ${eff_price:,.2f} MXN\n"
-               f"Comisión: ${commission:.2f}\n"
-               f"Saldo: ${state['balance']:.2f}")
+        msg = (f"🟢 *COMPRA* {symbol}\nCantidad: {qty:.6f}\nPrecio: ${eff_price:,.2f} MXN\nComisión: ${commission:.2f}\nSaldo: ${state['balance']:.2f}")
         if exit_reason:
             msg += f"\n*Motivo:* {exit_reason}"
         return qty, msg
-    else:  # SELL
+    else:
         qty = state["positions"].get(symbol, 0)
         if qty <= 0:
-            return None, "❌ No hay posición para vender"
+            return None, "❌ No hay posición"
         eff_price = price * (1 - SLIPPAGE_PCT / 100)
         gross = qty * eff_price
         commission = gross * COMMISSION_PCT / 100
@@ -183,22 +179,18 @@ def execute_trade(symbol, action, price, state, exit_reason=""):
         state["balance"] += net
         state["positions"][symbol] = 0
         state["daily_trades"] += 1
-        msg = (f"🔴 *VENTA* {symbol}\n"
-               f"Cantidad: {qty:.6f}\n"
-               f"Precio: ${eff_price:,.2f} MXN\n"
-               f"Comisión: ${commission:.2f}\n"
-               f"Neto: ${net:.2f}\n"
-               f"Saldo: ${state['balance']:.2f}")
+        msg = (f"🔴 *VENTA* {symbol}\nCantidad: {qty:.6f}\nPrecio: ${eff_price:,.2f}\nComisión: ${commission:.2f}\nNeto: ${net:.2f}\nSaldo: ${state['balance']:.2f}")
         if exit_reason:
             msg += f"\n*Motivo:* {exit_reason}"
         return qty, msg
 
-# ==================== INICIALIZAR O RECUPERAR ESTADO ====================
-saved_state = load_state()
-if saved_state:
-    state = saved_state
+# ==================== INICIALIZAR ESTADO ====================
+saved = load_state()
+if saved:
+    state = saved
+    # Restaurar deques
     state["price_history"] = {k: deque(v, maxlen=100) for k, v in state["price_history"].items()}
-    state["trades"] = [(datetime.fromisoformat(ts), msg) for ts, msg in state["trades"]]
+    state["trades"] = [(datetime.fromisoformat(ts), msg) for ts, msg in state.get("trades", [])]
 else:
     state = {
         "balance": 1000.0,
@@ -216,7 +208,7 @@ else:
     }
 
 # ==================== INTERFAZ STREAMLIT ====================
-st.set_page_config(page_title="Crypto Bot - Bitso Real", layout="wide")
+st.set_page_config(page_title="Crypto Bot - Bitso Real (MXN)", layout="wide")
 st.title("🤖 Crypto Bot - Datos Reales de Bitso (MXN)")
 
 st.sidebar.header("⚙️ Configuración")
@@ -227,13 +219,13 @@ sell_th = st.sidebar.number_input("Vende si score ≤", 0, 100, SELL_THRESHOLD)
 
 st.sidebar.subheader("💰 Cartera (MXN)")
 st.sidebar.metric("Saldo MXN", f"${state['balance']:,.2f}")
-total_value = state['balance']
+total_val = state['balance']
 for sym in ["BTC", "ETH"]:
-    price = state["last_prices"].get(sym, 0)
-    qty = state["positions"].get(sym, 0)
-    if qty > 0 and price > 0:
-        total_value += qty * price
-st.sidebar.metric("Valor total", f"${total_value:,.2f}")
+    p = state["last_prices"].get(sym, 0)
+    q = state["positions"].get(sym, 0)
+    if q > 0 and p > 0:
+        total_val += q * p
+st.sidebar.metric("Valor total", f"${total_val:,.2f}")
 st.sidebar.metric("Operaciones hoy", state["daily_trades"])
 
 if st.sidebar.button("Reiniciar simulación (1000 MXN)"):
@@ -249,21 +241,19 @@ if st.sidebar.button("📢 Enviar alerta de prueba"):
 
 st.info("✅ Obteniendo datos reales de Bitso (BTC/MXN y ETH/MXN). Si falla, usa simulación realista.")
 
-# ==================== OBTENER DATOS REALES (BITSO) ====================
-success = False
+# ==================== OBTENER DATOS REALES ====================
 btc_price, btc_change = get_bitso_ticker("btc_mxn")
 eth_price, eth_change = get_bitso_ticker("eth_mxn")
 
-# Si Bitso falla, usar simulación
 if btc_price is None:
     btc_price, btc_change = get_simulated_price("BTC")
     eth_price, eth_change = get_simulated_price("ETH")
     st.warning("⚠️ Usando datos simulados (Bitso no respondió)")
+    fuente = "Simulación"
 else:
     st.success("✅ Datos reales de Bitso")
-    success = True
+    fuente = "Bitso real"
 
-# Actualizar estado
 state["last_prices"]["BTC"] = btc_price
 state["last_prices"]["ETH"] = eth_price
 state["price_history"]["BTC"].append(btc_price)
@@ -272,90 +262,68 @@ state["price_history"]["ETH"].append(eth_price)
 fear, fear_label = get_fear_greed()
 state["cycle"] += 1
 
-# Guardar estado cada 10 ciclos
+# Guardar estado periódicamente
 if state["cycle"] % 10 == 0:
-    # Convertir deques a listas para JSON
-    save_state({
-        "balance": state["balance"],
-        "positions": state["positions"],
-        "trades": [(t.isoformat(), m) for t, m in state["trades"][-100:]],
-        "price_history": {k: list(v) for k, v in state["price_history"].items()},
-        "last_action": state["last_action"],
-        "last_prices": state["last_prices"],
-        "entry_price": state["entry_price"],
-        "highest_price": state["highest_price"],
-        "daily_trades": state["daily_trades"],
-        "last_trade_day": state["last_trade_day"],
-        "cycle": state["cycle"],
-        "last_score": state["last_score"]
-    })
+    save_state(state)
 
-# Latido de vida
+# Latido
 if state["cycle"] % HEARTBEAT_CYCLES == 0 and state["cycle"] > 0:
-    send_telegram(f"💓 Heartbeat ciclo {state['cycle']} | Fuente: {'Bitso' if success else 'Simulación'}")
+    send_telegram(f"💓 Heartbeat ciclo {state['cycle']} | Fuente: {fuente}")
 
-# ==================== PROCESAR SEÑALES PARA CADA MONEDA ====================
+# ==================== PROCESAR SEÑALES ====================
 for sym, price in [("BTC", btc_price), ("ETH", eth_price)]:
     change = btc_change if sym == "BTC" else eth_change
     hist = list(state["price_history"][sym])
     if len(hist) < MIN_HISTORY_LEN:
         continue
     score = calculate_score(price, change, fear, hist)
-    
-    # Alertas de cambio de puntaje
-    last_score = state["last_score"].get(sym, 50)
-    if abs(score - last_score) >= 3:
-        send_telegram(f"📊 *{sym}* Puntaje: {last_score:.1f} → {score:.1f}")
+
+    # Alerta cambio puntaje
+    last_sc = state["last_score"].get(sym, 50)
+    if abs(score - last_sc) >= 3:
+        send_telegram(f"📊 *{sym}* Puntaje: {last_sc:.1f} → {score:.1f}")
         state["last_score"][sym] = score
-    
-    # Acción base
+
+    # Determinar acción
     if score >= buy_th:
         action = "BUY"
     elif score <= sell_th:
         action = "SELL"
     else:
         action = "HOLD"
-    
-    # Verificar condiciones de salida (si hay posición)
+
+    # Verificar stop loss / take profit / trailing
     exit_reason = None
     if state["positions"].get(sym, 0) > 0:
         entry = state["entry_price"].get(sym, 0)
-        highest = state["highest_price"].get(sym, price)
-        if check_stop_loss(entry, price):
-            action = "SELL"
-            exit_reason = f"Stop Loss ({STOP_LOSS_PCT}%)"
-        elif check_take_profit(entry, price):
-            action = "SELL"
-            exit_reason = f"Take Profit ({TAKE_PROFIT_PCT}%)"
-        elif check_trailing_stop(entry, highest, price):
-            action = "SELL"
-            exit_reason = f"Trailing Stop ({TRAILING_STOP_PCT}%)"
-    
-    # Ejecutar solo si cambia la acción
+        high = state["highest_price"].get(sym, price)
+        if entry > 0:
+            loss = (price - entry) / entry * 100
+            profit = (price - entry) / entry * 100
+            if loss <= -STOP_LOSS_PCT:
+                action = "SELL"
+                exit_reason = f"Stop Loss ({STOP_LOSS_PCT}%)"
+            elif profit >= TAKE_PROFIT_PCT:
+                action = "SELL"
+                exit_reason = f"Take Profit ({TAKE_PROFIT_PCT}%)"
+            elif price <= high * (1 - TRAILING_STOP_PCT / 100):
+                action = "SELL"
+                exit_reason = f"Trailing Stop ({TRAILING_STOP_PCT}%)"
+        # Actualizar máximo si es mayor
+        if price > state["highest_price"].get(sym, 0):
+            state["highest_price"][sym] = price
+
+    # Ejecutar si cambia la acción
     last_act = state["last_action"].get(sym)
     if action != last_act and action in ("BUY", "SELL"):
         qty, msg = execute_trade(sym, action, price, state, exit_reason)
         if msg:
             send_telegram(msg)
             state["trades"].append((datetime.now(), msg))
-            # Guardar estado tras operación
-            save_state({
-                "balance": state["balance"],
-                "positions": state["positions"],
-                "trades": [(t.isoformat(), m) for t, m in state["trades"][-100:]],
-                "price_history": {k: list(v) for k, v in state["price_history"].items()},
-                "last_action": state["last_action"],
-                "last_prices": state["last_prices"],
-                "entry_price": state["entry_price"],
-                "highest_price": state["highest_price"],
-                "daily_trades": state["daily_trades"],
-                "last_trade_day": state["last_trade_day"],
-                "cycle": state["cycle"],
-                "last_score": state["last_score"]
-            })
+            save_state(state)
         state["last_action"][sym] = action
 
-# ==================== MOSTRAR EN DASHBOARD ====================
+# ==================== MOSTRAR EN PANTALLA ====================
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("📊 Señales en Vivo (MXN)")
@@ -385,7 +353,7 @@ with col1:
         })
     st.table(rows)
     st.metric("Fear & Greed", f"{fear}/100 ({fear_label})")
-    st.caption(f"Ciclo: {state['cycle']} | Venta si score ≤ {sell_th} | Hoy: {state['daily_trades']} ops")
+    st.caption(f"Ciclo: {state['cycle']} | Venta si score ≤ {sell_th} | Fuente: {fuente}")
 
 with col2:
     st.subheader("📜 Historial de Operaciones")
