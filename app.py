@@ -3,19 +3,19 @@ import pandas as pd
 import numpy as np
 import time
 import random
+import requests
 from datetime import datetime, timedelta, timezone
 from collections import deque
 
 st.set_page_config(page_title="Crypto Simulator Pro", layout="wide")
-st.title("📊 Crypto Analyst - Modo Simulado (datos sintéticos realistas)")
+st.title("📊 Crypto Analyst - Modo Simulado (estable)")
 
-# Telegram (si quieres probar alertas, usa tus datos)
+# Telegram (opcional – cambia por tus datos si quieres alertas reales)
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
 TELEGRAM_CHAT_ID = "5835990242"
 
 CDMX_TZ = timezone(timedelta(hours=-6))
 
-# Criptomonedas simuladas (precios base realistas)
 CRYPTOS = {
     "BTC": {"name": "Bitcoin", "base": 65000, "volatilidad": 0.02},
     "ETH": {"name": "Ethereum", "base": 3500, "volatilidad": 0.025},
@@ -30,17 +30,14 @@ def generate_price(base, volatility, last_price=None):
         last_price = base
     change_pct = np.random.normal(0, volatility)
     new_price = last_price * (1 + change_pct)
-    return new_price, change_pct * 100  # retorna precio y cambio porcentual
+    return new_price, change_pct * 100
 
 def generate_24h_change():
-    # cambio 24h simulado entre -8% y +8%
     return random.uniform(-8, 8)
 
 def generate_fear_greed():
-    # simula Fear & Greed que varía lentamente
     if "fg_value" not in st.session_state:
         st.session_state.fg_value = 50
-    # caminata aleatoria
     st.session_state.fg_value += random.uniform(-5, 5)
     st.session_state.fg_value = max(0, min(100, st.session_state.fg_value))
     if st.session_state.fg_value < 25:
@@ -56,9 +53,9 @@ def generate_fear_greed():
     return int(st.session_state.fg_value), label
 
 def generate_ohlc(symbol, days=2):
-    """Genera datos OHLC horarios sintéticos con tendencia realista"""
-    base = CRYPTOS[symbol]["base"]
-    volatility = CRYPTOS[symbol]["volatilidad"]
+    info = CRYPTOS[symbol]
+    base = info["base"]
+    volatility = info["volatilidad"]
     hours = days * 24
     timestamps = []
     opens = []
@@ -170,7 +167,7 @@ def send_telegram(message):
         except:
             pass
 
-# Estado
+# --- Estado de sesión ---
 if "last_signals" not in st.session_state:
     st.session_state.last_signals = {sym: "" for sym in CRYPTOS}
 if "price_history" not in st.session_state:
@@ -180,11 +177,11 @@ if "last_report_time" not in st.session_state:
 if "current_prices" not in st.session_state:
     st.session_state.current_prices = {sym: CRYPTOS[sym]["base"] for sym in CRYPTOS}
 
-# Interfaz
+# --- Interfaz ---
 st.sidebar.header("⚙️ Configuración")
 refresh_interval = st.sidebar.slider("Actualizar cada (segundos)", 5, 30, 10)
 auto_refresh = st.sidebar.checkbox("Auto-refrescar", value=True)
-st.sidebar.warning("⚠️ Modo simulado - datos sintéticos para pruebas (sin internet)")
+st.sidebar.warning("⚠️ Modo simulado - datos sintéticos. No requiere internet.")
 
 fng_val, fng_label = generate_fear_greed()
 st.sidebar.metric("😨 Fear & Greed (sim)", f"{fng_val}/100", fng_label)
@@ -226,13 +223,13 @@ with tab1:
             st.markdown("---")
 
 with tab2:
-    selected = st.selectbox("Selecciona criptomoneda", list(CRYPTOS.keys()), format_func=lambda x: CRYPTOS[x]["name"])
-    df_hist = generate_ohlc(selected, days=3)
-    if df_hist is not None:
-        fig = px.line(df_hist, x="datetime", y="close", title=f"{CRYPTOS[selected]['name']} - Precio horario simulado")
+    selected_sym = st.selectbox("Selecciona criptomoneda", list(CRYPTOS.keys()), format_func=lambda x: CRYPTOS[x]["name"])
+    df_hist = generate_ohlc(selected_sym, days=3)   # <--- Aquí se define df_hist
+    if df_hist is not None and not df_hist.empty:
+        fig = px.line(df_hist, x="datetime", y="close", title=f"{CRYPTOS[selected_sym]['name']} - Precio horario simulado")
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("No se pudieron generar datos")
+        st.info("No se pudieron generar datos históricos.")
 
 with tab3:
     st.subheader("⏰ Mejores y Peores Horas del Día (CDMX) - Datos simulados")
@@ -256,7 +253,7 @@ with tab3:
         else:
             st.write(f"⚠️ {info['name']}: Datos insuficientes")
 
-# Reporte automático cada 8 horas (simulado, no molesta)
+# --- Reporte automático cada 8 horas (Telegram) ---
 now_ts = datetime.now().timestamp()
 if now_ts - st.session_state.last_report_time >= 8 * 3600:
     st.session_state.last_report_time = now_ts
