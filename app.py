@@ -14,35 +14,30 @@ TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
 TELEGRAM_CHAT_ID = "5835990242"
 
 def send_telegram(message, parse_mode="Markdown"):
-    """Envía mensaje a Telegram y retorna True si éxito."""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": parse_mode}
         r = requests.post(url, json=payload, timeout=10)
-        if r.status_code == 200:
-            return True
-        else:
-            st.error(f"Telegram error: {r.status_code}")
-            return False
+        return r.status_code == 200
     except Exception as e:
-        st.error(f"Telegram exception: {e}")
+        st.error(f"Error Telegram: {e}")
         return False
 
-# ==================== ESTRATEGIA ====================
-BUY_THRESHOLD = 60
-SELL_THRESHOLD = 45
-STOP_LOSS_PCT = 5.0
-TAKE_PROFIT_PCT = 10.0
-TRAILING_STOP_PCT = 3.0
+# ==================== ESTRATEGIA (MÁS AGRESIVA PARA VENDER RÁPIDO) ====================
+BUY_THRESHOLD = 55          # Compra cuando el puntaje supera 55 (antes 60)
+SELL_THRESHOLD = 50         # Vende cuando el puntaje baja de 50 (antes 45)
+STOP_LOSS_PCT = 3.0         # Stop loss al 3% (antes 5%)
+TAKE_PROFIT_PCT = 8.0       # Take profit al 8% (antes 10%)
+TRAILING_STOP_PCT = 2.0     # Trailing stop al 2% (antes 3%)
 MAX_POSITION_SIZE_USDT = 50.0
 MAX_DAILY_TRADES = 10
 COMMISSION_PCT = 0.1
 SLIPPAGE_PCT = 0.05
 REFRESH_INTERVAL_SEC = 60
 HEARTBEAT_CYCLES = 30
-MIN_HISTORY_LEN = 3   # Reducido de 5 a 3 para empezar a operar antes
+MIN_HISTORY_LEN = 3
 
-# ==================== DATOS DE SIMULACIÓN (FALLBACK) ====================
+# ==================== DATOS DE SIMULACIÓN ====================
 REAL_BASES = {"BTC": 63000, "ETH": 1670}
 SIM_PRICES = {"BTC": 63000, "ETH": 1670}
 SIM_CHANGES = {"BTC": 0.0, "ETH": 0.0}
@@ -65,10 +60,7 @@ if "balance" not in st.session_state:
     st.session_state.last_fail = 0
     st.session_state.last_score = {"BTC": 50, "ETH": 50}
 
-# Crear carpeta para logs
 os.makedirs("data", exist_ok=True)
-
-# Cargar historial de trades
 if os.path.exists("data/trades.csv") and not st.session_state.trades:
     try:
         df = pd.read_csv("data/trades.csv")
@@ -99,7 +91,6 @@ def get_price(symbol):
         else:
             st.session_state.last_fail = now
             st.session_state.use_real = False
-    # Simulación realista
     base = REAL_BASES[symbol]
     last_price = SIM_PRICES.get(symbol, base)
     change_pct = random.uniform(-0.015, 0.015)
@@ -222,7 +213,6 @@ def check_trailing_stop(symbol, current_price):
     stop_price = high * (1 - TRAILING_STOP_PCT / 100)
     return current_price <= stop_price
 
-# ==================== EJECUCIÓN DE ÓRDENES ====================
 def execute_trade(symbol, action, price, exit_reason=""):
     if action == "BUY":
         if not can_trade():
@@ -247,7 +237,7 @@ def execute_trade(symbol, action, price, exit_reason=""):
         if exit_reason:
             msg += f"\n*Motivo:* {exit_reason}"
         return qty, msg
-    else:  # SELL
+    else:
         qty = st.session_state.positions.get(symbol, 0)
         if qty <= 0:
             return None, "❌ No hay posición para vender"
@@ -269,14 +259,14 @@ def execute_trade(symbol, action, price, exit_reason=""):
         return qty, msg
 
 # ==================== INTERFAZ STREAMLIT ====================
-st.set_page_config(page_title="Crypto Trading Bot Pro", layout="wide")
-st.title("🤖 Crypto Trading Bot Pro - Alertas Garantizadas")
+st.set_page_config(page_title="Crypto Trading Bot Pro - Venta Rápida", layout="wide")
+st.title("🤖 Crypto Bot - Venta Rápida (Umbrales Agresivos)")
 
 st.sidebar.header("⚙️ Configuración")
 refresh = st.sidebar.slider("Intervalo (segundos)", 30, 180, REFRESH_INTERVAL_SEC)
 auto = st.sidebar.checkbox("Auto-refrescar", value=True)
 buy_th = st.sidebar.number_input("Umbral COMPRA", 0, 100, BUY_THRESHOLD, 5)
-sell_th = st.sidebar.number_input("Umbral VENTA", 0, 100, SELL_THRESHOLD, 5)
+sell_th = st.sidebar.number_input("Umbral VENTA (más alto = vende antes)", 0, 100, SELL_THRESHOLD, 5)
 
 st.sidebar.subheader("💰 Cartera")
 st.sidebar.metric("Saldo USDT", f"${st.session_state.balance:,.2f}")
@@ -295,8 +285,8 @@ if st.sidebar.button("Reiniciar simulación"):
     st.rerun()
 
 if st.sidebar.button("📢 Enviar alerta de prueba"):
-    send_telegram("🧪 Alerta de prueba - Bot activo")
-    st.success("Alerta enviada a Telegram")
+    send_telegram("🧪 Alerta de prueba - Bot venta rápida")
+    st.success("Alerta enviada")
 
 if st.session_state.use_real:
     st.success("✅ Modo REAL (Binance)")
@@ -323,10 +313,10 @@ st.session_state.cycle_count += 1
 now = time.time()
 gap = now - st.session_state.last_cycle_time
 if gap > 300:
-    send_telegram(f"⚠️ Reanudación tras {gap:.0f}s de inactividad")
+    send_telegram(f"⚠️ Reanudación tras {gap:.0f}s")
 st.session_state.last_cycle_time = now
 if st.session_state.cycle_count % HEARTBEAT_CYCLES == 0:
-    send_telegram(f"💓 Heartbeat - Ciclo {st.session_state.cycle_count} | Fuente: {'Real' if st.session_state.use_real else 'Sim'}")
+    send_telegram(f"💓 Heartbeat ciclo {st.session_state.cycle_count} | Umbral VENTA={sell_th}")
 
 # ==================== DECISIONES Y ALERTAS ====================
 for sym in ["BTC", "ETH"]:
@@ -338,13 +328,13 @@ for sym in ["BTC", "ETH"]:
         continue
     score = calculate_score(price, change, fng, hist)
     
-    # Alerta por cambio significativo de puntaje
+    # Alerta cambio puntaje
     last_score = st.session_state.last_score.get(sym, 50)
     if abs(score - last_score) >= 3:
-        send_telegram(f"📊 *{sym}* Puntaje cambió: {last_score:.1f} → {score:.1f}")
+        send_telegram(f"📊 *{sym}* Puntaje: {last_score:.1f} → {score:.1f}")
         st.session_state.last_score[sym] = score
     
-    # Señal base
+    # Acción según umbrales de la interfaz (no los fijos)
     if score >= buy_th:
         action = "BUY"
     elif score <= sell_th:
@@ -352,7 +342,7 @@ for sym in ["BTC", "ETH"]:
     else:
         action = "HOLD"
     
-    # Gestión de riesgos
+    # Riesgos
     exit_reason = None
     if st.session_state.positions.get(sym, 0) > 0:
         if check_stop_loss(sym, price):
@@ -365,7 +355,6 @@ for sym in ["BTC", "ETH"]:
             action = "SELL"
             exit_reason = f"Trailing Stop ({TRAILING_STOP_PCT}%)"
     
-    # Ejecutar orden si cambia la acción
     last_act = st.session_state.last_action.get(sym)
     if (action != last_act and action in ("BUY", "SELL")):
         qty, msg = execute_trade(sym, action, price, exit_reason)
@@ -408,7 +397,7 @@ with col1:
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True)
     st.metric("Fear & Greed", f"{fng}/100 ({fng_label})")
-    st.caption(f"Ciclo: {st.session_state.cycle_count} | Fuente: {'Real' if source=='real' else 'Sim'}")
+    st.caption(f"Ciclo: {st.session_state.cycle_count} | Venta si score ≤ {sell_th}")
 
 with col2:
     st.subheader("📜 Historial de Operaciones")
@@ -416,9 +405,8 @@ with col2:
         for ts, msg in reversed(st.session_state.trades[-15:]):
             st.text(f"{ts.strftime('%H:%M:%S')} - {msg[:80]}...")
     else:
-        st.caption("Aún sin operaciones. Esperando cambios de señal.")
+        st.caption("Esperando operaciones...")
 
-# ==================== AUTO REFRESCO ====================
 if auto:
     time.sleep(refresh)
     st.rerun()
