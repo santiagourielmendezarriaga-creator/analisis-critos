@@ -6,6 +6,7 @@ import random
 import requests
 from datetime import datetime, timedelta, timezone
 from collections import deque
+import plotly.express as px
 
 st.set_page_config(page_title="Crypto Simulator Pro", layout="wide")
 st.title("📊 Crypto Analyst - Modo Simulado (estable)")
