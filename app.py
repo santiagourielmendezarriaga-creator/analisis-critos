@@ -11,8 +11,8 @@ from collections import deque
 import random
 
 # ==================== CONFIGURACIÓN GLOBAL ====================
-st.set_page_config(page_title="Crypto Analyst Pro 90s", layout="wide", page_icon="📈")
-st.title("📊 Crypto Analyst Pro - Trading Signals & Optimal Hours (90s refresh)")
+st.set_page_config(page_title="Crypto Analyst 5min", layout="wide", page_icon="📈")
+st.title("📊 Crypto Analyst - Trading Signals (Actualización cada 5 minutos)")
 
 # Telegram (cambia por tus datos)
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
@@ -21,54 +21,52 @@ TELEGRAM_CHAT_ID = "5835990242"
 # Zona horaria Ciudad de México
 CDMX_TZ = timezone(timedelta(hours=-6))
 
-# Lista reducida de criptomonedas para minimizar peticiones
+# Lista de criptomonedas (solo 3 para minimizar peticiones)
 CRYPTOS = {
-    "bitcoin": {"name": "Bitcoin", "symbol": "BTC", "priority": 1},
-    "ethereum": {"name": "Ethereum", "symbol": "ETH", "priority": 2},
-    "solana": {"name": "Solana", "symbol": "SOL", "priority": 3},
-    "cardano": {"name": "Cardano", "symbol": "ADA", "priority": 4},
+    "bitcoin": {"name": "Bitcoin", "symbol": "BTC"},
+    "ethereum": {"name": "Ethereum", "symbol": "ETH"},
+    "solana": {"name": "Solana", "symbol": "SOL"},
 }
 
 # Configuración de reintentos y límite de tasa
 RETRY_ATTEMPTS = 2
-BASE_DELAY = 3  # segundos iniciales
+BASE_DELAY = 5       # segundos
 MAX_DELAY = 30
-# Límite de peticiones: máximo 12 por minuto (1 cada 5 segundos en promedio)
-MAX_REQUESTS_PER_MINUTE = 12
-REQUEST_HISTORY = deque(maxlen=MAX_REQUESTS_PER_MINUTE)
+MAX_REQUESTS_PER_5MIN = 10   # máximo 10 peticiones cada 5 minutos (2 por minuto)
+REQUEST_HISTORY = deque(maxlen=MAX_REQUESTS_PER_5MIN)
+REQUEST_WINDOW = 300  # 5 minutos en segundos
 
 def rate_limit_wait():
-    """Espera si hemos superado el límite de peticiones por minuto"""
+    """Espera si hemos superado el límite de peticiones en la ventana de 5 minutos"""
     now = time.time()
-    if len(REQUEST_HISTORY) == REQUEST_HISTORY.maxlen:
+    # Limpiar entradas más antiguas que la ventana
+    while REQUEST_HISTORY and (now - REQUEST_HISTORY[0]) > REQUEST_WINDOW:
+        REQUEST_HISTORY.popleft()
+    if len(REQUEST_HISTORY) >= MAX_REQUESTS_PER_5MIN:
         oldest = REQUEST_HISTORY[0]
-        elapsed = now - oldest
-        if elapsed < 60:
-            wait = 60 - elapsed + random.uniform(0.5, 1.5)
-            time.sleep(wait)
+        wait_time = REQUEST_WINDOW - (now - oldest) + random.uniform(1, 3)
+        time.sleep(wait_time)
     REQUEST_HISTORY.append(now)
 
-# ==================== FUNCIONES DE RED ROBUSTAS ====================
 @retry(stop=stop_after_attempt(RETRY_ATTEMPTS),
        wait=wait_exponential(multiplier=BASE_DELAY, min=BASE_DELAY, max=MAX_DELAY))
 def safe_get(url, params=None, timeout=20):
-    """Realiza petición GET con reintentos y backoff, respetando rate limit"""
+    """Realiza petición GET con reintentos y respeto de tasa"""
     rate_limit_wait()
     try:
         response = requests.get(url, params=params, timeout=timeout)
         if response.status_code == 429:
-            # Too Many Requests: esperar más y reintentar
-            time.sleep(10)
+            time.sleep(15)
             raise requests.exceptions.RequestException("429 Too Many Requests")
         response.raise_for_status()
         return response.json()
-    except requests.exceptions.RequestException as e:
-        st.warning(f"Error de red: {e}. Reintentando...")
+    except Exception as e:
+        st.warning(f"Error: {e}. Reintentando...")
         raise
 
 def get_current_price(crypto_id):
     """Obtiene precio actual y cambio 24h"""
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={crypto_id}&vs_currency=usd&include_24hr_change=true"
+    url = f"https://api.coingecko.com/api/v3/simple/price?ids={crypto_id}&vs_currencies=usd&include_24hr_change=true"
     try:
         data = safe_get(url, timeout=15)
         if crypto_id in data:
@@ -80,7 +78,7 @@ def get_current_price(crypto_id):
     return None, None
 
 def get_fear_greed():
-    """Obtiene índice de miedo y codicia con caché de 1 hora"""
+    """Índice de miedo y codicia (cache 1 hora)"""
     if "fg_last_update" in st.session_state and datetime.now().timestamp() - st.session_state.fg_last_update < 3600:
         return st.session_state.fear_greed
     try:
@@ -93,9 +91,8 @@ def get_fear_greed():
     except:
         return 50, "Neutral"
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)  # 30 minutos de caché
 def get_ohlc(crypto_id, days=2):
-    """Obtiene datos OHLC horarios"""
     url = f"https://api.coingecko.com/api/v3/coins/{crypto_id}/ohlc?vs_currency=usd&days={days}"
     try:
         data = safe_get(url, timeout=15)
@@ -108,9 +105,8 @@ def get_ohlc(crypto_id, days=2):
     except:
         return None
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_historical_prices(crypto_id, days=7):
-    """Obtiene precios diarios para gráfica de tendencia"""
     url = f"https://api.coingecko.com/api/v3/coins/{crypto_id}/market_chart?vs_currency=usd&days={days}&interval=daily"
     try:
         data = safe_get(url, timeout=15)
@@ -121,10 +117,9 @@ def get_historical_prices(crypto_id, days=7):
     except:
         return pd.DataFrame()
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_top_crypto():
-    """Obtiene top 15 criptomonedas (menos peticiones)"""
-    url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=15&sparkline=false"
+    url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=10&sparkline=false"
     try:
         data = safe_get(url, timeout=15)
         df = pd.DataFrame(data)
@@ -138,7 +133,7 @@ def get_top_crypto():
     except:
         return pd.DataFrame()
 
-# ==================== INDICADORES TÉCNICOS ====================
+# ==================== INDICADORES Y SEÑAL ====================
 def compute_rsi(prices, period=14):
     if len(prices) < period + 1:
         return 50
@@ -150,8 +145,7 @@ def compute_rsi(prices, period=14):
     if avg_loss == 0:
         return 100
     rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    return 100 - (100 / (1 + rs))
 
 def compute_macd(prices, fast=12, slow=26, signal=9):
     if len(prices) < slow + signal:
@@ -160,24 +154,21 @@ def compute_macd(prices, fast=12, slow=26, signal=9):
     ema_slow = pd.Series(prices).ewm(span=slow, adjust=False).mean()
     macd_line = ema_fast - ema_slow
     signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    histogram = macd_line - signal_line
-    if len(histogram) >= 2:
-        cross_up = histogram.iloc[-1] > 0 and histogram.iloc[-2] <= 0
-        cross_down = histogram.iloc[-1] < 0 and histogram.iloc[-2] >= 0
-        return histogram.iloc[-1], cross_up, cross_down
+    hist = macd_line - signal_line
+    if len(hist) >= 2:
+        cross_up = hist.iloc[-1] > 0 and hist.iloc[-2] <= 0
+        cross_down = hist.iloc[-1] < 0 and hist.iloc[-2] >= 0
+        return hist.iloc[-1], cross_up, cross_down
     return 0, False, False
 
 def compute_moving_averages(prices, short=7, long=20):
     if len(prices) < long:
         return None, None
-    ma_short = np.mean(prices[-short:])
-    ma_long = np.mean(prices[-long:])
-    return ma_short, ma_long
+    return np.mean(prices[-short:]), np.mean(prices[-long:])
 
-# ==================== SEÑAL DE COMPRA/VENTA ====================
 def generate_signal(price, change_24h, fng_value, price_history):
     score = 50
-    # Fear & Greed
+    # Fear & Greed (20 pts)
     if fng_value < 25:
         score += 20
     elif fng_value < 40:
@@ -186,7 +177,7 @@ def generate_signal(price, change_24h, fng_value, price_history):
         score -= 20
     elif fng_value > 60:
         score -= 10
-    # Cambio 24h
+    # Cambio 24h (12 pts)
     if change_24h > 3:
         score += 12
     elif change_24h > 1:
@@ -195,7 +186,7 @@ def generate_signal(price, change_24h, fng_value, price_history):
         score -= 12
     elif change_24h < -1:
         score -= 6
-    # RSI
+    # RSI (15 pts)
     if len(price_history) >= 20:
         rsi = compute_rsi(list(price_history))
         if rsi < 30:
@@ -206,25 +197,21 @@ def generate_signal(price, change_24h, fng_value, price_history):
             score -= 15
         elif rsi > 60:
             score -= 8
-    # MACD
+    # MACD (12 pts)
     if len(price_history) >= 34:
-        hist, cross_up, cross_down = compute_macd(list(price_history))
+        _, cross_up, cross_down = compute_macd(list(price_history))
         if cross_up:
             score += 12
         elif cross_down:
             score -= 12
-        elif hist > 0:
-            score += 5
-        elif hist < 0:
-            score -= 5
-    # Medias móviles
-    ma_short, ma_long = compute_moving_averages(list(price_history))
-    if ma_short and ma_long:
-        if ma_short > ma_long:
+    # Medias móviles (10 pts)
+    short_ma, long_ma = compute_moving_averages(list(price_history))
+    if short_ma and long_ma:
+        if short_ma > long_ma:
             score += 10
         else:
             score -= 10
-    # Tendencia reciente
+    # Tendencia reciente (5 pts)
     if len(price_history) >= 5:
         trend = np.mean(np.diff(list(price_history)[-5:]))
         if trend > 0:
@@ -243,7 +230,6 @@ def generate_signal(price, change_24h, fng_value, price_history):
     else:
         return "⚪ MANTENER", score, "Sin tendencia clara"
 
-# ==================== HORARIOS ÓPTIMOS ====================
 def get_best_worst_hours(crypto_id):
     df = get_ohlc(crypto_id, days=2)
     if df is None or df.empty:
@@ -254,11 +240,8 @@ def get_best_worst_hours(crypto_id):
     if hourly.empty:
         return None, None
     hourly_sorted = hourly.sort_values('mean', ascending=False)
-    best = hourly_sorted.head(3)
-    worst = hourly_sorted.tail(3)
-    return best, worst
+    return hourly_sorted.head(3), hourly_sorted.tail(3)
 
-# ==================== TELEGRAM ====================
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
@@ -266,7 +249,7 @@ def send_telegram(message):
     except:
         pass
 
-# ==================== INICIALIZACIÓN DE ESTADO ====================
+# ==================== ESTADO DE SESIÓN ====================
 if "last_signals" not in st.session_state:
     st.session_state.last_signals = {cid: "" for cid in CRYPTOS}
 if "price_history" not in st.session_state:
@@ -276,26 +259,25 @@ if "last_report_time" not in st.session_state:
 if "fear_greed" not in st.session_state:
     st.session_state.fear_greed = (50, "Neutral")
 
-# ==================== INTERFAZ STREAMLIT ====================
+# ==================== INTERFAZ ====================
 def main():
-    # Sidebar
     st.sidebar.header("⚙️ Configuración")
-    # El intervalo mínimo forzado a 90 segundos (opciones de 90 a 300)
-    refresh_interval = st.sidebar.slider("Intervalo de actualización (segundos)", 90, 300, 90, step=15)
+    # Intervalo mínimo 300 segundos, máximo 600 (10 minutos)
+    refresh_interval = st.sidebar.slider("Intervalo de actualización (segundos)", 300, 600, 300, step=30)
     auto_refresh = st.sidebar.checkbox("Auto-refrescar", value=True)
-    st.sidebar.info("✅ Intervalo mínimo 90 segundos para evitar bloqueos de API")
+    st.sidebar.info("🔒 Actualización cada 5 minutos para evitar bloqueos de API")
     
     fng_val, fng_label = get_fear_greed()
     st.sidebar.metric("😨 Fear & Greed", f"{fng_val}/100", fng_label)
     
     with st.sidebar.expander("📈 Estrategia"):
         st.markdown("""
-        - **Fear & Greed** (20%): Miedo → COMPRA, Avaricia → VENTA
-        - **Cambio 24h** (12%): Subidas >3% suman a COMPRA
-        - **RSI** (15%): Sobreventa (<30) COMPRA
-        - **MACD** (12%): Cruces alcistas/bajistas
-        - **Medias móviles** (10%): MM7 > MM20 es alcista
-        - **Tendencia** (5%): Últimas 5 lecturas
+        - Fear & Greed (20%)
+        - Cambio 24h (12%)
+        - RSI (15%)
+        - MACD (12%)
+        - Medias móviles (10%)
+        - Tendencia (5%)
         """)
     
     tab1, tab2, tab3 = st.tabs(["📊 Top & Señales", "📈 Gráficos", "⏰ Horarios"])
@@ -303,12 +285,12 @@ def main():
     with tab1:
         col1, col2 = st.columns([2, 1])
         with col1:
-            st.subheader("🏆 Top 15 Criptomonedas")
+            st.subheader("🏆 Top 10 Criptomonedas")
             top_df = get_top_crypto()
             if not top_df.empty:
                 st.dataframe(top_df, use_container_width=True, height=450)
             else:
-                st.error("No se pudo cargar el top.")
+                st.error("No se pudo cargar el top. Reintentando en 5 minutos...")
         with col2:
             st.subheader("📡 Señales en Tiempo Real")
             for crypto_id, info in CRYPTOS.items():
@@ -317,23 +299,21 @@ def main():
                     st.session_state.price_history[crypto_id].append(price)
                     signal, score, desc = generate_signal(price, change, fng_val, st.session_state.price_history[crypto_id])
                     if signal != st.session_state.last_signals[crypto_id] and ("COMPRAR" in signal or "VENDER" in signal):
-                        alert_msg = f"🚨 *{info['name']}* 🚨\n{signal}\n💰 Precio: ${price:,.2f}\n📈 24h: {change:+.2f}%\n😨 Fear: {fng_val}/100\n🎯 Score: {score}/100\n_{desc}_"
+                        alert_msg = f"🚨 *{info['name']}* 🚨\n{signal}\n💰 ${price:,.2f}\n📈 24h: {change:+.2f}%\n😨 Fear: {fng_val}/100\n🎯 Score: {score}/100"
                         send_telegram(alert_msg)
                         st.session_state.last_signals[crypto_id] = signal
                     st.metric(info['name'], f"${price:,.2f}", f"{change:+.2f}%")
                     st.write(f"**{signal}** (Score: {score}/100)")
                     st.caption(desc)
                 else:
-                    st.warning(f"{info['name']}: Sin datos (posible límite API)")
+                    st.warning(f"{info['name']}: Sin datos (esperando reintento)")
                 st.markdown("---")
     
     with tab2:
         selected = st.selectbox("Selecciona criptomoneda", list(CRYPTOS.keys()), format_func=lambda x: CRYPTOS[x]['name'])
-        info = CRYPTOS[selected]
-        st.subheader(f"📉 {info['name']} - Precio últimos 7 días")
         hist_df = get_historical_prices(selected, days=7)
         if not hist_df.empty:
-            fig = px.line(hist_df, x='date', y='price', title=f"Tendencia de {info['name']}", markers=True)
+            fig = px.line(hist_df, x='date', y='price', title=f"{CRYPTOS[selected]['name']} - últimos 7 días", markers=True)
             fig.update_layout(height=400)
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -365,7 +345,7 @@ def main():
     now_ts = datetime.now().timestamp()
     if now_ts - st.session_state.last_report_time >= 8 * 3600:
         st.session_state.last_report_time = now_ts
-        report_lines = ["📊 *REPORTE DE HORARIOS* 📊", ""]
+        report_lines = ["📊 *REPORTE DE HORARIOS*", ""]
         for crypto_id, info in CRYPTOS.items():
             best, worst = get_best_worst_hours(crypto_id)
             if best is not None and not best.empty:
