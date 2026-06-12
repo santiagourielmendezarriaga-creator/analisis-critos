@@ -10,7 +10,6 @@ from collections import deque
 from datetime import datetime
 
 # ==================== CONFIGURACIÓN ====================
-# --- Telegram ---
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
 TELEGRAM_CHAT_ID = "5835990242"
 
@@ -36,9 +35,9 @@ COMMISSION_PCT = 0.1
 SLIPPAGE_PCT = 0.05
 REFRESH_INTERVAL_SEC = 60
 HEARTBEAT_CYCLES = 30
-MIN_HISTORY_LEN = 5
+MIN_HISTORY_LEN = 2  # <<--- CAMBIADO DE 5 A 2
 
-# --- Datos de mercado (simulación de respaldo) ---
+# --- Datos de simulación ---
 REAL_BASES = {"BTC": 63000, "ETH": 1670}
 SIM_PRICES = {"BTC": 63000, "ETH": 1670}
 SIM_CHANGES = {"BTC": 0.0, "ETH": 0.0}
@@ -57,13 +56,10 @@ if "balance" not in st.session_state:
     st.session_state.last_cycle_time = time.time()
     st.session_state.daily_trades = 0
     st.session_state.last_trade_day = datetime.now().day
-    st.session_state.use_real = True          # Intentar datos reales por defecto
+    st.session_state.use_real = True
     st.session_state.last_fail = 0
 
-# Crear carpeta para logs
 os.makedirs("data", exist_ok=True)
-
-# Cargar historial de trades
 if os.path.exists("data/trades.csv") and not st.session_state.trades:
     try:
         df = pd.read_csv("data/trades.csv")
@@ -72,57 +68,36 @@ if os.path.exists("data/trades.csv") and not st.session_state.trades:
     except:
         pass
 
-# ==================== FUNCIONES DE MERCADO (CRYPTOCOMPARE) ====================
-def get_cryptocompare_price(symbol):
-    """Obtiene precio real desde Cryptocompare (más estable que Binance)"""
+# ==================== FUNCIONES DE MERCADO (BINANCE + FALLBACK) ====================
+def get_binance_price(symbol):
     try:
-        # Precio actual
-        url_price = f"https://min-api.cryptocompare.com/data/price?fsym={symbol}&tsyms=USD"
-        resp = requests.get(url_price, timeout=5)
-        if resp.status_code != 200:
-            return None, None
-        price = float(resp.json()["USD"])
-        # Cambio 24h
-        url_change = f"https://min-api.cryptocompare.com/data/pricemultifull?fsyms={symbol}&tsyms=USD"
-        resp2 = requests.get(url_change, timeout=5)
-        if resp2.status_code == 200:
-            data = resp2.json()
-            change = data["RAW"][symbol]["USD"]["CHANGEPCT24HOUR"]
-        else:
-            change = 0.0
-        return price, change
-    except Exception as e:
-        print(f"Error Cryptocompare: {e}")
+        pair = f"{symbol}USDT"
+        url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={pair}"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            return float(data['lastPrice']), float(data['priceChangePercent'])
+        return None, None
+    except:
         return None, None
 
 def get_price(symbol):
-    """Obtiene precio real (si es posible) o simulado realista"""
     now = time.time()
-    # Si estamos en modo real y no ha fallado recientemente
-    if st.session_state.use_real and (now - st.session_state.last_fail > 300):
-        price, change = get_cryptocompare_price(symbol)
-        if price is not None and price > 0:
-            # Validar rangos razonables
-            if (symbol == "BTC" and 30000 < price < 100000) or (symbol == "ETH" and 500 < price < 5000):
-                return price, change, "real"
-        # Si falla, cambiar a simulación por 5 minutos
-        st.session_state.last_fail = now
-        st.session_state.use_real = False
-        # Opcional: enviar alerta de cambio a simulación
-        if st.session_state.cycle_count > 0:
-            send_telegram(f"⚠️ *Cambio a modo simulación* - No se pudieron obtener datos reales de Cryptocompare.")
-    
+    # Modo real: intentar Binance
+    if st.session_state.use_real and (now - st.session_state.last_fail > 120):  # reintento cada 2 min
+        price, change = get_binance_price(symbol)
+        if price and ((symbol=="BTC" and 30000<price<100000) or (symbol=="ETH" and 500<price<5000)):
+            return price, change, "real"
+        else:
+            st.session_state.last_fail = now
+            st.session_state.use_real = False
     # Modo simulado (realista)
     base = REAL_BASES[symbol]
     last_price = SIM_PRICES.get(symbol, base)
-    # Movimiento aleatorio realista (entre -1.5% y +1.5% cada ciclo)
     change_pct = random.uniform(-0.015, 0.015)
     new_price = last_price * (1 + change_pct)
-    # Limitar desviación máxima del 10% respecto al base
-    new_price = max(base * 0.9, min(base * 1.1, new_price))
-    # Simular cambio 24h (tendencia suave)
-    sim_change = SIM_CHANGES.get(symbol, 0.0)
-    sim_change += random.uniform(-0.3, 0.3)
+    new_price = max(base*0.9, min(base*1.1, new_price))
+    sim_change = SIM_CHANGES.get(symbol, 0.0) + random.uniform(-0.3, 0.3)
     sim_change = max(-10, min(10, sim_change))
     SIM_PRICES[symbol] = new_price
     SIM_CHANGES[symbol] = sim_change
@@ -138,7 +113,7 @@ def get_fear_greed():
         pass
     return 50, "Neutral"
 
-# ==================== INDICADORES TÉCNICOS ====================
+# ==================== INDICADORES ====================
 def compute_rsi(prices, period=14):
     if len(prices) < period + 1:
         return 50
@@ -172,14 +147,10 @@ def compute_moving_averages(prices, short=7, long=20):
         return None, None
     return np.mean(prices[-short:]), np.mean(prices[-long:])
 
-# ==================== ESTRATEGIA DE PUNTAJE ====================
 def calculate_score(price, change_24h, fng, price_history):
     score = 50
-    # Fear & Greed (25%)
     score += (50 - fng) * 0.5
-    # Cambio 24h (12%)
     score += np.clip(change_24h * 2, -12, 12)
-    # RSI (15%)
     if len(price_history) >= 15:
         rsi = compute_rsi(price_history)
         if rsi < 30:
@@ -190,23 +161,20 @@ def calculate_score(price, change_24h, fng, price_history):
             score -= 15
         elif rsi > 60:
             score -= 8
-    # MACD (12%)
     if len(price_history) >= 35:
         _, cross_up, cross_down = compute_macd(price_history)
         if cross_up:
             score += 12
         elif cross_down:
             score -= 12
-    # Medias móviles (10%)
     short_ma, long_ma = compute_moving_averages(price_history)
     if short_ma and long_ma:
         if short_ma > long_ma:
             score += 10
         else:
             score -= 10
-    # Tendencia reciente (6%)
-    if len(price_history) >= 5:
-        trend = np.mean(np.diff(price_history[-5:]))
+    if len(price_history) >= MIN_HISTORY_LEN:
+        trend = np.mean(np.diff(price_history[-MIN_HISTORY_LEN:]))
         score += 6 if trend > 0 else -6
     return np.clip(score, 0, 100)
 
@@ -223,22 +191,19 @@ def record_trade():
 
 def check_stop_loss(symbol, current_price):
     entry = st.session_state.entry_price.get(symbol, 0)
-    if entry == 0:
-        return False
+    if entry == 0: return False
     loss = (current_price - entry) / entry * 100
     return loss <= -STOP_LOSS_PCT
 
 def check_take_profit(symbol, current_price):
     entry = st.session_state.entry_price.get(symbol, 0)
-    if entry == 0:
-        return False
+    if entry == 0: return False
     profit = (current_price - entry) / entry * 100
     return profit >= TAKE_PROFIT_PCT
 
 def check_trailing_stop(symbol, current_price):
     entry = st.session_state.entry_price.get(symbol, 0)
-    if entry == 0:
-        return False
+    if entry == 0: return False
     high = st.session_state.highest_price.get(symbol, current_price)
     if current_price > high:
         st.session_state.highest_price[symbol] = current_price
@@ -246,7 +211,6 @@ def check_trailing_stop(symbol, current_price):
     stop_price = high * (1 - TRAILING_STOP_PCT / 100)
     return current_price <= stop_price
 
-# ==================== EJECUCIÓN DE ÓRDENES (SIMULADA) ====================
 def execute_trade(symbol, action, price):
     if action == "BUY":
         if not can_trade():
@@ -254,8 +218,8 @@ def execute_trade(symbol, action, price):
         amount_usdt = min(MAX_POSITION_SIZE_USDT, st.session_state.balance)
         if amount_usdt <= 0:
             return "❌ Saldo insuficiente"
-        eff_price = price * (1 + SLIPPAGE_PCT / 100)
-        commission = amount_usdt * COMMISSION_PCT / 100
+        eff_price = price * (1 + SLIPPAGE_PCT/100)
+        commission = amount_usdt * COMMISSION_PCT/100
         amount_after = amount_usdt - commission
         qty = amount_after / eff_price
         st.session_state.balance -= amount_usdt
@@ -263,42 +227,31 @@ def execute_trade(symbol, action, price):
         st.session_state.entry_price[symbol] = eff_price
         st.session_state.highest_price[symbol] = eff_price
         record_trade()
-        msg = (f"🟢 *COMPRA* {symbol}\n"
-               f"Cantidad: {qty:.6f}\n"
-               f"Precio efectivo: ${eff_price:.2f}\n"
-               f"Comisión: ${commission:.2f}\n"
-               f"Saldo restante: ${st.session_state.balance:.2f}")
-        return msg
-    else:  # SELL
+        return (f"🟢 *COMPRA* {symbol}\nCantidad: {qty:.6f}\nPrecio efectivo: ${eff_price:.2f}\n"
+                f"Comisión: ${commission:.2f}\nSaldo restante: ${st.session_state.balance:.2f}")
+    else:
         qty = st.session_state.positions.get(symbol, 0)
         if qty <= 0:
             return "❌ No hay posición para vender"
-        eff_price = price * (1 - SLIPPAGE_PCT / 100)
+        eff_price = price * (1 - SLIPPAGE_PCT/100)
         gross = qty * eff_price
-        commission = gross * COMMISSION_PCT / 100
+        commission = gross * COMMISSION_PCT/100
         net = gross - commission
         st.session_state.balance += net
         st.session_state.positions[symbol] = 0
         record_trade()
-        msg = (f"🔴 *VENTA* {symbol}\n"
-               f"Cantidad: {qty:.6f}\n"
-               f"Precio efectivo: ${eff_price:.2f}\n"
-               f"Comisión: ${commission:.2f}\n"
-               f"Neto: ${net:.2f}\n"
-               f"Saldo nuevo: ${st.session_state.balance:.2f}")
-        return msg
+        return (f"🔴 *VENTA* {symbol}\nCantidad: {qty:.6f}\nPrecio efectivo: ${eff_price:.2f}\n"
+                f"Comisión: ${commission:.2f}\nNeto: ${net:.2f}\nSaldo nuevo: ${st.session_state.balance:.2f}")
 
 # ==================== INTERFAZ STREAMLIT ====================
 st.set_page_config(page_title="Crypto Trading Bot Pro", layout="wide")
-st.title("🤖 Crypto Trading Bot Pro - Datos Reales (Cryptocompare)")
+st.title("🤖 Crypto Trading Bot Pro - Binance + Simulación")
 
 st.sidebar.header("⚙️ Configuración")
 refresh = st.sidebar.slider("Intervalo (segundos)", 30, 180, REFRESH_INTERVAL_SEC)
 auto = st.sidebar.checkbox("Auto-refrescar", value=True)
-
 buy_th = st.sidebar.number_input("Umbral COMPRA", 0, 100, BUY_THRESHOLD, 5)
 sell_th = st.sidebar.number_input("Umbral VENTA", 0, 100, SELL_THRESHOLD, 5)
-st.sidebar.markdown(f"Stop Loss: {STOP_LOSS_PCT}% | Take Profit: {TAKE_PROFIT_PCT}% | Trailing: {TRAILING_STOP_PCT}%")
 
 st.sidebar.subheader("💰 Cartera")
 st.sidebar.metric("Saldo USDT", f"${st.session_state.balance:,.2f}")
@@ -317,22 +270,19 @@ if st.sidebar.button("Reiniciar simulación"):
     st.rerun()
 
 if st.sidebar.button("📢 Enviar alerta de prueba"):
-    if send_telegram("🧪 *Alerta de prueba* - Bot profesional activo"):
-        st.success("Mensaje enviado")
-    else:
-        st.error("Error")
+    send_telegram("🧪 Alerta de prueba - Bot activo")
+    st.success("Enviado")
 
-# Mostrar modo actual
 if st.session_state.use_real:
-    st.success("✅ Modo REAL activo (datos de Cryptocompare)")
+    st.success("✅ Modo REAL (Binance)")
 else:
-    st.warning("⚠️ Modo SIMULACIÓN (fallback realista) - Los datos reales fallaron temporalmente")
+    st.warning("⚠️ Modo SIMULACIÓN (fallback realista)")
     if st.button("Reintentar conectar a API real"):
         st.session_state.use_real = True
         st.session_state.last_fail = 0
         st.rerun()
 
-# ==================== OBTENER DATOS DEL MERCADO ====================
+# ==================== OBTENER DATOS ====================
 fng, fng_label = get_fear_greed()
 price_data = {}
 for sym in ["BTC", "ETH"]:
@@ -341,31 +291,26 @@ for sym in ["BTC", "ETH"]:
     price_data[sym] = (price, change, source)
     if price > 0:
         st.session_state.price_history[sym].append(price)
-        # Actualizar máximo para trailing stop
         if price > st.session_state.highest_price.get(sym, 0):
             st.session_state.highest_price[sym] = price
 
-# Control de ciclos y latido
 st.session_state.cycle_count += 1
 now = time.time()
 gap = now - st.session_state.last_cycle_time
 if gap > 300:
-    send_telegram(f"⚠️ Reanudación tras {gap:.0f} segundos de inactividad")
+    send_telegram(f"⚠️ Reanudación tras {gap:.0f}s")
 st.session_state.last_cycle_time = now
 if st.session_state.cycle_count % HEARTBEAT_CYCLES == 0:
-    send_telegram(f"💓 *Heartbeat* - Ciclo {st.session_state.cycle_count} (intervalo {refresh}s) | Fuente: {'Real' if st.session_state.use_real else 'Sim'}")
+    send_telegram(f"💓 Heartbeat ciclo {st.session_state.cycle_count} | Fuente: {'Real' if st.session_state.use_real else 'Sim'}")
 
-# ==================== LÓGICA DE DECISIÓN ====================
+# ==================== DECISIONES ====================
 for sym in ["BTC", "ETH"]:
     price, change, source = price_data[sym]
-    if price == 0:
-        continue
+    if price == 0: continue
     hist = list(st.session_state.price_history[sym])
-    if len(hist) < MIN_HISTORY_LEN:
-        continue
+    if len(hist) < MIN_HISTORY_LEN: continue
     score = calculate_score(price, change, fng, hist)
     
-    # Señal base
     if score >= buy_th:
         action = "BUY"
     elif score <= sell_th:
@@ -373,7 +318,6 @@ for sym in ["BTC", "ETH"]:
     else:
         action = "HOLD"
     
-    # Gestión de riesgos: prioridad a salidas
     exit_reason = None
     if st.session_state.positions.get(sym, 0) > 0:
         if check_stop_loss(sym, price):
@@ -386,7 +330,6 @@ for sym in ["BTC", "ETH"]:
             action = "SELL"
             exit_reason = "Trailing Stop"
     
-    # Ejecutar si cambia la acción (o si hay salida forzada)
     last_act = st.session_state.last_action.get(sym)
     if (action != last_act and action in ("BUY", "SELL")):
         msg = execute_trade(sym, action, price)
@@ -395,21 +338,20 @@ for sym in ["BTC", "ETH"]:
                 msg += f"\n*Motivo:* {exit_reason}"
             send_telegram(msg)
             st.session_state.trades.append((datetime.now(), msg))
-            # Guardar en CSV
             with open("data/trades.csv", "a") as f:
                 f.write(f"{datetime.now().isoformat()},{msg.replace(chr(10), ' ')}\n")
         st.session_state.last_action[sym] = action
 
-# ==================== MOSTRAR EN PANTALLA ====================
+# ==================== MOSTRAR ====================
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("📊 Señales en Vivo")
     rows = []
     for sym in ["BTC", "ETH"]:
-        name = "Bitcoin" if sym == "BTC" else "Ethereum"
+        name = "Bitcoin" if sym=="BTC" else "Ethereum"
         price, change, source = price_data.get(sym, (0,0,""))
         if price == 0:
-            rows.append({"Moneda": name, "Precio": "Error", "24h": "N/A", "Score": "N/A", "Señal": "ERROR"})
+            rows.append({"Moneda": name, "Precio": "Error", "24h %": "N/A", "Score": "N/A", "Señal": "ERROR"})
             continue
         hist = list(st.session_state.price_history[sym])
         if len(hist) >= MIN_HISTORY_LEN:
@@ -435,15 +377,13 @@ with col1:
     st.caption(f"Ciclo: {st.session_state.cycle_count} | Fuente: {'Real' if source=='real' else 'Sim'}")
 
 with col2:
-    st.subheader("📜 Historial de Operaciones")
+    st.subheader("📜 Últimas operaciones")
     if st.session_state.trades:
         for ts, msg in reversed(st.session_state.trades[-15:]):
             st.text(f"{ts.strftime('%H:%M:%S')} - {msg[:80]}...")
     else:
         st.caption("Aún sin operaciones")
-    st.caption("🔔 Las alertas de Telegram incluyen latidos, cambios de puntaje y órdenes.")
 
-# ==================== AUTO REFRESCO ====================
 if auto:
     time.sleep(refresh)
     st.rerun()
