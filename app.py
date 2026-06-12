@@ -7,64 +7,66 @@ import numpy as np
 from datetime import datetime, timezone, timedelta
 from collections import deque
 
-# ==================== CONFIGURACIÓN ====================
-st.set_page_config(page_title="Crypto Binance Pro", layout="wide")
-st.title("📊 Crypto Analyst - Binance API + Alertas Telegram + Horarios")
+st.set_page_config(page_title="Crypto Live Pro", layout="wide")
+st.title("📊 Crypto Analyst - API Cryptocompare (estable y gratis)")
 
-# --- Telegram (cambia por tus datos) ---
+# Telegram (cambia por tus datos)
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
 TELEGRAM_CHAT_ID = "5835990242"
 
-# --- Zona horaria CDMX ---
 CDMX_TZ = timezone(timedelta(hours=-6))
 
-# --- Pares de Binance ---
-BINANCE_PAIRS = {
-    "bitcoin": {"name": "Bitcoin", "symbol": "BTC", "pair": "BTCUSDT"},
-    "ethereum": {"name": "Ethereum", "symbol": "ETH", "pair": "ETHUSDT"},
-    "solana": {"name": "Solana", "symbol": "SOL", "pair": "SOLUSDT"},
-    "cardano": {"name": "Cardano", "symbol": "ADA", "pair": "ADAUSDT"},
-    "dogecoin": {"name": "Dogecoin", "symbol": "DOGE", "pair": "DOGEUSDT"},
-    "ripple": {"name": "XRP", "symbol": "XRP", "pair": "XRPUSDT"},
+# Lista de monedas y símbolos para Cryptocompare
+CRYPTO_LIST = {
+    "BTC": "Bitcoin",
+    "ETH": "Ethereum",
+    "SOL": "Solana",
+    "ADA": "Cardano",
+    "DOGE": "Dogecoin",
+    "XRP": "XRP"
 }
 
-# ==================== FUNCIONES BINANCE ====================
-def get_binance_price(symbol_pair):
-    """Obtiene precio actual y cambio 24h"""
+def get_cryptocompare_price(symbol):
+    """Obtiene precio actual y cambio 24h desde Cryptocompare"""
     try:
-        url_price = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol_pair}"
+        # Precio actual
+        url_price = f"https://min-api.cryptocompare.com/data/price?fsym={symbol}&tsyms=USD"
         resp_price = requests.get(url_price, timeout=10)
-        price = float(resp_price.json()["price"])
-        url_24h = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol_pair}"
-        resp_24h = requests.get(url_24h, timeout=10)
-        change = float(resp_24h.json()["priceChangePercent"])
+        price = float(resp_price.json()["USD"])
+        # Cambio 24h
+        url_change = f"https://min-api.cryptocompare.com/data/pricemultifull?fsyms={symbol}&tsyms=USD"
+        resp_change = requests.get(url_change, timeout=10)
+        data = resp_change.json()
+        change = data["RAW"][symbol]["USD"]["CHANGEPCT24HOUR"]
         return price, change
-    except:
+    except Exception as e:
+        print(f"Error Cryptocompare: {e}")
         return None, None
 
-def get_binance_klines(symbol_pair, interval="1h", limit=48):
-    """Obtiene velas horarias (últimas 48h) para análisis de horarios"""
+def get_cryptocompare_histo(symbol, limit=48, aggregate=1):
+    """Obtiene datos históricos horarios (últimas 48 horas)"""
     try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol_pair}&interval={interval}&limit={limit}"
+        url = f"https://min-api.cryptocompare.com/data/v2/histohour?fsym={symbol}&tsym=USD&limit={limit}&aggregate={aggregate}"
         resp = requests.get(url, timeout=10)
         data = resp.json()
+        if data["Response"] != "Success":
+            return None
         ohlc = []
-        for candle in data:
+        for item in data["Data"]["Data"]:
             ohlc.append({
-                "timestamp": candle[0],
-                "open": float(candle[1]),
-                "high": float(candle[2]),
-                "low": float(candle[3]),
-                "close": float(candle[4])
+                "timestamp": item["time"],
+                "open": item["open"],
+                "high": item["high"],
+                "low": item["low"],
+                "close": item["close"]
             })
         df = pd.DataFrame(ohlc)
-        df["datetime"] = pd.to_datetime(df["timestamp"], unit='ms')
+        df["datetime"] = pd.to_datetime(df["timestamp"], unit='s')
         df["hour_cdmx"] = df["datetime"].dt.tz_localize('UTC').dt.tz_convert(CDMX_TZ).dt.hour
         return df
     except:
         return None
 
-# ==================== FEAR & GREED (cada hora) ====================
 def get_fear_greed():
     if "fg_last_update" in st.session_state and datetime.now().timestamp() - st.session_state.fg_last_update < 3600:
         return st.session_state.fear_greed
@@ -79,7 +81,6 @@ def get_fear_greed():
     except:
         return 50, "Neutral"
 
-# ==================== INDICADORES TÉCNICOS ====================
 def compute_rsi(prices, period=14):
     if len(prices) < period + 1:
         return 50
@@ -139,23 +140,18 @@ def generate_signal(price, change_24h, fng_value, price_history):
     else:
         return "⚪ MANTENER", score, "Sin tendencia clara"
 
-# ==================== HORARIOS ÓPTIMOS ====================
-def get_best_worst_hours(crypto_id):
-    pair = BINANCE_PAIRS[crypto_id]["pair"]
-    df = get_binance_klines(pair, limit=48)
+def get_best_worst_hours(symbol):
+    df = get_cryptocompare_histo(symbol, limit=48)
     if df is None or df.empty:
         return None, None
     df['change'] = (df['close'] - df['open']) / df['open'] * 100
     hourly = df.groupby('hour_cdmx')['change'].agg(['mean', 'count'])
-    hourly = hourly[hourly['count'] >= 2]  # horas con al menos 2 ocurrencias
+    hourly = hourly[hourly['count'] >= 2]
     if hourly.empty:
         return None, None
     hourly_sorted = hourly.sort_values('mean', ascending=False)
-    best = hourly_sorted.head(3)
-    worst = hourly_sorted.tail(3)
-    return best, worst
+    return hourly_sorted.head(3), hourly_sorted.tail(3)
 
-# ==================== TELEGRAM ====================
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
@@ -163,89 +159,82 @@ def send_telegram(message):
     except:
         pass
 
-# ==================== ESTADO DE SESIÓN ====================
+# Estado
 if "last_signals" not in st.session_state:
-    st.session_state.last_signals = {cid: "" for cid in BINANCE_PAIRS}
+    st.session_state.last_signals = {sym: "" for sym in CRYPTO_LIST}
 if "price_history" not in st.session_state:
-    st.session_state.price_history = {cid: deque(maxlen=50) for cid in BINANCE_PAIRS}
+    st.session_state.price_history = {sym: deque(maxlen=50) for sym in CRYPTO_LIST}
 if "last_report_time" not in st.session_state:
     st.session_state.last_report_time = datetime.now().timestamp() - 8*3600
 if "fear_greed" not in st.session_state:
     st.session_state.fear_greed = (50, "Neutral")
 
-# ==================== INTERFAZ ====================
 def main():
     st.sidebar.header("⚙️ Configuración")
     refresh_interval = st.sidebar.slider("Actualizar cada (segundos)", 30, 180, 60)
     auto_refresh = st.sidebar.checkbox("Auto-refrescar", value=True)
-    st.sidebar.success("✅ Usando API de Binance (sin límites estrictos)")
-    st.sidebar.info("🔔 Alertas Telegram: se enviarán cuando la señal cambie a COMPRAR o VENDER")
+    st.sidebar.success("✅ Usando API de Cryptocompare (estable y sin bloqueos)")
 
     fng_val, fng_label = get_fear_greed()
     st.sidebar.metric("😨 Fear & Greed", f"{fng_val}/100", fng_label)
 
-    # Tabs
     tab1, tab2, tab3 = st.tabs(["📊 Precios y Señales", "📈 Gráficas", "⏰ Análisis de Horarios"])
 
     with tab1:
         col1, col2 = st.columns([2, 1])
         with col1:
-            st.subheader("📊 Precios en tiempo real (Binance)")
+            st.subheader("📊 Precios en tiempo real (Cryptocompare)")
             data_rows = []
-            for cid, info in BINANCE_PAIRS.items():
-                price, change = get_binance_price(info["pair"])
+            for sym, name in CRYPTO_LIST.items():
+                price, change = get_cryptocompare_price(sym)
                 if price:
                     data_rows.append({
-                        "Cripto": info["name"],
+                        "Cripto": name,
                         "Precio (USD)": f"${price:,.2f}",
                         "24h %": f"{change:+.2f}%"
                     })
             if data_rows:
-                df_prices = pd.DataFrame(data_rows)
-                st.dataframe(df_prices, use_container_width=True)
+                st.dataframe(pd.DataFrame(data_rows), use_container_width=True)
             else:
-                st.warning("No se pudieron obtener precios. Verifica tu conexión.")
+                st.warning("No se pudieron obtener precios. Revisa tu conexión a internet.")
 
         with col2:
             st.subheader("📡 Señales en Tiempo Real")
-            for cid, info in BINANCE_PAIRS.items():
-                price, change = get_binance_price(info["pair"])
+            for sym, name in CRYPTO_LIST.items():
+                price, change = get_cryptocompare_price(sym)
                 if price:
-                    st.session_state.price_history[cid].append(price)
-                    signal, score, desc = generate_signal(price, change, fng_val, st.session_state.price_history[cid])
-                    # Enviar alerta solo si cambia a COMPRAR o VENDER
-                    if signal != st.session_state.last_signals[cid] and ("COMPRAR" in signal or "VENDER" in signal):
-                        alert = f"🚨 *{info['name']}* 🚨\n{signal}\n💰 ${price:,.2f}\n📈 24h: {change:+.2f}%\n😨 Fear: {fng_val}/100\n🎯 Score: {score}/100"
+                    st.session_state.price_history[sym].append(price)
+                    signal, score, desc = generate_signal(price, change, fng_val, st.session_state.price_history[sym])
+                    if signal != st.session_state.last_signals[sym] and ("COMPRAR" in signal or "VENDER" in signal):
+                        alert = f"🚨 *{name}* 🚨\n{signal}\n💰 ${price:,.2f}\n📈 24h: {change:+.2f}%\n😨 Fear: {fng_val}/100\n🎯 Score: {score}/100"
                         send_telegram(alert)
-                        st.session_state.last_signals[cid] = signal
-                    st.metric(info["name"], f"${price:,.2f}", f"{change:+.2f}%")
+                        st.session_state.last_signals[sym] = signal
+                    st.metric(name, f"${price:,.2f}", f"{change:+.2f}%")
                     st.write(f"**{signal}** (Score: {score}/100)")
                     st.caption(desc)
                 else:
-                    st.warning(f"{info['name']}: Sin datos")
+                    st.warning(f"{name}: Sin datos (verifica internet)")
                 st.markdown("---")
 
     with tab2:
-        selected = st.selectbox("Selecciona criptomoneda", list(BINANCE_PAIRS.keys()), format_func=lambda x: BINANCE_PAIRS[x]["name"])
-        pair = BINANCE_PAIRS[selected]["pair"]
-        df_klines = get_binance_klines(pair, limit=72)  # 72 horas (3 días)
-        if df_klines is not None and not df_klines.empty:
-            fig = px.line(df_klines, x="datetime", y="close", title=f"{BINANCE_PAIRS[selected]['name']} - Precio horario (últimas 72h)")
-            fig.update_layout(height=400, hovermode='x unified')
+        selected_sym = st.selectbox("Selecciona criptomoneda", list(CRYPTO_LIST.keys()), format_func=lambda x: CRYPTO_LIST[x])
+        df_hist = get_cryptocompare_histo(selected_sym, limit=72)
+        if df_hist is not None and not df_hist.empty:
+            fig = px.line(df_hist, x="datetime", y="close", title=f"{CRYPTO_LIST[selected_sym]} - Precio horario")
+            fig.update_layout(height=400)
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No se pudieron cargar las velas horarias.")
+            st.info("No se pudieron cargar los datos históricos.")
 
     with tab3:
         st.subheader("⏰ Mejores y Peores Horas del Día (CDMX)")
-        st.caption("Basado en datos de las últimas 48 horas. Horas con ganancia promedio positiva = buenas para COMPRAR.")
-        if st.button("🔄 Actualizar análisis de horarios ahora"):
+        if st.button("🔄 Actualizar horarios ahora"):
             st.cache_data.clear()
             st.rerun()
-        for cid, info in BINANCE_PAIRS.items():
-            best, worst = get_best_worst_hours(cid)
+        for sym, name in CRYPTO_LIST.items():
+            best, worst = get_best_worst_hours(sym)
             if best is not None and not best.empty:
-                st.markdown(f"### {info['name']}")
+                st.markdown(f"### {name}")
                 col_a, col_b = st.columns(2)
                 with col_a:
                     st.markdown("🟢 **Mejores horas para COMPRAR**")
@@ -257,17 +246,17 @@ def main():
                         st.write(f"⏰ {int(hour):02d}:00 → {row['mean']:.2f}%")
                 st.markdown("---")
             else:
-                st.write(f"⚠️ {info['name']}: Datos insuficientes para análisis horario")
+                st.write(f"⚠️ {name}: Datos insuficientes")
 
-    # Reporte automático cada 8 horas (telegram)
+    # Reporte automático cada 8 horas a Telegram
     now_ts = datetime.now().timestamp()
     if now_ts - st.session_state.last_report_time >= 8 * 3600:
         st.session_state.last_report_time = now_ts
-        report_lines = ["📊 *REPORTE DE HORARIOS* (últimas 48h)", ""]
-        for cid, info in BINANCE_PAIRS.items():
-            best, worst = get_best_worst_hours(cid)
+        report_lines = ["📊 *REPORTE DE HORARIOS* (Cryptocompare)", ""]
+        for sym, name in CRYPTO_LIST.items():
+            best, worst = get_best_worst_hours(sym)
             if best is not None and not best.empty:
-                report_lines.append(f"*{info['name']}*")
+                report_lines.append(f"*{name}*")
                 report_lines.append("🟢 Mejores: " + ", ".join([f"{int(h):02d}:00 ({row['mean']:+.2f}%)" for h, row in best.iterrows()]))
                 report_lines.append("🔴 Peores: " + ", ".join([f"{int(h):02d}:00 ({row['mean']:+.2f}%)" for h, row in worst.iterrows()]))
                 report_lines.append("")
