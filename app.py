@@ -19,17 +19,23 @@ def send_telegram(message):
     except:
         pass
 
-# ==================== PARÁMETROS POR DEFECTO (VENDER RÁPIDO) ====================
+# ==================== PARÁMETROS BASE (PRECIOS REALISTAS) ====================
+# Precios de mercado reales al 12/06/2026
+REAL_BASES = {"BTC": 63000, "ETH": 1670}
+SIM_PRICES = {"BTC": 63000, "ETH": 1670}
+SIM_CHANGES = {"BTC": 0.0, "ETH": 0.0}
+
 DEFAULT_COMMISSION_PCT = 0.1
 DEFAULT_SLIPPAGE_PCT = 0.05
 
-# ==================== DATOS (REALES CON FALLBACK) ====================
+# ==================== FUNCIONES DE DATOS REALES ====================
 if "use_real" not in st.session_state:
     st.session_state.use_real = True
 if "last_fail" not in st.session_state:
     st.session_state.last_fail = 0
 
 def get_real_price(symbol):
+    """Intenta obtener precio real desde Cryptocompare"""
     try:
         url_price = f"https://min-api.cryptocompare.com/data/price?fsym={symbol}&tsyms=USD"
         resp = requests.get(url_price, timeout=5)
@@ -43,28 +49,43 @@ def get_real_price(symbol):
             change = data["RAW"][symbol]["USD"]["CHANGEPCT24HOUR"]
             return price, change
         return price, 0.0
-    except:
+    except Exception as e:
+        print(f"Error obteniendo precio real: {e}")
         return None, None
 
-REAL_BASES = {"BTC": 65000, "ETH": 3500}
-SIM_PRICES = {"BTC": 65000, "ETH": 3500}
-SIM_CHANGES = {"BTC": 0.0, "ETH": 0.0}
-
 def get_price(symbol):
+    """Obtiene precio: real si posible, simulado realista si no"""
     global SIM_PRICES, SIM_CHANGES
     now = time.time()
+    # Si estamos en modo real y no ha fallado recientemente
     if st.session_state.use_real and (now - st.session_state.last_fail > 300):
         price, change = get_real_price(symbol)
-        if price is not None:
-            return price, change, "real"
+        if price is not None and price > 0:
+            # Validar que el precio no sea disparatado (rango típico)
+            if (symbol == "BTC" and 30000 < price < 100000) or (symbol == "ETH" and 500 < price < 5000):
+                return price, change, "real"
+            else:
+                # Precio fuera de rango, considerar fallo
+                st.session_state.last_fail = now
+                st.session_state.use_real = False
         else:
             st.session_state.last_fail = now
             st.session_state.use_real = False
+
+    # Modo simulado: generar precios realistas alrededor de los valores base
     last_price = SIM_PRICES.get(symbol, REAL_BASES[symbol])
-    change_pct = random.uniform(-0.01, 0.01)
+    # Cambio porcentual aleatorio entre -1.5% y +1.5% (volatilidad realista)
+    change_pct = random.uniform(-0.015, 0.015)
     new_price = last_price * (1 + change_pct)
+    # Evitar desviaciones excesivas del base (más del 10%)
+    base = REAL_BASES[symbol]
+    if new_price > base * 1.1:
+        new_price = base * 1.1
+    elif new_price < base * 0.9:
+        new_price = base * 0.9
+    # Simular cambio 24h (tendencia suave)
     sim_change = SIM_CHANGES.get(symbol, 0.0)
-    sim_change += random.uniform(-0.5, 0.5)
+    sim_change += random.uniform(-0.3, 0.3)
     sim_change = max(-10, min(10, sim_change))
     SIM_PRICES[symbol] = new_price
     SIM_CHANGES[symbol] = sim_change
@@ -80,6 +101,7 @@ def get_fear_greed():
         pass
     return 50, "Neutral"
 
+# ==================== INDICADORES Y FÓRMULA ====================
 def compute_rsi(prices, period=14):
     if len(prices) < period + 1:
         return 50
@@ -107,8 +129,8 @@ def calculate_score(price, change, fng, hist):
             score -= 15
         elif rsi > 60:
             score -= 8
-    if len(hist) >= 2:  # Reducido de 3 a 2 para reaccionar más rápido
-        trend = np.mean(np.diff(list(hist)[-2:]))
+    if len(hist) >= 3:
+        trend = np.mean(np.diff(list(hist)[-3:]))
         score += 10 if trend > 0 else -10
     return np.clip(score, 0, 100)
 
@@ -127,31 +149,29 @@ if "balance" not in st.session_state:
 
 CRYPTOS = {"BTC": "Bitcoin", "ETH": "Ethereum"}
 
-st.set_page_config(page_title="Crypto Auto Trader - Venta Rápida", layout="wide")
-st.title("⚡ Crypto Auto Trader - Modo Venta Rápida")
+st.set_page_config(page_title="Crypto Auto Trader - Precios Realistas", layout="wide")
+st.title("🤖 Crypto Auto Trader - Precios Corregidos (Simulación Realista)")
 
-st.sidebar.header("⚙️ Configuración (Venta Rápida por Defecto)")
+st.sidebar.header("⚙️ Configuración")
 refresh = st.sidebar.slider("Actualizar cada (segundos)", 30, 180, 60)
 auto = st.sidebar.checkbox("Auto-refrescar", True)
 
-# --- Umbrales (modo venta rápida) ---
-buy_base = st.sidebar.slider("Umbral COMPRA (más alto = compra menos)", 40, 80, 60)
-sell_base = st.sidebar.slider("Umbral VENTA base (más alto = vende antes)", 30, 70, 55)
-
-# Sensibilidad a la venta fijada en alto (90) para vender rápido
-sell_sensitivity = st.sidebar.slider("🔻 Sensibilidad a la VENTA (0=baja, 100=alta)", 0, 100, 90)
-sell_offset = (sell_sensitivity - 50) * 0.3   # -15 a +15
+# Umbrales
+buy_base = st.sidebar.slider("Umbral COMPRA", 40, 80, 60)
+sell_base = st.sidebar.slider("Umbral VENTA base", 30, 70, 55)
+sell_sensitivity = st.sidebar.slider("Sensibilidad a la VENTA (0=baja, 100=alta)", 0, 100, 90)
+sell_offset = (sell_sensitivity - 50) * 0.3
 sell_threshold = max(20, min(70, sell_base + sell_offset))
 st.sidebar.markdown(f"**Umbral VENTA efectivo:** {sell_threshold:.1f}")
 
-# Stop Loss activado y ajustado (5%)
-use_stop_loss = st.sidebar.checkbox("Usar Stop Loss (pérdida máxima)", value=True)
+# Stop Loss
+use_stop_loss = st.sidebar.checkbox("Usar Stop Loss", value=True)
 stop_loss_pct = st.sidebar.number_input("Stop Loss (%)", 1.0, 20.0, 5.0, 0.5) if use_stop_loss else 0.0
 
 trade_amount = st.sidebar.number_input("Monto por orden (USDT)", 10.0, 100.0, 20.0)
-alert_on_score_change = st.sidebar.checkbox("Enviar alerta cada vez que el puntaje cambie", value=False)
+alert_on_score_change = st.sidebar.checkbox("Alerta cada cambio de puntaje", value=False)
 
-st.sidebar.subheader("💰 Costos de Simulación")
+st.sidebar.subheader("💰 Costos")
 commission = st.sidebar.number_input("Comisión (%)", 0.0, 1.0, st.session_state.commission_pct, 0.05)
 slippage = st.sidebar.number_input("Slippage (%)", 0.0, 1.0, st.session_state.slippage_pct, 0.05)
 st.session_state.commission_pct = commission
@@ -171,11 +191,14 @@ if st.sidebar.button("Reiniciar simulación"):
         del st.session_state[key]
     st.rerun()
 
-if not st.session_state.use_real:
-    st.warning("⚠️ Modo simulación – Datos simulados (pero alertas activas)")
-
 if st.sidebar.button("📢 Enviar alerta de prueba"):
-    send_telegram("🧪 Alerta de prueba - Bot en modo venta rápida")
+    send_telegram("🧪 Alerta de prueba - Precios corregidos")
+
+# Mostrar modo actual
+if st.session_state.use_real:
+    st.success("✅ Modo REAL activo (datos de mercado vía Cryptocompare)")
+else:
+    st.warning("⚠️ Modo SIMULACIÓN activo – Precios realistas pero simulados")
 
 # ==================== OBTENER DATOS ====================
 fng, fng_label = get_fear_greed()
@@ -187,7 +210,7 @@ for sym, name in CRYPTOS.items():
     if price > 0:
         st.session_state.price_history[sym].append(price)
 
-# ==================== LÓGICA DE TRADING (VENTA RÁPIDA) ====================
+# ==================== LÓGICA DE TRADING ====================
 for sym, name in CRYPTOS.items():
     price, change, source = price_data[sym]
     if price == 0:
@@ -195,7 +218,6 @@ for sym, name in CRYPTOS.items():
     hist = st.session_state.price_history[sym]
     score = calculate_score(price, change, fng, hist)
     
-    # Decisión con umbrales ajustados
     if score >= buy_base:
         action = "BUY"
     elif score <= sell_threshold:
@@ -203,7 +225,7 @@ for sym, name in CRYPTOS.items():
     else:
         action = "HOLD"
 
-    # Stop Loss (venta forzada)
+    # Stop Loss
     stop_loss_signal = False
     if use_stop_loss and st.session_state.positions.get(sym, 0) > 0:
         entry = st.session_state.entry_price.get(sym, 0)
@@ -213,18 +235,17 @@ for sym, name in CRYPTOS.items():
                 stop_loss_signal = True
                 action = "SELL"
 
-    # Alerta por cambio de puntaje (opcional)
+    # Alerta de puntaje
     if alert_on_score_change:
         last_score = st.session_state.last_score.get(sym, 50)
         if abs(score - last_score) >= 1:
-            alert_msg = f"📊 *{name}* Puntaje: {score:.1f} (cambio de {last_score:.1f}) | Señal: {action}"
-            send_telegram(alert_msg)
+            send_telegram(f"📊 *{name}* Puntaje: {score:.1f} (cambio de {last_score:.1f}) | Señal: {action}")
             st.session_state.last_score[sym] = score
 
-    # Ejecutar órdenes (con mínimo de 2 lecturas)
+    # Ejecutar órdenes
     if len(hist) >= 2:
-        # Stop loss tiene prioridad
-        if stop_loss_signal and action == "SELL" and st.session_state.positions.get(sym, 0) > 0:
+        # Stop loss
+        if stop_loss_signal and st.session_state.positions.get(sym, 0) > 0:
             if st.session_state.last_action.get(sym) != "STOP_LOSS":
                 effective_price = price * (1 - st.session_state.slippage_pct / 100)
                 qty = st.session_state.positions[sym]
@@ -233,11 +254,11 @@ for sym, name in CRYPTOS.items():
                 net_revenue = gross_revenue - commission_amount
                 st.session_state.balance += net_revenue
                 st.session_state.positions[sym] = 0
-                msg = (f"🛑 *{name}* STOP LOSS (pérdida > {stop_loss_pct}%)\n"
+                msg = (f"🛑 *{name}* STOP LOSS ({stop_loss_pct}%)\n"
                        f"  Precio visto: ${price:.2f}\n"
-                       f"  Precio efectivo: ${effective_price:.2f}\n"
+                       f"  Efectivo: ${effective_price:.2f}\n"
                        f"  Comisión: ${commission_amount:.2f}\n"
-                       f"  Ingreso neto: ${net_revenue:.2f}\n"
+                       f"  Neto: ${net_revenue:.2f}\n"
                        f"  Score: {score:.1f}")
                 send_telegram(msg)
                 st.session_state.trades.append((datetime.now(), msg))
@@ -253,15 +274,15 @@ for sym, name in CRYPTOS.items():
                     st.session_state.entry_price[sym] = effective_price
                     msg = (f"🟢 *{name}* COMPRA\n"
                            f"  Precio visto: ${price:.2f}\n"
-                           f"  Precio efectivo: ${effective_price:.2f}\n"
+                           f"  Efectivo: ${effective_price:.2f}\n"
                            f"  Comisión: ${trade_amount * st.session_state.commission_pct/100:.2f}\n"
                            f"  Cantidad: {qty:.6f}\n"
                            f"  Score: {score:.1f}")
                 else:
-                    msg = f"❌ Saldo insuficiente para comprar {name}"
+                    msg = f"❌ Saldo insuficiente para {name}"
                     send_telegram(msg)
                     continue
-            else:  # Venta normal
+            else:  # Venta
                 effective_price = price * (1 - st.session_state.slippage_pct / 100)
                 qty = st.session_state.positions.get(sym, 0)
                 if qty > 0:
@@ -270,11 +291,11 @@ for sym, name in CRYPTOS.items():
                     net_revenue = gross_revenue - commission_amount
                     st.session_state.balance += net_revenue
                     st.session_state.positions[sym] = 0
-                    msg = (f"🔴 *{name}* VENTA RÁPIDA\n"
+                    msg = (f"🔴 *{name}* VENTA\n"
                            f"  Precio visto: ${price:.2f}\n"
-                           f"  Precio efectivo: ${effective_price:.2f}\n"
+                           f"  Efectivo: ${effective_price:.2f}\n"
                            f"  Comisión: ${commission_amount:.2f}\n"
-                           f"  Ingreso neto: ${net_revenue:.2f}\n"
+                           f"  Neto: ${net_revenue:.2f}\n"
                            f"  Score: {score:.1f}")
                 else:
                     msg = f"❌ No hay posición para vender {name}"
@@ -287,12 +308,12 @@ for sym, name in CRYPTOS.items():
 # ==================== INTERFAZ PRINCIPAL ====================
 col1, col2 = st.columns(2)
 with col1:
-    st.subheader("📊 Señales en vivo (Venta Rápida)")
+    st.subheader("📊 Señales en vivo (Precios Realistas)")
     rows = []
     for sym, name in CRYPTOS.items():
         price, change, source = price_data[sym]
         if price == 0:
-            rows.append({"Moneda": name, "Precio": "Sin datos", "24h %": "N/A", "Puntaje": "N/A", "Señal": "ERROR"})
+            rows.append({"Moneda": name, "Precio": "Sin datos", "24h %": "N/A", "Puntaje": "N/A", "Señal": "ERROR", "Fuente": "N/A"})
             continue
         hist = st.session_state.price_history[sym]
         score = calculate_score(price, change, fng, hist)
@@ -308,11 +329,11 @@ with col1:
             "24h %": f"{change:+.2f}%",
             "Puntaje": f"{score:.1f}/100",
             "Señal": signal,
-            "Fuente": "Real" if source=="real" else "Sim"
+            "Fuente": "Real" if source == "real" else "Sim"
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True)
     st.metric("😨 Fear & Greed", f"{fng}/100 ({fng_label})")
-    st.caption(f"🔻 Umbral VENTA efectivo: {sell_threshold:.1f} | Sensibilidad: {sell_sensitivity}%")
+    st.caption(f"Umbral VENTA efectivo: {sell_threshold:.1f} | Sensibilidad: {sell_sensitivity}%")
 
 with col2:
     st.subheader("📜 Últimas operaciones")
@@ -320,8 +341,8 @@ with col2:
         for ts, msg in reversed(st.session_state.trades[-10:]):
             st.text(f"{ts.strftime('%H:%M:%S')} - {msg.replace('*','')}")
     else:
-        st.caption("Aún no hay operaciones. Esperando señal...")
-    if not st.session_state.use_real and st.button("Reintentar conectar API real"):
+        st.caption("Aún no hay operaciones.")
+    if not st.session_state.use_real and st.button("Reintentar API real"):
         st.session_state.use_real = True
         st.session_state.last_fail = 0
         st.rerun()
