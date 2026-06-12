@@ -12,29 +12,32 @@ TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
 TELEGRAM_CHAT_ID = "5835990242"
 
 def send_telegram(message):
-    """Envía mensaje a Telegram"""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        data = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-        requests.post(url, json=data, timeout=5)
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}, timeout=5)
+    except:
+        pass
+
+# ==================== FUNCIONES DE MERCADO (Cryptocompare) ====================
+def get_cryptocompare_price(symbol):
+    """
+    symbol: 'BTC', 'ETH', etc. (sin -USD)
+    """
+    try:
+        # Precio actual
+        url_price = f"https://min-api.cryptocompare.com/data/price?fsym={symbol}&tsyms=USD"
+        resp_price = requests.get(url_price, timeout=5)
+        price = float(resp_price.json()["USD"])
+        # Cambio 24h
+        url_change = f"https://min-api.cryptocompare.com/data/pricemultifull?fsyms={symbol}&tsyms=USD"
+        resp_change = requests.get(url_change, timeout=5)
+        data = resp_change.json()
+        change = data["RAW"][symbol]["USD"]["CHANGEPCT24HOUR"]
+        return price, change
     except Exception as e:
-        print(f"Error enviando a Telegram: {e}")
+        print(f"Error Cryptocompare: {e}")
+        return None, None
 
-# ==================== IMPORTAR YFINANCE ====================
-try:
-    import yfinance as yf
-    YF_OK = True
-except ImportError:
-    YF_OK = False
-    st.error("Falta yfinance. Agrégalo a requirements.txt")
-
-st.set_page_config(page_title="Crypto Auto Trader", layout="wide")
-st.title("🤖 Crypto Auto Trader - Fórmula Matemática + Alertas Telegram")
-
-if not YF_OK:
-    st.stop()
-
-# ==================== FUNCIONES AUXILIARES ====================
 def get_fear_greed():
     try:
         resp = requests.get("https://api.alternative.me/fng/", timeout=5)
@@ -58,23 +61,14 @@ def compute_rsi(prices, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-def fetch_price(symbol):
-    try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
-        price = info.get('regularMarketPrice') or info.get('currentPrice')
-        change = info.get('regularMarketChangePercent') or info.get('changePercent', 0)
-        if price:
-            return float(price), float(change)
-    except:
-        pass
-    return None, None
-
 # ==================== FÓRMULA DE PUNTAJE ====================
 def calculate_score(price, change, fng, hist):
     score = 50
+    # Fear & Greed
     score += (50 - fng) * 0.5
+    # Cambio 24h
     score += np.clip(change * 2, -12, 12)
+    # RSI
     if len(hist) >= 14:
         rsi = compute_rsi(list(hist))
         if rsi < 30:
@@ -85,6 +79,7 @@ def calculate_score(price, change, fng, hist):
             score -= 15
         elif rsi > 60:
             score -= 8
+    # Tendencia últimas 5 lecturas
     if len(hist) >= 5:
         trend = np.mean(np.diff(list(hist)[-5:]))
         score += 10 if trend > 0 else -10
@@ -99,7 +94,8 @@ if "balance" not in st.session_state:
     st.session_state.last_action = {}
     st.session_state.last_prices = {}
 
-CRYPTOS = {"BTC-USD": "Bitcoin", "ETH-USD": "Ethereum"}
+# Símbolos en formato Cryptocompare (sin -USD)
+CRYPTOS = {"BTC": "Bitcoin", "ETH": "Ethereum"}
 
 for sym in CRYPTOS:
     if sym not in st.session_state.price_history:
@@ -111,7 +107,10 @@ for sym in CRYPTOS:
     if sym not in st.session_state.last_prices:
         st.session_state.last_prices[sym] = 0.0
 
-# ==================== CONFIGURACIÓN SIDEBAR ====================
+# ==================== INTERFAZ DE USUARIO ====================
+st.set_page_config(page_title="Crypto Auto Trader", layout="wide")
+st.title("🤖 Crypto Auto Trader - Fórmula Matemática + Alertas Telegram")
+
 st.sidebar.header("Configuración")
 refresh = st.sidebar.slider("Actualizar cada (segundos)", 60, 180, 90)
 auto = st.sidebar.checkbox("Auto-refrescar", True)
@@ -136,55 +135,68 @@ if st.sidebar.button("Reiniciar simulación"):
 fng, fng_label = get_fear_greed()
 price_data = {}
 for sym, name in CRYPTOS.items():
-    price, change = fetch_price(sym)
+    price, change = get_cryptocompare_price(sym)
     if price is None:
+        # Si falla, mantenemos el último precio conocido (simulación)
         price = st.session_state.last_prices.get(sym, 0)
         change = 0
-    st.session_state.last_prices[sym] = price
+    else:
+        st.session_state.last_prices[sym] = price
     price_data[sym] = (price, change)
-    st.session_state.price_history[sym].append(price)
+    if price > 0:
+        st.session_state.price_history[sym].append(price)
 
-# ==================== LÓGICA DE TRADING + ALERTAS TELEGRAM ====================
+# ==================== LÓGICA DE TRADING ====================
 for sym, name in CRYPTOS.items():
     price, change = price_data[sym]
     if price == 0:
         continue
     hist = st.session_state.price_history[sym]
-    score = calculate_score(price, change, fng, hist)
-    action = None
-    if score >= buy_th:
-        action = "BUY"
-    elif score <= sell_th:
-        action = "SELL"
-    else:
+    if len(hist) < 5:
+        # Aún no hay suficientes datos, no calcular señal
+        signal_display = "ESPERANDO DATOS"
+        score_display = 0
         action = "HOLD"
+    else:
+        score = calculate_score(price, change, fng, hist)
+        score_display = score
+        if score >= buy_th:
+            action = "BUY"
+            signal_display = "COMPRAR"
+        elif score <= sell_th:
+            action = "SELL"
+            signal_display = "VENDER"
+        else:
+            action = "HOLD"
+            signal_display = "MANTENER"
 
-    if action != st.session_state.last_action.get(sym) and action in ("BUY", "SELL"):
-        if action == "BUY":
-            if st.session_state.balance >= trade_amount:
-                st.session_state.balance -= trade_amount
-                qty = trade_amount / price
-                st.session_state.positions[sym] += qty
-                msg = f"🟢 *COMPRA SIMULADA*: {qty:.6f} {name} @ ${price:.2f} (Score: {score:.1f})"
-                send_telegram(msg)
-            else:
-                msg = f"❌ Saldo insuficiente para comprar {name}"
-                send_telegram(msg)
-        else:  # SELL
-            qty = st.session_state.positions.get(sym, 0)
-            if qty > 0:
-                revenue = qty * price
-                st.session_state.balance += revenue
-                st.session_state.positions[sym] = 0
-                msg = f"🔴 *VENTA SIMULADA*: {qty:.6f} {name} @ ${price:.2f} (Score: {score:.1f})"
-                send_telegram(msg)
-            else:
-                msg = f"❌ No hay posición para vender {name}"
-                send_telegram(msg)
-        st.session_state.trades.append((datetime.now(), msg))
-        st.session_state.last_action[sym] = action
+        # Ejecutar orden solo si cambia la acción y no es HOLD
+        if action != st.session_state.last_action.get(sym) and action in ("BUY", "SELL"):
+            if action == "BUY":
+                if st.session_state.balance >= trade_amount:
+                    st.session_state.balance -= trade_amount
+                    qty = trade_amount / price
+                    st.session_state.positions[sym] += qty
+                    msg = f"🟢 *COMPRA SIMULADA*: {qty:.6f} {name} @ ${price:.2f} (Score: {score:.1f})"
+                    send_telegram(msg)
+                else:
+                    msg = f"❌ Saldo insuficiente para comprar {name}"
+                    send_telegram(msg)
+            else:  # SELL
+                qty = st.session_state.positions.get(sym, 0)
+                if qty > 0:
+                    revenue = qty * price
+                    st.session_state.balance += revenue
+                    st.session_state.positions[sym] = 0
+                    msg = f"🔴 *VENTA SIMULADA*: {qty:.6f} {name} @ ${price:.2f} (Score: {score:.1f})"
+                    send_telegram(msg)
+                else:
+                    msg = f"❌ No hay posición para vender {name}"
+                    send_telegram(msg)
+            st.session_state.trades.append((datetime.now(), msg))
+            st.session_state.last_action[sym] = action
 
-# ==================== MOSTRAR EN INTERFAZ ====================
+# ==================== MOSTRAR EN PANTALLA ====================
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("📊 Señales en vivo")
@@ -192,16 +204,27 @@ with col1:
     for sym, name in CRYPTOS.items():
         price, change = price_data[sym]
         if price == 0:
+            rows.append({"Moneda": name, "Precio": "Sin datos", "24h %": "N/A", "Puntaje": "N/A", "Señal": "ERROR"})
             continue
         hist = st.session_state.price_history[sym]
-        score = calculate_score(price, change, fng, hist)
-        signal = "COMPRAR" if score >= buy_th else "VENDER" if score <= sell_th else "MANTENER"
+        if len(hist) < 5:
+            score_display = "Pocos datos"
+            signal_display = "ESPERANDO"
+        else:
+            score = calculate_score(price, change, fng, hist)
+            if score >= buy_th:
+                signal_display = "COMPRAR"
+            elif score <= sell_th:
+                signal_display = "VENDER"
+            else:
+                signal_display = "MANTENER"
+            score_display = f"{score:.1f}/100"
         rows.append({
             "Moneda": name,
-            "Precio": f"${price:,.2f}",
-            "24h %": f"{change:+.2f}%",
-            "Puntaje": f"{score:.1f}/100",
-            "Señal": signal
+            "Precio": f"${price:,.2f}" if price>0 else "N/A",
+            "24h %": f"{change:+.2f}%" if change != 0 else "N/A",
+            "Puntaje": score_display,
+            "Señal": signal_display
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True)
     st.metric("😨 Fear & Greed", f"{fng}/100 ({fng_label})")
@@ -210,10 +233,9 @@ with col2:
     st.subheader("📜 Últimas operaciones")
     if st.session_state.trades:
         for ts, msg in reversed(st.session_state.trades[-10:]):
-            # Mostrar en la interfaz sin formato Markdown
             st.text(f"{ts.strftime('%H:%M:%S')} - {msg.replace('*','')}")
     else:
-        st.caption("Esperando primera señal...")
+        st.caption("Aún no hay operaciones. Esperando suficientes datos (mínimo 5 lecturas)...")
 
 # ==================== AUTO REFRESCO ====================
 if auto:
