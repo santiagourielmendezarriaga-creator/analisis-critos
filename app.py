@@ -19,15 +19,18 @@ def send_telegram(message):
     except:
         pass
 
-# ==================== DATOS REALES (CRYPTOCOMPARE) CON FALLBACK ====================
-# Estado de conectividad
+# ==================== PARÁMETROS DE SIMULACIÓN ====================
+# Se pueden ajustar desde la interfaz
+DEFAULT_COMMISSION_PCT = 0.1  # 0.1% por operación
+DEFAULT_SLIPPAGE_PCT = 0.05   # 0.05% de deslizamiento
+
+# ==================== DATOS REALES CON FALLBACK ====================
 if "use_real" not in st.session_state:
     st.session_state.use_real = True
 if "last_fail" not in st.session_state:
     st.session_state.last_fail = 0
 
 def get_real_price(symbol):
-    """Intenta obtener precio real de Cryptocompare"""
     try:
         url_price = f"https://min-api.cryptocompare.com/data/price?fsym={symbol}&tsyms=USD"
         resp = requests.get(url_price, timeout=5)
@@ -44,7 +47,6 @@ def get_real_price(symbol):
     except:
         return None, None
 
-# Precios base realistas para simulación
 REAL_BASES = {"BTC": 65000, "ETH": 3500}
 SIM_PRICES = {"BTC": 65000, "ETH": 3500}
 SIM_CHANGES = {"BTC": 0.0, "ETH": 0.0}
@@ -52,22 +54,17 @@ SIM_CHANGES = {"BTC": 0.0, "ETH": 0.0}
 def get_price(symbol):
     global SIM_PRICES, SIM_CHANGES
     now = time.time()
-    # Si estamos en modo real y no ha fallado recientemente
-    if st.session_state.use_real and (now - st.session_state.last_fail > 300):  # 5 minutos de gracia
+    if st.session_state.use_real and (now - st.session_state.last_fail > 300):
         price, change = get_real_price(symbol)
         if price is not None:
             return price, change, "real"
         else:
             st.session_state.last_fail = now
             st.session_state.use_real = False
-            # Pasar a modo simulado
     # Modo simulado
-    # Simular movimiento de precio realista (random walk con tendencia suave)
     last_price = SIM_PRICES.get(symbol, REAL_BASES[symbol])
-    # Cambio porcentual aleatorio entre -1% y +1% (simula volatilidad real)
     change_pct = random.uniform(-0.01, 0.01)
     new_price = last_price * (1 + change_pct)
-    # Cambio 24h simulado (varía lentamente)
     sim_change = SIM_CHANGES.get(symbol, 0.0)
     sim_change += random.uniform(-0.5, 0.5)
     sim_change = max(-10, min(10, sim_change))
@@ -101,11 +98,8 @@ def compute_rsi(prices, period=14):
 
 def calculate_score(price, change, fng, hist):
     score = 50
-    # Fear & Greed
     score += (50 - fng) * 0.5
-    # Cambio 24h
     score += np.clip(change * 2, -12, 12)
-    # RSI
     if len(hist) >= 14:
         rsi = compute_rsi(list(hist))
         if rsi < 30:
@@ -116,7 +110,6 @@ def calculate_score(price, change, fng, hist):
             score -= 15
         elif rsi > 60:
             score -= 8
-    # Tendencia últimas 5 lecturas
     if len(hist) >= 5:
         trend = np.mean(np.diff(list(hist)[-5:]))
         score += 10 if trend > 0 else -10
@@ -130,21 +123,29 @@ if "balance" not in st.session_state:
     st.session_state.price_history = {"BTC": deque(maxlen=50), "ETH": deque(maxlen=50)}
     st.session_state.last_action = {"BTC": None, "ETH": None}
     st.session_state.last_prices = {"BTC": 0.0, "ETH": 0.0}
+    st.session_state.commission_pct = DEFAULT_COMMISSION_PCT
+    st.session_state.slippage_pct = DEFAULT_SLIPPAGE_PCT
 
 CRYPTOS = {"BTC": "Bitcoin", "ETH": "Ethereum"}
 
 # ==================== INTERFAZ ====================
-st.set_page_config(page_title="Crypto Auto Trader", layout="wide")
-st.title("🤖 Crypto Auto Trader - Fórmula Matemática + Alertas Telegram")
+st.set_page_config(page_title="Crypto Auto Trader - Pro", layout="wide")
+st.title("🤖 Crypto Auto Trader - Fórmula + Comisiones + Slippage")
 
-st.sidebar.header("Configuración")
+st.sidebar.header("📊 Configuración de Trading")
 refresh = st.sidebar.slider("Actualizar cada (segundos)", 60, 180, 90)
 auto = st.sidebar.checkbox("Auto-refrescar", True)
-buy_th = st.sidebar.slider("Umbral COMPRA", 60, 90, 70)
-sell_th = st.sidebar.slider("Umbral VENTA", 10, 40, 30)
+buy_th = st.sidebar.slider("Umbral COMPRA (más agresivo = más bajo)", 40, 80, 55)
+sell_th = st.sidebar.slider("Umbral VENTA (más agresivo = más alto)", 20, 60, 45)
 trade_amount = st.sidebar.number_input("Monto por orden (USDT)", 10.0, 100.0, 20.0)
 
-st.sidebar.subheader("💰 Estado Simulado")
+st.sidebar.subheader("💰 Costos de Simulación")
+commission = st.sidebar.number_input("Comisión (%)", 0.0, 1.0, st.session_state.commission_pct, 0.05)
+slippage = st.sidebar.number_input("Slippage (%)", 0.0, 1.0, st.session_state.slippage_pct, 0.05)
+st.session_state.commission_pct = commission
+st.session_state.slippage_pct = slippage
+
+st.sidebar.subheader("💰 Estado de Cartera")
 st.sidebar.metric("Saldo USDT", f"${st.session_state.balance:,.2f}")
 total = st.session_state.balance
 for sym in CRYPTOS:
@@ -152,14 +153,14 @@ for sym in CRYPTOS:
     qty = st.session_state.positions.get(sym, 0)
     if qty > 0 and last_p > 0:
         total += qty * last_p
-st.sidebar.metric("Valor cartera", f"${total:,.2f}")
+st.sidebar.metric("Valor total", f"${total:,.2f}")
 if st.sidebar.button("Reiniciar simulación"):
     for key in list(st.session_state.keys()):
         del st.session_state[key]
     st.rerun()
 
 if not st.session_state.use_real:
-    st.warning("⚠️ **Modo simulación activado** – No se pudieron obtener datos reales de la API. Los precios son simulados pero realistas.")
+    st.warning("⚠️ **Modo simulación activado** – Datos simulados realistas. Las operaciones incluyen comisiones y slippage.")
 
 # ==================== OBTENER DATOS ====================
 fng, fng_label = get_fear_greed()
@@ -171,51 +172,74 @@ for sym, name in CRYPTOS.items():
     if price > 0:
         st.session_state.price_history[sym].append(price)
 
-# ==================== LÓGICA DE TRADING ====================
+# ==================== LÓGICA DE TRADING CON COMISIONES Y SLIPPAGE ====================
 for sym, name in CRYPTOS.items():
     price, change, source = price_data[sym]
     if price == 0:
         continue
     hist = st.session_state.price_history[sym]
     if len(hist) < 5:
-        signal_display = "ESPERANDO DATOS"
-        score_display = 0
-        action = "HOLD"
-    else:
-        score = calculate_score(price, change, fng, hist)
-        score_display = f"{score:.1f}/100"
-        if score >= buy_th:
-            action = "BUY"
-            signal_display = "COMPRAR"
-        elif score <= sell_th:
-            action = "SELL"
-            signal_display = "VENDER"
-        else:
-            action = "HOLD"
-            signal_display = "MANTENER"
+        continue  # Aún no hay suficientes datos
 
-        if action != st.session_state.last_action.get(sym) and action in ("BUY", "SELL"):
-            if action == "BUY":
-                if st.session_state.balance >= trade_amount:
-                    st.session_state.balance -= trade_amount
-                    qty = trade_amount / price
-                    st.session_state.positions[sym] += qty
-                    msg = f"🟢 *{name}* COMPRA SIMULADA: {qty:.6f} @ ${price:.2f} (Score: {score:.1f})"
-                    send_telegram(msg)
-                else:
-                    send_telegram(f"❌ Saldo insuficiente para comprar {name}")
+    score = calculate_score(price, change, fng, hist)
+    if score >= buy_th:
+        action = "BUY"
+    elif score <= sell_th:
+        action = "SELL"
+    else:
+        action = "HOLD"
+
+    if action != st.session_state.last_action.get(sym) and action in ("BUY", "SELL"):
+        # Aplicar slippage al precio efectivo
+        if action == "BUY":
+            # El precio efectivo de compra es más alto por el slippage
+            effective_price = price * (1 + st.session_state.slippage_pct / 100)
+        else:  # SELL
+            # El precio efectivo de venta es más bajo por el slippage
+            effective_price = price * (1 - st.session_state.slippage_pct / 100)
+
+        # Calcular cantidad y comisión
+        if action == "BUY":
+            if st.session_state.balance >= trade_amount:
+                # Cantidad a comprar después de comisión (la comisión se resta del capital)
+                amount_after_commission = trade_amount * (1 - st.session_state.commission_pct / 100)
+                qty = amount_after_commission / effective_price
+                st.session_state.balance -= trade_amount  # Se resta el monto total (incluye comisión)
+                st.session_state.positions[sym] += qty
+                msg = (f"🟢 *{name}* COMPRA\n"
+                       f"  Precio visto: ${price:.2f}\n"
+                       f"  Precio efectivo (slippage {st.session_state.slippage_pct}%): ${effective_price:.2f}\n"
+                       f"  Comisión {st.session_state.commission_pct}%: ${trade_amount * commission/100:.2f}\n"
+                       f"  Cantidad: {qty:.6f}\n"
+                       f"  Score: {score:.1f}")
             else:
-                qty = st.session_state.positions.get(sym, 0)
-                if qty > 0:
-                    revenue = qty * price
-                    st.session_state.balance += revenue
-                    st.session_state.positions[sym] = 0
-                    msg = f"🔴 *{name}* VENTA SIMULADA: {qty:.6f} @ ${price:.2f} (Score: {score:.1f})"
-                    send_telegram(msg)
-                else:
-                    send_telegram(f"❌ No hay posición para vender {name}")
-            st.session_state.trades.append((datetime.now(), msg))
-            st.session_state.last_action[sym] = action
+                msg = f"❌ Saldo insuficiente para comprar {name}"
+                send_telegram(msg)
+                continue
+        else:  # SELL
+            qty = st.session_state.positions.get(sym, 0)
+            if qty > 0:
+                # Ingreso bruto por venta
+                gross_revenue = qty * effective_price
+                # Comisión sobre la venta
+                commission_amount = gross_revenue * st.session_state.commission_pct / 100
+                net_revenue = gross_revenue - commission_amount
+                st.session_state.balance += net_revenue
+                st.session_state.positions[sym] = 0
+                msg = (f"🔴 *{name}* VENTA\n"
+                       f"  Precio visto: ${price:.2f}\n"
+                       f"  Precio efectivo (slippage {st.session_state.slippage_pct}%): ${effective_price:.2f}\n"
+                       f"  Comisión {st.session_state.commission_pct}%: ${commission_amount:.2f}\n"
+                       f"  Ingreso neto: ${net_revenue:.2f}\n"
+                       f"  Score: {score:.1f}")
+            else:
+                msg = f"❌ No hay posición para vender {name}"
+                send_telegram(msg)
+                continue
+
+        send_telegram(msg)
+        st.session_state.trades.append((datetime.now(), msg))
+        st.session_state.last_action[sym] = action
 
 # ==================== MOSTRAR EN PANTALLA ====================
 col1, col2 = st.columns(2)
@@ -252,13 +276,13 @@ with col1:
     st.metric("😨 Fear & Greed", f"{fng}/100 ({fng_label})")
 
 with col2:
-    st.subheader("📜 Últimas operaciones")
+    st.subheader("📜 Últimas operaciones (con costos)")
     if st.session_state.trades:
         for ts, msg in reversed(st.session_state.trades[-10:]):
+            # Mostrar en la interfaz sin asteriscos Markdown
             st.text(f"{ts.strftime('%H:%M:%S')} - {msg.replace('*','')}")
     else:
         st.caption("Aún no hay operaciones. Esperando suficientes datos (mínimo 5 lecturas)...")
-    # Botón para forzar modo real (si se ha recuperado la conexión)
     if not st.session_state.use_real and st.button("Intentar conectar a API real de nuevo"):
         st.session_state.use_real = True
         st.session_state.last_fail = 0
