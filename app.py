@@ -2,92 +2,109 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import time
-import random
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone, timedelta
 from collections import deque
 import plotly.express as px
 
-st.set_page_config(page_title="Crypto Simulator Pro", layout="wide")
-st.title("📊 Crypto Analyst - Modo Simulado (estable)")
+# ==================== CONFIGURACIÓN ====================
+st.set_page_config(page_title="Crypto Live (Solo Lectura)", layout="wide")
+st.title("📊 Crypto Live - Datos reales de Binance (Solo Lectura)")
 
-# Telegram (opcional – cambia por tus datos si quieres alertas reales)
+# Advertencia de responsabilidad
+st.warning("""
+**⚠️ ADVERTENCIA IMPORTANTE**  
+Esta app muestra datos en tiempo real de Binance con fines **educativos y de simulación**.  
+**NO es una herramienta para tomar decisiones de inversión real.**  
+Las criptomonedas son volátiles y pueden generar pérdidas.  
+Los datos pueden tener latencia y las señales son orientativas.  
+""")
+
+# Telegram (cambia por tus datos si quieres alertas)
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
 TELEGRAM_CHAT_ID = "5835990242"
 
 CDMX_TZ = timezone(timedelta(hours=-6))
 
-CRYPTOS = {
-    "BTC": {"name": "Bitcoin", "base": 65000, "volatilidad": 0.02},
-    "ETH": {"name": "Ethereum", "base": 3500, "volatilidad": 0.025},
-    "SOL": {"name": "Solana", "base": 150, "volatilidad": 0.03},
-    "ADA": {"name": "Cardano", "base": 0.45, "volatilidad": 0.035},
-    "DOGE": {"name": "Dogecoin", "base": 0.12, "volatilidad": 0.04},
-    "XRP": {"name": "XRP", "base": 0.55, "volatilidad": 0.03},
+# Pares de Binance (símbolos reales)
+BINANCE_PAIRS = {
+    "BTCUSDT": "Bitcoin",
+    "ETHUSDT": "Ethereum",
+    "SOLUSDT": "Solana",
+    "ADAUSDT": "Cardano",
+    "DOGEUSDT": "Dogecoin",
+    "XRPUSDT": "XRP"
 }
 
-def generate_price(base, volatility, last_price=None):
-    if last_price is None:
-        last_price = base
-    change_pct = np.random.normal(0, volatility)
-    new_price = last_price * (1 + change_pct)
-    return new_price, change_pct * 100
+# Control de tasa de peticiones (máximo 20 por minuto)
+REQUEST_TIMES = deque(maxlen=20)
+RATE_LIMIT_WINDOW = 60  # segundos
 
-def generate_24h_change():
-    return random.uniform(-8, 8)
+def rate_limit():
+    now = time.time()
+    if len(REQUEST_TIMES) == REQUEST_TIMES.maxlen:
+        oldest = REQUEST_TIMES[0]
+        if now - oldest < RATE_LIMIT_WINDOW:
+            sleep_time = RATE_LIMIT_WINDOW - (now - oldest) + 1
+            time.sleep(sleep_time)
+    REQUEST_TIMES.append(now)
 
-def generate_fear_greed():
-    if "fg_value" not in st.session_state:
-        st.session_state.fg_value = 50
-    st.session_state.fg_value += random.uniform(-5, 5)
-    st.session_state.fg_value = max(0, min(100, st.session_state.fg_value))
-    if st.session_state.fg_value < 25:
-        label = "Extreme Fear"
-    elif st.session_state.fg_value < 40:
-        label = "Fear"
-    elif st.session_state.fg_value < 60:
-        label = "Neutral"
-    elif st.session_state.fg_value < 75:
-        label = "Greed"
-    else:
-        label = "Extreme Greed"
-    return int(st.session_state.fg_value), label
+def fetch_binance_price(symbol):
+    """Obtiene precio actual y cambio 24h desde Binance pública"""
+    try:
+        rate_limit()
+        url_price = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+        resp_price = requests.get(url_price, timeout=10)
+        price = float(resp_price.json()["price"])
+        
+        rate_limit()
+        url_24h = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
+        resp_24h = requests.get(url_24h, timeout=10)
+        change = float(resp_24h.json()["priceChangePercent"])
+        return price, change
+    except Exception as e:
+        st.error(f"Error obteniendo {symbol}: {e}")
+        return None, None
 
-def generate_ohlc(symbol, days=2):
-    info = CRYPTOS[symbol]
-    base = info["base"]
-    volatility = info["volatilidad"]
-    hours = days * 24
-    timestamps = []
-    opens = []
-    highs = []
-    lows = []
-    closes = []
-    price = base
-    now = datetime.now().replace(minute=0, second=0, microsecond=0)
-    for i in range(hours):
-        ts = now - timedelta(hours=hours-i)
-        timestamps.append(ts)
-        open_price = price
-        change = np.random.normal(0, volatility/2)
-        close_price = open_price * (1 + change)
-        high = max(open_price, close_price) * (1 + abs(np.random.normal(0, volatility/4)))
-        low = min(open_price, close_price) * (1 - abs(np.random.normal(0, volatility/4)))
-        opens.append(open_price)
-        closes.append(close_price)
-        highs.append(high)
-        lows.append(low)
-        price = close_price
-    df = pd.DataFrame({
-        "timestamp": timestamps,
-        "open": opens,
-        "high": highs,
-        "low": lows,
-        "close": closes
-    })
-    df["datetime"] = df["timestamp"]
-    df["hour_cdmx"] = df["timestamp"].dt.tz_localize('UTC').dt.tz_convert(CDMX_TZ).dt.hour
-    return df
+def fetch_binance_klines(symbol, interval="1h", limit=48):
+    """Obtiene velas horarias para análisis de horarios"""
+    try:
+        rate_limit()
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+        resp = requests.get(url, timeout=10)
+        data = resp.json()
+        ohlc = []
+        for candle in data:
+            ohlc.append({
+                "timestamp": candle[0],
+                "open": float(candle[1]),
+                "high": float(candle[2]),
+                "low": float(candle[3]),
+                "close": float(candle[4])
+            })
+        df = pd.DataFrame(ohlc)
+        df["datetime"] = pd.to_datetime(df["timestamp"], unit='ms')
+        df["hour_cdmx"] = df["datetime"].dt.tz_localize('UTC').dt.tz_convert(CDMX_TZ).dt.hour
+        return df
+    except Exception as e:
+        st.error(f"Error obteniendo velas de {symbol}: {e}")
+        return None
+
+def get_fear_greed():
+    """Índice de miedo y codicia (cacheado 1 hora)"""
+    if "fg_last_update" in st.session_state and datetime.now().timestamp() - st.session_state.fg_last_update < 3600:
+        return st.session_state.fear_greed
+    try:
+        rate_limit()
+        resp = requests.get("https://api.alternative.me/fng/", timeout=10)
+        data = resp.json()
+        value = int(data['data'][0]['value'])
+        classification = data['data'][0]['value_classification']
+        st.session_state.fear_greed = (value, classification)
+        st.session_state.fg_last_update = datetime.now().timestamp()
+        return value, classification
+    except:
+        return 50, "Neutral"
 
 def compute_rsi(prices, period=14):
     if len(prices) < period + 1:
@@ -138,18 +155,18 @@ def generate_signal(price, change_24h, fng_value, price_history):
             score -= 10
     score = max(0, min(100, int(score)))
     if score >= 70:
-        return "🟢 COMPRAR", score, "Fuerte señal alcista"
+        return "🟢 COMPRAR", score, "Fuerte señal alcista (solo referencia)"
     elif score >= 60:
-        return "🟡 CONSIDERAR COMPRA", score, "Señal moderada alcista"
+        return "🟡 CONSIDERAR COMPRA", score, "Señal moderada alcista (solo referencia)"
     elif score <= 30:
-        return "🔴 VENDER", score, "Fuerte señal bajista"
+        return "🔴 VENDER", score, "Fuerte señal bajista (solo referencia)"
     elif score <= 40:
-        return "🟠 CONSIDERAR VENTA", score, "Señal moderada bajista"
+        return "🟠 CONSIDERAR VENTA", score, "Señal moderada bajista (solo referencia)"
     else:
         return "⚪ MANTENER", score, "Sin tendencia clara"
 
 def get_best_worst_hours(symbol):
-    df = generate_ohlc(symbol, days=2)
+    df = fetch_binance_klines(symbol, limit=48)
     if df is None or df.empty:
         return None, None
     df['change'] = (df['close'] - df['open']) / df['open'] * 100
@@ -170,99 +187,112 @@ def send_telegram(message):
 
 # --- Estado de sesión ---
 if "last_signals" not in st.session_state:
-    st.session_state.last_signals = {sym: "" for sym in CRYPTOS}
+    st.session_state.last_signals = {sym: "" for sym in BINANCE_PAIRS}
 if "price_history" not in st.session_state:
-    st.session_state.price_history = {sym: deque(maxlen=50) for sym in CRYPTOS}
+    st.session_state.price_history = {sym: deque(maxlen=50) for sym in BINANCE_PAIRS}
 if "last_report_time" not in st.session_state:
     st.session_state.last_report_time = datetime.now().timestamp() - 8*3600
 if "current_prices" not in st.session_state:
-    st.session_state.current_prices = {sym: CRYPTOS[sym]["base"] for sym in CRYPTOS}
+    st.session_state.current_prices = {sym: 0 for sym in BINANCE_PAIRS}
 
 # --- Interfaz ---
 st.sidebar.header("⚙️ Configuración")
-refresh_interval = st.sidebar.slider("Actualizar cada (segundos)", 5, 30, 10)
+refresh_interval = st.sidebar.slider("Actualizar cada (segundos)", 60, 180, 90, step=10)
 auto_refresh = st.sidebar.checkbox("Auto-refrescar", value=True)
-st.sidebar.warning("⚠️ Modo simulado - datos sintéticos. No requiere internet.")
+st.sidebar.info("🔒 Actualización lenta (≥60s) para evitar bloqueos de API.")
+st.sidebar.warning("📢 Datos reales de Binance. No usar para trading real.")
 
-fng_val, fng_label = generate_fear_greed()
-st.sidebar.metric("😨 Fear & Greed (sim)", f"{fng_val}/100", fng_label)
+fng_val, fng_label = get_fear_greed()
+st.sidebar.metric("😨 Fear & Greed", f"{fng_val}/100", fng_label)
 
 tab1, tab2, tab3 = st.tabs(["📊 Precios y Señales", "📈 Gráficas", "⏰ Análisis de Horarios"])
 
 with tab1:
     col1, col2 = st.columns([2, 1])
     with col1:
-        st.subheader("📊 Precios en tiempo real (simulados)")
+        st.subheader("📊 Precios en tiempo real (Binance)")
         data_rows = []
-        for sym, info in CRYPTOS.items():
-            last_price = st.session_state.current_prices[sym]
-            new_price, _ = generate_price(info["base"], info["volatilidad"], last_price)
-            st.session_state.current_prices[sym] = new_price
-            change_24h = generate_24h_change()
-            data_rows.append({
-                "Cripto": info["name"],
-                "Precio (USD)": f"${new_price:,.2f}",
-                "24h %": f"{change_24h:+.2f}%"
-            })
+        for sym, name in BINANCE_PAIRS.items():
+            price, change = fetch_binance_price(sym)
+            if price is not None:
+                st.session_state.current_prices[sym] = price
+                data_rows.append({
+                    "Cripto": name,
+                    "Precio (USD)": f"${price:,.2f}",
+                    "24h %": f"{change:+.2f}%"
+                })
+            else:
+                data_rows.append({
+                    "Cripto": name,
+                    "Precio (USD)": "Error",
+                    "24h %": "Error"
+                })
         df_prices = pd.DataFrame(data_rows)
         st.dataframe(df_prices, use_container_width=True)
 
     with col2:
-        st.subheader("📡 Señales en Tiempo Real")
-        for sym, info in CRYPTOS.items():
+        st.subheader("📡 Señales (solo referencia)")
+        for sym, name in BINANCE_PAIRS.items():
             price = st.session_state.current_prices[sym]
-            change_24h = generate_24h_change()
+            if price == 0:
+                st.warning(f"{name}: Cargando...")
+                continue
+            # Obtener cambio 24h real para la señal
+            _, change = fetch_binance_price(sym)
+            if change is None:
+                change = 0
             st.session_state.price_history[sym].append(price)
-            signal, score, desc = generate_signal(price, change_24h, fng_val, st.session_state.price_history[sym])
+            signal, score, desc = generate_signal(price, change, fng_val, st.session_state.price_history[sym])
+            # Alerta solo si cambia a COMPRAR o VENDER
             if signal != st.session_state.last_signals[sym] and ("COMPRAR" in signal or "VENDER" in signal):
-                alert = f"🚨 *{info['name']}* 🚨\n{signal}\n💰 ${price:,.2f}\n📈 24h: {change_24h:+.2f}%\n😨 Fear: {fng_val}/100\n🎯 Score: {score}/100"
+                alert = f"🚨 *{name}* 🚨\n{signal}\n💰 ${price:,.2f}\n📈 24h: {change:+.2f}%\n😨 Fear: {fng_val}/100\n🎯 Score: {score}/100\n_{desc}_"
                 send_telegram(alert)
                 st.session_state.last_signals[sym] = signal
-            st.metric(info["name"], f"${price:,.2f}", f"{change_24h:+.2f}%")
+            st.metric(name, f"${price:,.2f}", f"{change:+.2f}%")
             st.write(f"**{signal}** (Score: {score}/100)")
             st.caption(desc)
             st.markdown("---")
 
 with tab2:
-    selected_sym = st.selectbox("Selecciona criptomoneda", list(CRYPTOS.keys()), format_func=lambda x: CRYPTOS[x]["name"])
-    df_hist = generate_ohlc(selected_sym, days=3)   # <--- Aquí se define df_hist
+    selected_sym = st.selectbox("Selecciona par", list(BINANCE_PAIRS.keys()), format_func=lambda x: BINANCE_PAIRS[x])
+    df_hist = fetch_binance_klines(selected_sym, limit=72)
     if df_hist is not None and not df_hist.empty:
-        fig = px.line(df_hist, x="datetime", y="close", title=f"{CRYPTOS[selected_sym]['name']} - Precio horario simulado")
+        fig = px.line(df_hist, x="datetime", y="close", title=f"{BINANCE_PAIRS[selected_sym]} - Precio horario (Binance)")
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("No se pudieron generar datos históricos.")
+        st.info("No se pudieron cargar datos históricos. Intenta más tarde.")
 
 with tab3:
-    st.subheader("⏰ Mejores y Peores Horas del Día (CDMX) - Datos simulados")
-    if st.button("🔄 Actualizar horarios ahora"):
+    st.subheader("⏰ Mejores y Peores Horas del Día (CDMX) - Basado en velas reales de Binance")
+    if st.button("🔄 Actualizar análisis ahora"):
         st.cache_data.clear()
         st.rerun()
-    for sym, info in CRYPTOS.items():
+    for sym, name in BINANCE_PAIRS.items():
         best, worst = get_best_worst_hours(sym)
         if best is not None and not best.empty:
-            st.markdown(f"### {info['name']}")
+            st.markdown(f"### {name}")
             col_a, col_b = st.columns(2)
             with col_a:
-                st.markdown("🟢 **Mejores horas para COMPRAR**")
+                st.markdown("🟢 **Mejores horas para COMPRAR** (histórico)")
                 for hour, row in best.iterrows():
                     st.write(f"⏰ {int(hour):02d}:00 → +{row['mean']:.2f}%")
             with col_b:
-                st.markdown("🔴 **Peores horas para VENDER**")
+                st.markdown("🔴 **Peores horas para VENDER** (histórico)")
                 for hour, row in worst.iterrows():
                     st.write(f"⏰ {int(hour):02d}:00 → {row['mean']:.2f}%")
             st.markdown("---")
         else:
-            st.write(f"⚠️ {info['name']}: Datos insuficientes")
+            st.write(f"⚠️ {name}: Datos insuficientes (espera 48h de datos)")
 
-# --- Reporte automático cada 8 horas (Telegram) ---
+# Reporte automático cada 8 horas (Telegram)
 now_ts = datetime.now().timestamp()
 if now_ts - st.session_state.last_report_time >= 8 * 3600:
     st.session_state.last_report_time = now_ts
-    report_lines = ["📊 *REPORTE DE HORARIOS* (simulado)", ""]
-    for sym, info in CRYPTOS.items():
+    report_lines = ["📊 *REPORTE DE HORARIOS (Binance)*", ""]
+    for sym, name in BINANCE_PAIRS.items():
         best, worst = get_best_worst_hours(sym)
         if best is not None and not best.empty:
-            report_lines.append(f"*{info['name']}*")
+            report_lines.append(f"*{name}*")
             report_lines.append("🟢 Mejores: " + ", ".join([f"{int(h):02d}:00 ({row['mean']:+.2f}%)" for h, row in best.iterrows()]))
             report_lines.append("🔴 Peores: " + ", ".join([f"{int(h):02d}:00 ({row['mean']:+.2f}%)" for h, row in worst.iterrows()]))
             report_lines.append("")
