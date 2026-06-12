@@ -38,7 +38,7 @@ REFRESH_INTERVAL_SEC = 60
 HEARTBEAT_CYCLES = 30
 MIN_HISTORY_LEN = 5
 
-# --- Datos de mercado ---
+# --- Datos de mercado (simulación de respaldo) ---
 REAL_BASES = {"BTC": 63000, "ETH": 1670}
 SIM_PRICES = {"BTC": 63000, "ETH": 1670}
 SIM_CHANGES = {"BTC": 0.0, "ETH": 0.0}
@@ -57,7 +57,7 @@ if "balance" not in st.session_state:
     st.session_state.last_cycle_time = time.time()
     st.session_state.daily_trades = 0
     st.session_state.last_trade_day = datetime.now().day
-    st.session_state.use_real = True
+    st.session_state.use_real = True          # Intentar datos reales por defecto
     st.session_state.last_fail = 0
 
 # Crear carpeta para logs
@@ -72,37 +72,61 @@ if os.path.exists("data/trades.csv") and not st.session_state.trades:
     except:
         pass
 
-# ==================== FUNCIONES DE MERCADO ====================
-def get_binance_price(symbol):
+# ==================== FUNCIONES DE MERCADO (CRYPTOCOMPARE) ====================
+def get_cryptocompare_price(symbol):
+    """Obtiene precio real desde Cryptocompare (más estable que Binance)"""
     try:
-        pair = f"{symbol}USDT"
-        url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={pair}"
-        resp = requests.get(url, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            return float(data['lastPrice']), float(data['priceChangePercent'])
-        return None, None
-    except:
+        # Precio actual
+        url_price = f"https://min-api.cryptocompare.com/data/price?fsym={symbol}&tsyms=USD"
+        resp = requests.get(url_price, timeout=5)
+        if resp.status_code != 200:
+            return None, None
+        price = float(resp.json()["USD"])
+        # Cambio 24h
+        url_change = f"https://min-api.cryptocompare.com/data/pricemultifull?fsyms={symbol}&tsyms=USD"
+        resp2 = requests.get(url_change, timeout=5)
+        if resp2.status_code == 200:
+            data = resp2.json()
+            change = data["RAW"][symbol]["USD"]["CHANGEPCT24HOUR"]
+        else:
+            change = 0.0
+        return price, change
+    except Exception as e:
+        print(f"Error Cryptocompare: {e}")
         return None, None
 
 def get_price(symbol):
+    """Obtiene precio real (si es posible) o simulado realista"""
     now = time.time()
+    # Si estamos en modo real y no ha fallado recientemente
     if st.session_state.use_real and (now - st.session_state.last_fail > 300):
-        price, change = get_binance_price(symbol)
-        if price and ((symbol=="BTC" and 30000<price<100000) or (symbol=="ETH" and 500<price<5000)):
-            return price, change, "real"
+        price, change = get_cryptocompare_price(symbol)
+        if price is not None and price > 0:
+            # Validar rangos razonables
+            if (symbol == "BTC" and 30000 < price < 100000) or (symbol == "ETH" and 500 < price < 5000):
+                return price, change, "real"
+        # Si falla, cambiar a simulación por 5 minutos
         st.session_state.last_fail = now
         st.session_state.use_real = False
-    # Simulación realista
+        # Opcional: enviar alerta de cambio a simulación
+        if st.session_state.cycle_count > 0:
+            send_telegram(f"⚠️ *Cambio a modo simulación* - No se pudieron obtener datos reales de Cryptocompare.")
+    
+    # Modo simulado (realista)
     base = REAL_BASES[symbol]
-    last = SIM_PRICES.get(symbol, base)
-    new_price = last * (1 + random.uniform(-0.015, 0.015))
-    new_price = max(base*0.9, min(base*1.1, new_price))
-    change = SIM_CHANGES.get(symbol, 0.0) + random.uniform(-0.3, 0.3)
-    change = max(-10, min(10, change))
+    last_price = SIM_PRICES.get(symbol, base)
+    # Movimiento aleatorio realista (entre -1.5% y +1.5% cada ciclo)
+    change_pct = random.uniform(-0.015, 0.015)
+    new_price = last_price * (1 + change_pct)
+    # Limitar desviación máxima del 10% respecto al base
+    new_price = max(base * 0.9, min(base * 1.1, new_price))
+    # Simular cambio 24h (tendencia suave)
+    sim_change = SIM_CHANGES.get(symbol, 0.0)
+    sim_change += random.uniform(-0.3, 0.3)
+    sim_change = max(-10, min(10, sim_change))
     SIM_PRICES[symbol] = new_price
-    SIM_CHANGES[symbol] = change
-    return new_price, change, "sim"
+    SIM_CHANGES[symbol] = sim_change
+    return new_price, sim_change, "sim"
 
 def get_fear_greed():
     try:
@@ -222,7 +246,7 @@ def check_trailing_stop(symbol, current_price):
     stop_price = high * (1 - TRAILING_STOP_PCT / 100)
     return current_price <= stop_price
 
-# ==================== EJECUCIÓN DE ÓRDENES ====================
+# ==================== EJECUCIÓN DE ÓRDENES (SIMULADA) ====================
 def execute_trade(symbol, action, price):
     if action == "BUY":
         if not can_trade():
@@ -266,7 +290,7 @@ def execute_trade(symbol, action, price):
 
 # ==================== INTERFAZ STREAMLIT ====================
 st.set_page_config(page_title="Crypto Trading Bot Pro", layout="wide")
-st.title("🤖 Crypto Trading Bot Pro - Estrategia Avanzada")
+st.title("🤖 Crypto Trading Bot Pro - Datos Reales (Cryptocompare)")
 
 st.sidebar.header("⚙️ Configuración")
 refresh = st.sidebar.slider("Intervalo (segundos)", 30, 180, REFRESH_INTERVAL_SEC)
@@ -298,11 +322,15 @@ if st.sidebar.button("📢 Enviar alerta de prueba"):
     else:
         st.error("Error")
 
-# Mostrar modo
+# Mostrar modo actual
 if st.session_state.use_real:
-    st.success("✅ Datos REALES (Binance)")
+    st.success("✅ Modo REAL activo (datos de Cryptocompare)")
 else:
-    st.warning("⚠️ Datos SIMULADOS (fallback realista)")
+    st.warning("⚠️ Modo SIMULACIÓN (fallback realista) - Los datos reales fallaron temporalmente")
+    if st.button("Reintentar conectar a API real"):
+        st.session_state.use_real = True
+        st.session_state.last_fail = 0
+        st.rerun()
 
 # ==================== OBTENER DATOS DEL MERCADO ====================
 fng, fng_label = get_fear_greed()
@@ -325,7 +353,7 @@ if gap > 300:
     send_telegram(f"⚠️ Reanudación tras {gap:.0f} segundos de inactividad")
 st.session_state.last_cycle_time = now
 if st.session_state.cycle_count % HEARTBEAT_CYCLES == 0:
-    send_telegram(f"💓 *Heartbeat* - Ciclo {st.session_state.cycle_count} (intervalo {refresh}s)")
+    send_telegram(f"💓 *Heartbeat* - Ciclo {st.session_state.cycle_count} (intervalo {refresh}s) | Fuente: {'Real' if st.session_state.use_real else 'Sim'}")
 
 # ==================== LÓGICA DE DECISIÓN ====================
 for sym in ["BTC", "ETH"]:
@@ -404,7 +432,7 @@ with col1:
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True)
     st.metric("Fear & Greed", f"{fng}/100 ({fng_label})")
-    st.caption(f"Ciclo: {st.session_state.cycle_count} | Datos: {'Real' if source=='real' else 'Sim'}")
+    st.caption(f"Ciclo: {st.session_state.cycle_count} | Fuente: {'Real' if source=='real' else 'Sim'}")
 
 with col2:
     st.subheader("📜 Historial de Operaciones")
