@@ -6,8 +6,9 @@ import requests
 from collections import deque
 from datetime import datetime
 import plotly.express as px
+import random
 
-# ==================== CONFIGURACIÓN TELEGRAM ====================
+# ==================== CONFIGURACIÓN ====================
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
 TELEGRAM_CHAT_ID = "5835990242"
 
@@ -18,25 +19,61 @@ def send_telegram(message):
     except:
         pass
 
-# ==================== FUNCIONES DE MERCADO (Cryptocompare) ====================
-def get_cryptocompare_price(symbol):
-    """
-    symbol: 'BTC', 'ETH', etc. (sin -USD)
-    """
+# ==================== DATOS REALES (CRYPTOCOMPARE) CON FALLBACK ====================
+# Estado de conectividad
+if "use_real" not in st.session_state:
+    st.session_state.use_real = True
+if "last_fail" not in st.session_state:
+    st.session_state.last_fail = 0
+
+def get_real_price(symbol):
+    """Intenta obtener precio real de Cryptocompare"""
     try:
-        # Precio actual
         url_price = f"https://min-api.cryptocompare.com/data/price?fsym={symbol}&tsyms=USD"
-        resp_price = requests.get(url_price, timeout=5)
-        price = float(resp_price.json()["USD"])
-        # Cambio 24h
+        resp = requests.get(url_price, timeout=5)
+        if resp.status_code != 200:
+            return None, None
+        price = float(resp.json()["USD"])
         url_change = f"https://min-api.cryptocompare.com/data/pricemultifull?fsyms={symbol}&tsyms=USD"
-        resp_change = requests.get(url_change, timeout=5)
-        data = resp_change.json()
-        change = data["RAW"][symbol]["USD"]["CHANGEPCT24HOUR"]
-        return price, change
-    except Exception as e:
-        print(f"Error Cryptocompare: {e}")
+        resp2 = requests.get(url_change, timeout=5)
+        if resp2.status_code == 200:
+            data = resp2.json()
+            change = data["RAW"][symbol]["USD"]["CHANGEPCT24HOUR"]
+            return price, change
+        return price, 0.0
+    except:
         return None, None
+
+# Precios base realistas para simulación
+REAL_BASES = {"BTC": 65000, "ETH": 3500}
+SIM_PRICES = {"BTC": 65000, "ETH": 3500}
+SIM_CHANGES = {"BTC": 0.0, "ETH": 0.0}
+
+def get_price(symbol):
+    global SIM_PRICES, SIM_CHANGES
+    now = time.time()
+    # Si estamos en modo real y no ha fallado recientemente
+    if st.session_state.use_real and (now - st.session_state.last_fail > 300):  # 5 minutos de gracia
+        price, change = get_real_price(symbol)
+        if price is not None:
+            return price, change, "real"
+        else:
+            st.session_state.last_fail = now
+            st.session_state.use_real = False
+            # Pasar a modo simulado
+    # Modo simulado
+    # Simular movimiento de precio realista (random walk con tendencia suave)
+    last_price = SIM_PRICES.get(symbol, REAL_BASES[symbol])
+    # Cambio porcentual aleatorio entre -1% y +1% (simula volatilidad real)
+    change_pct = random.uniform(-0.01, 0.01)
+    new_price = last_price * (1 + change_pct)
+    # Cambio 24h simulado (varía lentamente)
+    sim_change = SIM_CHANGES.get(symbol, 0.0)
+    sim_change += random.uniform(-0.5, 0.5)
+    sim_change = max(-10, min(10, sim_change))
+    SIM_PRICES[symbol] = new_price
+    SIM_CHANGES[symbol] = sim_change
+    return new_price, sim_change, "sim"
 
 def get_fear_greed():
     try:
@@ -48,6 +85,7 @@ def get_fear_greed():
         pass
     return 50, "Neutral"
 
+# ==================== INDICADORES Y FÓRMULA ====================
 def compute_rsi(prices, period=14):
     if len(prices) < period + 1:
         return 50
@@ -61,7 +99,6 @@ def compute_rsi(prices, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# ==================== FÓRMULA DE PUNTAJE ====================
 def calculate_score(price, change, fng, hist):
     score = 50
     # Fear & Greed
@@ -88,26 +125,15 @@ def calculate_score(price, change, fng, hist):
 # ==================== INICIALIZAR ESTADO ====================
 if "balance" not in st.session_state:
     st.session_state.balance = 1000.0
-    st.session_state.positions = {}
+    st.session_state.positions = {"BTC": 0.0, "ETH": 0.0}
     st.session_state.trades = []
-    st.session_state.price_history = {}
-    st.session_state.last_action = {}
-    st.session_state.last_prices = {}
+    st.session_state.price_history = {"BTC": deque(maxlen=50), "ETH": deque(maxlen=50)}
+    st.session_state.last_action = {"BTC": None, "ETH": None}
+    st.session_state.last_prices = {"BTC": 0.0, "ETH": 0.0}
 
-# Símbolos en formato Cryptocompare (sin -USD)
 CRYPTOS = {"BTC": "Bitcoin", "ETH": "Ethereum"}
 
-for sym in CRYPTOS:
-    if sym not in st.session_state.price_history:
-        st.session_state.price_history[sym] = deque(maxlen=50)
-    if sym not in st.session_state.positions:
-        st.session_state.positions[sym] = 0.0
-    if sym not in st.session_state.last_action:
-        st.session_state.last_action[sym] = None
-    if sym not in st.session_state.last_prices:
-        st.session_state.last_prices[sym] = 0.0
-
-# ==================== INTERFAZ DE USUARIO ====================
+# ==================== INTERFAZ ====================
 st.set_page_config(page_title="Crypto Auto Trader", layout="wide")
 st.title("🤖 Crypto Auto Trader - Fórmula Matemática + Alertas Telegram")
 
@@ -121,8 +147,9 @@ trade_amount = st.sidebar.number_input("Monto por orden (USDT)", 10.0, 100.0, 20
 st.sidebar.subheader("💰 Estado Simulado")
 st.sidebar.metric("Saldo USDT", f"${st.session_state.balance:,.2f}")
 total = st.session_state.balance
-for sym, qty in st.session_state.positions.items():
+for sym in CRYPTOS:
     last_p = st.session_state.last_prices.get(sym, 0)
+    qty = st.session_state.positions.get(sym, 0)
     if qty > 0 and last_p > 0:
         total += qty * last_p
 st.sidebar.metric("Valor cartera", f"${total:,.2f}")
@@ -131,35 +158,32 @@ if st.sidebar.button("Reiniciar simulación"):
         del st.session_state[key]
     st.rerun()
 
+if not st.session_state.use_real:
+    st.warning("⚠️ **Modo simulación activado** – No se pudieron obtener datos reales de la API. Los precios son simulados pero realistas.")
+
 # ==================== OBTENER DATOS ====================
 fng, fng_label = get_fear_greed()
 price_data = {}
 for sym, name in CRYPTOS.items():
-    price, change = get_cryptocompare_price(sym)
-    if price is None:
-        # Si falla, mantenemos el último precio conocido (simulación)
-        price = st.session_state.last_prices.get(sym, 0)
-        change = 0
-    else:
-        st.session_state.last_prices[sym] = price
-    price_data[sym] = (price, change)
+    price, change, source = get_price(sym)
+    st.session_state.last_prices[sym] = price
+    price_data[sym] = (price, change, source)
     if price > 0:
         st.session_state.price_history[sym].append(price)
 
 # ==================== LÓGICA DE TRADING ====================
 for sym, name in CRYPTOS.items():
-    price, change = price_data[sym]
+    price, change, source = price_data[sym]
     if price == 0:
         continue
     hist = st.session_state.price_history[sym]
     if len(hist) < 5:
-        # Aún no hay suficientes datos, no calcular señal
         signal_display = "ESPERANDO DATOS"
         score_display = 0
         action = "HOLD"
     else:
         score = calculate_score(price, change, fng, hist)
-        score_display = score
+        score_display = f"{score:.1f}/100"
         if score >= buy_th:
             action = "BUY"
             signal_display = "COMPRAR"
@@ -170,29 +194,26 @@ for sym, name in CRYPTOS.items():
             action = "HOLD"
             signal_display = "MANTENER"
 
-        # Ejecutar orden solo si cambia la acción y no es HOLD
         if action != st.session_state.last_action.get(sym) and action in ("BUY", "SELL"):
             if action == "BUY":
                 if st.session_state.balance >= trade_amount:
                     st.session_state.balance -= trade_amount
                     qty = trade_amount / price
                     st.session_state.positions[sym] += qty
-                    msg = f"🟢 *COMPRA SIMULADA*: {qty:.6f} {name} @ ${price:.2f} (Score: {score:.1f})"
+                    msg = f"🟢 *{name}* COMPRA SIMULADA: {qty:.6f} @ ${price:.2f} (Score: {score:.1f})"
                     send_telegram(msg)
                 else:
-                    msg = f"❌ Saldo insuficiente para comprar {name}"
-                    send_telegram(msg)
-            else:  # SELL
+                    send_telegram(f"❌ Saldo insuficiente para comprar {name}")
+            else:
                 qty = st.session_state.positions.get(sym, 0)
                 if qty > 0:
                     revenue = qty * price
                     st.session_state.balance += revenue
                     st.session_state.positions[sym] = 0
-                    msg = f"🔴 *VENTA SIMULADA*: {qty:.6f} {name} @ ${price:.2f} (Score: {score:.1f})"
+                    msg = f"🔴 *{name}* VENTA SIMULADA: {qty:.6f} @ ${price:.2f} (Score: {score:.1f})"
                     send_telegram(msg)
                 else:
-                    msg = f"❌ No hay posición para vender {name}"
-                    send_telegram(msg)
+                    send_telegram(f"❌ No hay posición para vender {name}")
             st.session_state.trades.append((datetime.now(), msg))
             st.session_state.last_action[sym] = action
 
@@ -202,9 +223,9 @@ with col1:
     st.subheader("📊 Señales en vivo")
     rows = []
     for sym, name in CRYPTOS.items():
-        price, change = price_data[sym]
+        price, change, source = price_data[sym]
         if price == 0:
-            rows.append({"Moneda": name, "Precio": "Sin datos", "24h %": "N/A", "Puntaje": "N/A", "Señal": "ERROR"})
+            rows.append({"Moneda": name, "Precio": "Sin datos", "24h %": "N/A", "Puntaje": "N/A", "Señal": "ERROR", "Fuente": "N/A"})
             continue
         hist = st.session_state.price_history[sym]
         if len(hist) < 5:
@@ -221,10 +242,11 @@ with col1:
             score_display = f"{score:.1f}/100"
         rows.append({
             "Moneda": name,
-            "Precio": f"${price:,.2f}" if price>0 else "N/A",
-            "24h %": f"{change:+.2f}%" if change != 0 else "N/A",
+            "Precio": f"${price:,.2f}",
+            "24h %": f"{change:+.2f}%",
             "Puntaje": score_display,
-            "Señal": signal_display
+            "Señal": signal_display,
+            "Fuente": "Real" if source=="real" else "Sim"
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True)
     st.metric("😨 Fear & Greed", f"{fng}/100 ({fng_label})")
@@ -236,6 +258,11 @@ with col2:
             st.text(f"{ts.strftime('%H:%M:%S')} - {msg.replace('*','')}")
     else:
         st.caption("Aún no hay operaciones. Esperando suficientes datos (mínimo 5 lecturas)...")
+    # Botón para forzar modo real (si se ha recuperado la conexión)
+    if not st.session_state.use_real and st.button("Intentar conectar a API real de nuevo"):
+        st.session_state.use_real = True
+        st.session_state.last_fail = 0
+        st.rerun()
 
 # ==================== AUTO REFRESCO ====================
 if auto:
