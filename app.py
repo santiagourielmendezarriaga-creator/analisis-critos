@@ -1,9 +1,8 @@
 import streamlit as st
-import requests
+import random
 import time
 import json
 import os
-import random
 from collections import deque
 from datetime import datetime
 
@@ -13,106 +12,70 @@ TELEGRAM_CHAT_ID = "5835990242"
 
 def send_telegram(msg):
     try:
+        import requests
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=3)
     except:
         pass
 
 # ==================== PARÁMETROS ====================
-THRESHOLD = 0.05               # 0.05% de cambio para señal
-ARTIFICIAL_MOVE = 0.02         # movimiento artificial si el real no cambia (en %)
 MAX_POSITION_SIZE_MXN = 500.0
 MAX_DAILY_TRADES = 200
 COMMISSION_PCT = 0.1
 SLIPPAGE_PCT = 0.05
 REFRESH_INTERVAL_SEC = 5
-HEARTBEAT_CYCLES = 30
 
-# ==================== BITSO (DATOS REALES) ====================
-def get_bitso_ticker(book="btc_mxn"):
-    try:
-        url = f"https://api.bitso.com/api/v3/ticker/?book={book}"
-        resp = requests.get(url, timeout=3)
-        if resp.status_code != 200:
-            return None, None
-        data = resp.json()
-        payload = data.get("payload")
-        if not payload:
-            return None, None
-        last = float(payload.get("last", 0))
-        if last == 0:
-            return None, None
-        return last, 0.0
-    except:
-        return None, None
+# ==================== SIMULACIÓN CON SEÑAL FORZADA ====================
+# Alterna entre subida y bajada para generar señales continuas
+phase = 0
+prices = {"BTC": 1_070_000, "ETH": 28_000}
 
-# ==================== SIMULACIÓN CON MOVIMIENTO ASEGURADO ====================
-BACKUP_PRICES = {"BTC": 1_070_000, "ETH": 28_000}
-sim_prices = {"BTC": 1_070_000, "ETH": 28_000}
-sim_phase = {"BTC": 0, "ETH": 0}
-
-def get_simulated_price(symbol):
-    global sim_phase
-    # Movimiento cíclico para garantizar variación
-    sim_phase[symbol] += 1
-    # Oscilación entre -0.5% y +0.5% de forma alternada
-    osc = 0.5 * (1 if sim_phase[symbol] % 2 == 0 else -1)
-    base = BACKUP_PRICES[symbol]
-    # Añadir ruido
-    noise = random.uniform(-0.2, 0.2)
-    new_price = base * (1 + (osc + noise)/100)
-    new_price = max(base*0.9, min(base*1.1, new_price))
-    sim_prices[symbol] = new_price
-    return new_price, 0.0
+def get_forced_price(symbol):
+    global phase
+    phase += 1
+    # Alterna entre +0.2% y -0.2% cada ciclo
+    change = 0.2 if phase % 2 == 0 else -0.2
+    new_price = prices[symbol] * (1 + change / 100)
+    prices[symbol] = new_price
+    return new_price, change
 
 # ==================== PERSISTENCIA ====================
 STATE_FILE = "bot_state.json"
 
 def save_state(state):
-    to_save = {
-        "balance": state["balance"],
-        "positions": state["positions"],
-        "trades": [(t.isoformat(), m) for t,m in state["trades"][-100:]],
-        "last_action": state["last_action"],
-        "daily_trades": state["daily_trades"],
-        "last_trade_day": state["last_trade_day"],
-        "cycle": state["cycle"],
-        "ref_price": state.get("ref_price", {})
-    }
     with open(STATE_FILE, "w") as f:
-        json.dump(to_save, f)
+        json.dump(state, f)
 
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r") as f:
-                data = json.load(f)
-                return data
+                return json.load(f)
         except:
             pass
     return None
 
-# ==================== EJECUCIÓN ====================
+# ==================== EJECUCIÓN DE ÓRDENES ====================
 def can_trade(state):
     now_day = datetime.now().day
-    if now_day != state["last_trade_day"]:
+    if now_day != state.get("last_trade_day", now_day):
         state["daily_trades"] = 0
         state["last_trade_day"] = now_day
-    return state["daily_trades"] < MAX_DAILY_TRADES
+    return state.get("daily_trades", 0) < MAX_DAILY_TRADES
 
 def execute_trade(symbol, action, price, state):
     if action == "BUY":
         if not can_trade(state):
             return None, "❌ Límite diario"
-        amount = min(MAX_POSITION_SIZE_MXN, state["balance"])
+        amount = min(MAX_POSITION_SIZE_MXN, state.get("balance", 1000.0))
         if amount <= 0:
             return None, "❌ Saldo insuficiente"
         eff_price = price * (1 + SLIPPAGE_PCT/100)
         commission = amount * COMMISSION_PCT/100
         qty = (amount - commission) / eff_price
-        state["balance"] -= amount
+        state["balance"] = state.get("balance", 1000.0) - amount
         state["positions"][symbol] = state["positions"].get(symbol, 0) + qty
-        state["daily_trades"] += 1
+        state["daily_trades"] = state.get("daily_trades", 0) + 1
         msg = (f"🟢 *COMPRA* {symbol}\nQty: {qty:.6f}\nPrecio: ${eff_price:,.2f}\nComisión: ${commission:.2f}\nSaldo: ${state['balance']:.2f}")
         return qty, msg
     else:
@@ -123,13 +86,13 @@ def execute_trade(symbol, action, price, state):
         gross = qty * eff_price
         commission = gross * COMMISSION_PCT/100
         net = gross - commission
-        state["balance"] += net
+        state["balance"] = state.get("balance", 1000.0) + net
         state["positions"][symbol] = 0
-        state["daily_trades"] += 1
+        state["daily_trades"] = state.get("daily_trades", 0) + 1
         msg = (f"🔴 *VENTA* {symbol}\nQty: {qty:.6f}\nPrecio: ${eff_price:,.2f}\nComisión: ${commission:.2f}\nNeto: ${net:.2f}\nSaldo: ${state['balance']:.2f}")
         return qty, msg
 
-# ==================== INICIALIZAR ====================
+# ==================== INICIALIZAR ESTADO ====================
 saved = load_state()
 if saved:
     state = saved
@@ -147,14 +110,12 @@ else:
     }
 
 # ==================== INTERFAZ ====================
-st.set_page_config(page_title="Bot Señal Garantizada", layout="wide")
-st.title("⚡ Bot Señal Garantizada (movimiento artificial si el mercado está plano)")
+st.set_page_config(page_title="Bot Demostración (Señal Forzada)", layout="wide")
+st.title("⚡ Bot Demostración - Señal Garantizada en cada ciclo")
 
 st.sidebar.header("⚙️ Configuración")
 refresh = st.sidebar.slider("Intervalo (segundos)", 3, 20, REFRESH_INTERVAL_SEC)
 auto = st.sidebar.checkbox("Auto-refrescar", True)
-umbral = st.sidebar.number_input("Umbral de cambio %", 0.01, 1.0, THRESHOLD, 0.01)
-inyectar = st.sidebar.checkbox("Forzar movimiento artificial si el precio no cambia", value=True)
 
 st.sidebar.subheader("💰 Cartera (MXN)")
 st.sidebar.metric("Saldo", f"${state['balance']:,.2f}")
@@ -166,70 +127,42 @@ for s in ["BTC","ETH"]:
         total += q*p
 st.sidebar.metric("Valor total", f"${total:,.2f}")
 st.sidebar.metric("Ops hoy", state["daily_trades"])
-if st.sidebar.button("Reiniciar"):
+if st.sidebar.button("Reiniciar simulación"):
     for k in list(st.session_state.keys()):
         del st.session_state[k]
     if os.path.exists(STATE_FILE):
         os.remove(STATE_FILE)
     st.rerun()
 if st.sidebar.button("Prueba Telegram"):
-    send_telegram("🧪 Alerta - Bot garantizado")
+    send_telegram("🧪 Alerta - Modo demostración")
     st.success("Enviado")
 
-st.info(f"⚡ El bot compara el precio actual con el PRECIO INICIAL. Umbral: {umbral}%. Si el mercado no se mueve y activas 'Forzar movimiento', se añade una pequeña variación artificial para generar señal inmediata.")
+st.info("⚡ Modo DEMOSTRACIÓN: los precios suben y bajan artificialmente cada ciclo para generar señales de compra/venta inmediatas.")
 
-# ==================== OBTENER DATOS ====================
-btc_p, _ = get_bitso_ticker("btc_mxn")
-eth_p, _ = get_bitso_ticker("eth_mxn")
-
-if btc_p is None:
-    btc_p, _ = get_simulated_price("BTC")
-    eth_p, _ = get_simulated_price("ETH")
-    fuente = "Simulación con movimiento forzado"
-else:
-    fuente = "Bitso real"
-
-# Inyectar movimiento artificial si se solicita y el precio no ha cambiado respecto al ciclo anterior
-if "last_raw_prices" not in state:
-    state["last_raw_prices"] = {"BTC": btc_p, "ETH": eth_p}
-else:
-    for sym, price in [("BTC", btc_p), ("ETH", eth_p)]:
-        if inyectar and abs(price - state["last_raw_prices"].get(sym, price)) < 1:
-            # El precio no ha cambiado (o cambio minúsculo), añadimos variación artificial
-            move = random.uniform(-ARTIFICIAL_MOVE, ARTIFICIAL_MOVE) / 100
-            price = price * (1 + move)
-            if sym == "BTC":
-                btc_p = price
-            else:
-                eth_p = price
-            fuente += " + movimiento artificial"
-    state["last_raw_prices"]["BTC"] = btc_p
-    state["last_raw_prices"]["ETH"] = eth_p
+# ==================== OBTENER DATOS FORZADOS ====================
+btc_p, btc_c = get_forced_price("BTC")
+eth_p, eth_c = get_forced_price("ETH")
 
 if "last_prices" not in state:
     state["last_prices"] = {"BTC": 0.0, "ETH": 0.0}
 state["last_prices"]["BTC"] = btc_p
 state["last_prices"]["ETH"] = eth_p
 
-# Guardar precio de referencia si no existe
 if "ref_price" not in state:
     state["ref_price"] = {"BTC": btc_p, "ETH": eth_p}
 
-state["cycle"] += 1
+state["cycle"] = state.get("cycle", 0) + 1
 if state["cycle"] % 10 == 0:
     save_state(state)
-if state["cycle"] % HEARTBEAT_CYCLES == 0 and state["cycle"]>0:
-    send_telegram(f"💓 Heartbeat ciclo {state['cycle']} | Fuente: {fuente}")
 
-# ==================== SEÑAL INMEDIATA ====================
+# ==================== SEÑAL ====================
 for sym, price in [("BTC", btc_p), ("ETH", eth_p)]:
     ref = state["ref_price"].get(sym, price)
-    if ref == 0:
-        continue
     cambio = (price - ref) / ref * 100
-    if cambio >= umbral:
+    # Forzar señal si el cambio es positivo o negativo (siempre lo será con la alternancia)
+    if cambio > 0:
         signal = "BUY"
-    elif cambio <= -umbral:
+    elif cambio < 0:
         signal = "SELL"
     else:
         signal = "HOLD"
@@ -253,30 +186,22 @@ for sym, price in [("BTC", btc_p), ("ETH", eth_p)]:
 # ==================== DASHBOARD ====================
 col1, col2 = st.columns(2)
 with col1:
-    st.subheader("📊 Señales en Vivo")
+    st.subheader("📊 Señales en Vivo (demostración)")
     rows = []
     for sym in ["BTC","ETH"]:
         name = "Bitcoin" if sym=="BTC" else "Ethereum"
         price = state["last_prices"].get(sym, 0)
         ref = state["ref_price"].get(sym, price)
-        if ref == 0:
-            cambio = 0.0
-        else:
-            cambio = (price - ref) / ref * 100
-        if cambio >= umbral:
-            sig = "🟢 COMPRAR"
-        elif cambio <= -umbral:
-            sig = "🔴 VENDER"
-        else:
-            sig = "⚪ MANTENER"
-        rows.append({"Moneda": name, "Precio": f"${price:,.0f}", "Desde inicio": f"{cambio:+.2f}%", "Señal": sig})
+        cambio = (price - ref) / ref * 100 if ref != 0 else 0
+        signal = "🟢 COMPRAR" if cambio > 0 else "🔴 VENDER" if cambio < 0 else "⚪ MANTENER"
+        rows.append({"Moneda": name, "Precio": f"${price:,.0f}", "Variación": f"{cambio:+.2f}%", "Señal": signal})
     st.table(rows)
-    st.caption(f"Ciclo: {state['cycle']} | Fuente: {fuente} | Umbral: {umbral}%")
+    st.caption(f"Ciclo: {state['cycle']} | Modo demostración - Señal cambia cada ciclo")
 with col2:
     st.subheader("📜 Operaciones")
     for ts, msg in reversed(state["trades"][-15:]):
         st.text(f"{ts.strftime('%H:%M:%S')} - {msg[:70]}")
-    st.caption("Si el mercado está plano, se inyecta movimiento artificial para demostrar la lógica.")
+    st.caption("En cada ciclo, el bot compra o vende alternativamente.")
 
 if auto:
     time.sleep(refresh)
