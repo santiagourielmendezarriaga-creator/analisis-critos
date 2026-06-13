@@ -7,7 +7,7 @@ import random
 from collections import deque
 from datetime import datetime
 
-# ==================== CONFIGURACIÓN TELEGRAM ====================
+# ==================== TELEGRAM ====================
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
 TELEGRAM_CHAT_ID = "5835990242"
 
@@ -20,21 +20,21 @@ def send_telegram(msg, parse_mode="Markdown"):
     except:
         return False
 
-# ==================== PARÁMETROS PARA VENDER MÁS RÁPIDO ====================
-BUY_THRESHOLD = 55          # Compra cuando score >= 55 (se mantiene)
-SELL_THRESHOLD = 55         # ¡Vende cuando score <= 55! (antes 45) -> MUCHO MÁS RÁPIDO
-STOP_LOSS_PCT = 1.0         # Vende si pierdes solo 1% (antes 2%)
-TAKE_PROFIT_PCT = 2.0       # Take profit al 2% (antes 3%)
-TRAILING_STOP_PCT = 0.8     # Vende si retrocede 0.8% desde máximo (antes 1.5%)
+# ==================== PARÁMETROS PARA VENTA ULTRARRÁPIDA ====================
+BUY_THRESHOLD = 55          # Compra cuando score >= 55
+SELL_THRESHOLD = 60         # Vende cuando score <= 60 (más alto que compra, así cualquier caída vende)
+STOP_LOSS_PCT = 0.5         # Stop loss al 0.5% (casi cualquier caída activa venta)
+TAKE_PROFIT_PCT = 1.5       # Take profit al 1.5%
+TRAILING_STOP_PCT = 0.5     # Trailing stop al 0.5%
 MAX_POSITION_SIZE_MXN = 500.0
-MAX_DAILY_TRADES = 100
+MAX_DAILY_TRADES = 200
 COMMISSION_PCT = 0.1
 SLIPPAGE_PCT = 0.05
-REFRESH_INTERVAL_SEC = 20
+REFRESH_INTERVAL_SEC = 20   # Actualizar cada 20 segundos
 HEARTBEAT_CYCLES = 30
 MIN_HISTORY_LEN = 1
 
-# ==================== OBTENER DATOS DE BITSO (RÁPIDO) ====================
+# ==================== BITSO (DATOS REALES) ====================
 def get_bitso_ticker(book="btc_mxn"):
     try:
         url = f"https://api.bitso.com/api/v3/ticker/?book={book}"
@@ -193,10 +193,10 @@ else:
     }
 
 # ==================== INTERFAZ STREAMLIT ====================
-st.set_page_config(page_title="Crypto Bot - Ventas Rápidas", layout="wide")
-st.title("🤖 Crypto Bot - Ventas Rápidas (Bitso Real)")
+st.set_page_config(page_title="Crypto Bot - Venta Ultra Rápida", layout="wide")
+st.title("🤖 Crypto Bot - Venta Ultrarrápida (Bitso Real)")
 
-st.sidebar.header("⚙️ Configuración")
+st.sidebar.header("⚙️ Configuración en Vivo")
 refresh = st.sidebar.slider("Intervalo (segundos)", 10, 60, REFRESH_INTERVAL_SEC)
 auto = st.sidebar.checkbox("Auto-refrescar", value=True)
 buy_th = st.sidebar.number_input("Compra si score ≥", 0, 100, BUY_THRESHOLD)
@@ -221,10 +221,10 @@ if st.sidebar.button("Reiniciar simulación"):
     st.rerun()
 
 if st.sidebar.button("📢 Enviar alerta de prueba"):
-    send_telegram("🧪 Alerta de prueba - Modo ventas rápidas")
+    send_telegram("🧪 Alerta de prueba - Modo venta ultra rápida")
     st.success("Alerta enviada")
 
-st.info("✅ Umbral de venta por defecto = 55 (muy rápido). Stop Loss = 1%, Trailing Stop = 0.8%")
+st.info("⚡ VENTA ULTRARRÁPIDA: Stop Loss 0.5%, Trailing Stop 0.5%, Umbral venta = 60 (cualquier caída mínima vende)")
 
 # Obtener datos de Bitso
 btc_price, btc_change = get_bitso_ticker("btc_mxn")
@@ -263,7 +263,7 @@ for sym, price in [("BTC", btc_price), ("ETH", eth_price)]:
         send_telegram(f"📊 *{sym}* Puntaje: {last_sc:.1f} → {score:.1f}")
         state["last_score"][sym] = score
 
-    # Decisión con los umbrales configurados (incluyendo el de venta alto)
+    # Acción según umbrales (venta muy sensible)
     if score >= buy_th:
         action = "BUY"
     elif score <= sell_th:
@@ -272,7 +272,6 @@ for sym, price in [("BTC", btc_price), ("ETH", eth_price)]:
         action = "HOLD"
 
     exit_reason = None
-    # Solo verificar stop loss / take profit / trailing si tenemos posición
     if state["positions"].get(sym, 0) > 0:
         entry = state["entry_price"].get(sym, 0)
         high = state["highest_price"].get(sym, price)
@@ -300,7 +299,7 @@ for sym, price in [("BTC", btc_price), ("ETH", eth_price)]:
             save_state(state)
         state["last_action"][sym] = action
 
-# Mostrar dashboard
+# ==================== DASHBOARD ====================
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("📊 Señales en Vivo (MXN)")
