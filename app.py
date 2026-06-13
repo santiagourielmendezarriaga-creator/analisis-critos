@@ -53,7 +53,7 @@ def get_bitso_ticker(book="btc_mxn"):
     except:
         return None, None
 
-# ==================== SIMULACIÓN REALISTA ====================
+# ==================== SIMULACIÓN ====================
 BACKUP_PRICES = {"BTC": 1_070_000, "ETH": 28_000}
 sim_prices = {"BTC": 1_070_000, "ETH": 28_000}
 
@@ -65,7 +65,7 @@ def get_simulated_price(symbol):
     sim_prices[symbol] = new_price
     return new_price, random.uniform(-2, 2)
 
-# ==================== ESTRATEGIAS ====================
+# ==================== INDICADORES ====================
 def compute_rsi(prices, period=14):
     if len(prices) < period+1:
         return 50
@@ -137,7 +137,8 @@ def load_state():
         try:
             with open(STATE_FILE, "r") as f:
                 data = json.load(f)
-                for k in ["price_history", "last_price", "last_entry_price", "highest_price"]:
+                # Asegurar claves necesarias
+                for k in ["price_history", "last_price", "last_entry_price", "highest_price", "last_action"]:
                     if k not in data:
                         data[k] = {}
                 if "daily_pnl" not in data:
@@ -207,6 +208,7 @@ def execute_trade(symbol, action, price, state, commission_pct, slippage_pct, po
 saved = load_state()
 if saved:
     state = saved
+    # Reconstruir deques
     state["price_history"] = {k: deque(v, maxlen=100) for k,v in state["price_history"].items()}
     state["trades"] = [(datetime.fromisoformat(ts), msg) for ts,msg in state.get("trades", [])]
 else:
@@ -252,7 +254,7 @@ take_profit = st.sidebar.number_input("Take Profit (%)", 0.5, 10.0, DEFAULT_TAKE
 daily_loss_limit = st.sidebar.number_input("Límite pérdida diaria (MXN)", 10.0, 500.0, DEFAULT_DAILY_LOSS_LIMIT, 10.0)
 position_size_pct = st.sidebar.slider("Tamaño posición (% saldo)", 0.1, 1.0, DEFAULT_POSITION_SIZE_PCT, 0.05)
 
-# Modo real (desactivado por defecto)
+# Modo real desactivado
 st.sidebar.checkbox("⚠️ Modo REAL (Bitso) - Solo con API key", value=False, disabled=True)
 st.sidebar.info("El modo real requiere configuración adicional. Por ahora se mantiene la simulación.")
 
@@ -300,7 +302,7 @@ state["cycle"] += 1
 if state["cycle"] % 20 == 0:
     save_state(state)
 
-if state["cycle"] % 30 == 0 and state["cycle"]>0:
+if state["cycle"] % 30 == 0 and state["cycle"] > 0:
     send_telegram(f"💓 Heartbeat ciclo {state['cycle']} | Fuente: {fuente}")
 
 # ==================== LÓGICA DE SEÑAL ====================
@@ -354,7 +356,6 @@ with st.expander("📊 Backtesting (simulación con datos sintéticos)"):
     st.markdown("Ejecuta una simulación rápida con datos históricos simulados para evaluar la estrategia.")
     days_back = st.number_input("Días hacia atrás", 1, 30, 7)
     if st.button("Ejecutar backtest (no afecta saldo real)"):
-        # Generar datos sintéticos
         periods = days_back * 24
         base = BACKUP_PRICES["BTC"]
         prices = [base]
