@@ -19,12 +19,13 @@ def send_telegram(msg):
         pass
 
 # ==================== PARÁMETROS ====================
-THRESHOLD = 0.05               # 0.05% de cambio para activar (muy bajo)
+THRESHOLD = 0.05               # 0.05% de cambio para señal
+ARTIFICIAL_MOVE = 0.02         # movimiento artificial si el real no cambia (en %)
 MAX_POSITION_SIZE_MXN = 500.0
 MAX_DAILY_TRADES = 200
 COMMISSION_PCT = 0.1
 SLIPPAGE_PCT = 0.05
-REFRESH_INTERVAL_SEC = 3      # ¡3 segundos!
+REFRESH_INTERVAL_SEC = 5
 HEARTBEAT_CYCLES = 30
 
 # ==================== BITSO (DATOS REALES) ====================
@@ -45,17 +46,24 @@ def get_bitso_ticker(book="btc_mxn"):
     except:
         return None, None
 
-# ==================== SIMULACIÓN DE ALTA VOLATILIDAD ====================
+# ==================== SIMULACIÓN CON MOVIMIENTO ASEGURADO ====================
 BACKUP_PRICES = {"BTC": 1_070_000, "ETH": 28_000}
 sim_prices = {"BTC": 1_070_000, "ETH": 28_000}
+sim_phase = {"BTC": 0, "ETH": 0}
 
 def get_simulated_price(symbol):
-    last = sim_prices[symbol]
-    # volatilidad alta: ±1.5% por ciclo
-    new = last * (1 + random.uniform(-0.015, 0.015))
-    new = max(BACKUP_PRICES[symbol]*0.85, min(BACKUP_PRICES[symbol]*1.15, new))
-    sim_prices[symbol] = new
-    return new, 0.0
+    global sim_phase
+    # Movimiento cíclico para garantizar variación
+    sim_phase[symbol] += 1
+    # Oscilación entre -0.5% y +0.5% de forma alternada
+    osc = 0.5 * (1 if sim_phase[symbol] % 2 == 0 else -1)
+    base = BACKUP_PRICES[symbol]
+    # Añadir ruido
+    noise = random.uniform(-0.2, 0.2)
+    new_price = base * (1 + (osc + noise)/100)
+    new_price = max(base*0.9, min(base*1.1, new_price))
+    sim_prices[symbol] = new_price
+    return new_price, 0.0
 
 # ==================== PERSISTENCIA ====================
 STATE_FILE = "bot_state.json"
@@ -139,13 +147,14 @@ else:
     }
 
 # ==================== INTERFAZ ====================
-st.set_page_config(page_title="Bot Señal Instantánea", layout="wide")
-st.title("⚡ Bot Señal Instantánea (cambio desde precio inicial)")
+st.set_page_config(page_title="Bot Señal Garantizada", layout="wide")
+st.title("⚡ Bot Señal Garantizada (movimiento artificial si el mercado está plano)")
 
 st.sidebar.header("⚙️ Configuración")
 refresh = st.sidebar.slider("Intervalo (segundos)", 3, 20, REFRESH_INTERVAL_SEC)
 auto = st.sidebar.checkbox("Auto-refrescar", True)
-umbral = st.sidebar.number_input("Umbral de cambio % (absoluto)", 0.01, 1.0, THRESHOLD, 0.01)
+umbral = st.sidebar.number_input("Umbral de cambio %", 0.01, 1.0, THRESHOLD, 0.01)
+inyectar = st.sidebar.checkbox("Forzar movimiento artificial si el precio no cambia", value=True)
 
 st.sidebar.subheader("💰 Cartera (MXN)")
 st.sidebar.metric("Saldo", f"${state['balance']:,.2f}")
@@ -164,20 +173,38 @@ if st.sidebar.button("Reiniciar"):
         os.remove(STATE_FILE)
     st.rerun()
 if st.sidebar.button("Prueba Telegram"):
-    send_telegram("🧪 Alerta - Bot instantáneo")
+    send_telegram("🧪 Alerta - Bot garantizado")
     st.success("Enviado")
 
-st.info(f"⚡ Se compara el precio actual con el PRECIO INICIAL (al arrancar la app). Umbral: {umbral}%. Intervalo: {refresh}s. La señal aparece en el primer ciclo si el precio ya se ha movido.")
+st.info(f"⚡ El bot compara el precio actual con el PRECIO INICIAL. Umbral: {umbral}%. Si el mercado no se mueve y activas 'Forzar movimiento', se añade una pequeña variación artificial para generar señal inmediata.")
 
 # ==================== OBTENER DATOS ====================
 btc_p, _ = get_bitso_ticker("btc_mxn")
 eth_p, _ = get_bitso_ticker("eth_mxn")
+
 if btc_p is None:
     btc_p, _ = get_simulated_price("BTC")
     eth_p, _ = get_simulated_price("ETH")
-    fuente = "Simulación (alta volatilidad)"
+    fuente = "Simulación con movimiento forzado"
 else:
     fuente = "Bitso real"
+
+# Inyectar movimiento artificial si se solicita y el precio no ha cambiado respecto al ciclo anterior
+if "last_raw_prices" not in state:
+    state["last_raw_prices"] = {"BTC": btc_p, "ETH": eth_p}
+else:
+    for sym, price in [("BTC", btc_p), ("ETH", eth_p)]:
+        if inyectar and abs(price - state["last_raw_prices"].get(sym, price)) < 1:
+            # El precio no ha cambiado (o cambio minúsculo), añadimos variación artificial
+            move = random.uniform(-ARTIFICIAL_MOVE, ARTIFICIAL_MOVE) / 100
+            price = price * (1 + move)
+            if sym == "BTC":
+                btc_p = price
+            else:
+                eth_p = price
+            fuente += " + movimiento artificial"
+    state["last_raw_prices"]["BTC"] = btc_p
+    state["last_raw_prices"]["ETH"] = eth_p
 
 if "last_prices" not in state:
     state["last_prices"] = {"BTC": 0.0, "ETH": 0.0}
@@ -249,7 +276,7 @@ with col2:
     st.subheader("📜 Operaciones")
     for ts, msg in reversed(state["trades"][-15:]):
         st.text(f"{ts.strftime('%H:%M:%S')} - {msg[:70]}")
-    st.caption("El bot compara con el precio de inicio. La señal aparece desde el primer ciclo.")
+    st.caption("Si el mercado está plano, se inyecta movimiento artificial para demostrar la lógica.")
 
 if auto:
     time.sleep(refresh)
