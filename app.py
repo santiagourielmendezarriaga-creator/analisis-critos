@@ -20,6 +20,20 @@ def send_telegram(msg, parse_mode="Markdown"):
     except:
         return False
 
+# ==================== PARÁMETROS PARA VENDER MÁS RÁPIDO ====================
+BUY_THRESHOLD = 55          # Compra cuando score >= 55 (se mantiene)
+SELL_THRESHOLD = 55         # ¡Vende cuando score <= 55! (antes 45) -> MUCHO MÁS RÁPIDO
+STOP_LOSS_PCT = 1.0         # Vende si pierdes solo 1% (antes 2%)
+TAKE_PROFIT_PCT = 2.0       # Take profit al 2% (antes 3%)
+TRAILING_STOP_PCT = 0.8     # Vende si retrocede 0.8% desde máximo (antes 1.5%)
+MAX_POSITION_SIZE_MXN = 500.0
+MAX_DAILY_TRADES = 100
+COMMISSION_PCT = 0.1
+SLIPPAGE_PCT = 0.05
+REFRESH_INTERVAL_SEC = 20
+HEARTBEAT_CYCLES = 30
+MIN_HISTORY_LEN = 1
+
 # ==================== OBTENER DATOS DE BITSO (RÁPIDO) ====================
 def get_bitso_ticker(book="btc_mxn"):
     try:
@@ -34,15 +48,9 @@ def get_bitso_ticker(book="btc_mxn"):
         last = float(payload.get("last", 0))
         if last == 0:
             return None, None
-        # Cambio 24h (usamos el cambio absoluto, pero lo convertimos a porcentaje aproximado)
-        # Para simplificar y ganar velocidad, usamos el cambio relativo simple
         change = float(payload.get("change", 0))
-        # Si change es muy pequeño, puede ser el cambio absoluto. Lo dejamos como está.
-        # Pero para tener un porcentaje más real, lo dejamos 0 si no tenemos open.
-        # Opcional: obtener open de OHLC (más lento). Por ahora usamos change como porcentaje.
         return last, change
-    except Exception as e:
-        print(f"Bitso error: {e}")
+    except:
         return None, None
 
 def get_fear_greed():
@@ -55,7 +63,7 @@ def get_fear_greed():
         pass
     return 50, "Neutral"
 
-# ==================== SIMULACIÓN DE RESPALDO (MUY RÁPIDA) ====================
+# ==================== SIMULACIÓN DE RESPALDO ====================
 BACKUP_PRICES = {"BTC": 1_070_000, "ETH": 28_000}
 backup_prices = {"BTC": 1_070_000, "ETH": 28_000}
 backup_changes = {"BTC": 0.0, "ETH": 0.0}
@@ -72,28 +80,11 @@ def get_simulated_price(symbol):
     backup_changes[symbol] = sim_change
     return new_price, sim_change
 
-# ==================== PARÁMETROS (RÁPIDOS) ====================
-BUY_THRESHOLD = 55
-SELL_THRESHOLD = 45
-STOP_LOSS_PCT = 2.0
-TAKE_PROFIT_PCT = 3.0
-TRAILING_STOP_PCT = 1.5
-MAX_POSITION_SIZE_MXN = 500.0
-MAX_DAILY_TRADES = 100
-COMMISSION_PCT = 0.1
-SLIPPAGE_PCT = 0.05
-REFRESH_INTERVAL_SEC = 20      # Más rápido
-HEARTBEAT_CYCLES = 30
-MIN_HISTORY_LEN = 1            # <--- Ahora con 1 dato ya calcula score (sin tendencia)
-
-# ==================== CÁLCULO DE SCORE (CON 1 DATO) ====================
+# ==================== CÁLCULO DE SCORE ====================
 def calculate_score(price, change_24h, fear, price_history):
     score = 50
-    # Fear & Greed (aporta hasta ±20)
     score += (50 - fear) * 0.4
-    # Cambio 24h (aporta hasta ±12)
     score += change_24h * 1.2
-    # Tendencia solo si hay al menos 2 datos
     if len(price_history) >= 2:
         trend = price_history[-1] - price_history[-2]
         score += 8 if trend > 0 else -8
@@ -202,14 +193,14 @@ else:
     }
 
 # ==================== INTERFAZ STREAMLIT ====================
-st.set_page_config(page_title="Crypto Bot - Bitso Real (MXN)", layout="wide")
-st.title("🤖 Crypto Bot - Datos Reales de Bitso (MXN)")
+st.set_page_config(page_title="Crypto Bot - Ventas Rápidas", layout="wide")
+st.title("🤖 Crypto Bot - Ventas Rápidas (Bitso Real)")
 
 st.sidebar.header("⚙️ Configuración")
 refresh = st.sidebar.slider("Intervalo (segundos)", 10, 60, REFRESH_INTERVAL_SEC)
 auto = st.sidebar.checkbox("Auto-refrescar", value=True)
 buy_th = st.sidebar.number_input("Compra si score ≥", 0, 100, BUY_THRESHOLD)
-sell_th = st.sidebar.number_input("Vende si score ≤", 0, 100, SELL_THRESHOLD)
+sell_th = st.sidebar.number_input("Vende si score ≤ (más alto = vende antes)", 0, 100, SELL_THRESHOLD)
 
 st.sidebar.subheader("💰 Cartera (MXN)")
 st.sidebar.metric("Saldo MXN", f"${state['balance']:,.2f}")
@@ -230,17 +221,18 @@ if st.sidebar.button("Reiniciar simulación"):
     st.rerun()
 
 if st.sidebar.button("📢 Enviar alerta de prueba"):
-    send_telegram("🧪 Alerta de prueba - Bot rápido")
+    send_telegram("🧪 Alerta de prueba - Modo ventas rápidas")
     st.success("Alerta enviada")
 
-# Obtener datos de Bitso (intentar rápidamente)
+st.info("✅ Umbral de venta por defecto = 55 (muy rápido). Stop Loss = 1%, Trailing Stop = 0.8%")
+
+# Obtener datos de Bitso
 btc_price, btc_change = get_bitso_ticker("btc_mxn")
 eth_price, eth_change = get_bitso_ticker("eth_mxn")
-
 if btc_price is None:
     btc_price, btc_change = get_simulated_price("BTC")
     eth_price, eth_change = get_simulated_price("ETH")
-    st.warning("⚠️ Usando datos simulados (Bitso no respondió)")
+    st.warning("⚠️ Usando simulación (Bitso no respondió)")
     fuente = "Simulación"
 else:
     st.success("✅ Datos reales de Bitso")
@@ -258,21 +250,20 @@ if state["cycle"] % 10 == 0:
     save_state(state)
 
 if state["cycle"] % HEARTBEAT_CYCLES == 0 and state["cycle"] > 0:
-    send_telegram(f"💓 Heartbeat ciclo {state['cycle']} | Fuente: {fuente}")
+    send_telegram(f"💓 Heartbeat ciclo {state['cycle']} | Fuente: {fuente} | Venta ≤ {sell_th}")
 
-# Procesar señales (ahora desde el ciclo 1 ya hay puntaje)
+# Procesar señales
 for sym, price in [("BTC", btc_price), ("ETH", eth_price)]:
     change = btc_change if sym == "BTC" else eth_change
     hist = list(state["price_history"][sym])
-    # Con MIN_HISTORY_LEN=1, siempre hay al menos 1 dato
     score = calculate_score(price, change, fear, hist)
 
-    # Alerta cambio puntaje
     last_sc = state["last_score"].get(sym, 50)
     if abs(score - last_sc) >= 3:
         send_telegram(f"📊 *{sym}* Puntaje: {last_sc:.1f} → {score:.1f}")
         state["last_score"][sym] = score
 
+    # Decisión con los umbrales configurados (incluyendo el de venta alto)
     if score >= buy_th:
         action = "BUY"
     elif score <= sell_th:
@@ -280,8 +271,8 @@ for sym, price in [("BTC", btc_price), ("ETH", eth_price)]:
     else:
         action = "HOLD"
 
-    # Stop loss, etc. solo si hay posición
     exit_reason = None
+    # Solo verificar stop loss / take profit / trailing si tenemos posición
     if state["positions"].get(sym, 0) > 0:
         entry = state["entry_price"].get(sym, 0)
         high = state["highest_price"].get(sym, price)
@@ -309,7 +300,7 @@ for sym, price in [("BTC", btc_price), ("ETH", eth_price)]:
             save_state(state)
         state["last_action"][sym] = action
 
-# Mostrar interfaz (puntaje ya no será 0 porque se calcula con 1 dato)
+# Mostrar dashboard
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("📊 Señales en Vivo (MXN)")
@@ -319,7 +310,7 @@ with col1:
         price = state["last_prices"][sym]
         change = btc_change if sym == "BTC" else eth_change
         hist = list(state["price_history"][sym])
-        score = calculate_score(price, change, fear, hist)  # ya no necesita validación len
+        score = calculate_score(price, change, fear, hist)
         if score >= buy_th:
             sig = "🟢 COMPRAR"
         elif score <= sell_th:
