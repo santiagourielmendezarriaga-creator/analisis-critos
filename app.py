@@ -3,6 +3,7 @@ import requests
 import time
 import json
 import os
+import random
 from collections import deque
 from datetime import datetime
 
@@ -18,38 +19,17 @@ def send_telegram(msg):
         pass
 
 # ==================== PARÁMETROS ====================
-EMA_FAST = 4
-EMA_SLOW = 12
+# Umbral de cambio porcentual para decidir compra/venta
+# Si el precio sube más de este porcentaje respecto al ciclo anterior -> compra
+# Si baja más de este porcentaje -> vende
+CHANGE_THRESHOLD = 0.2   # 0.2% (ajústalo según la volatilidad que quieras)
+
 MAX_POSITION_SIZE_MXN = 500.0
 MAX_DAILY_TRADES = 200
 COMMISSION_PCT = 0.1
 SLIPPAGE_PCT = 0.05
-REFRESH_INTERVAL_SEC = 10
+REFRESH_INTERVAL_SEC = 10   # actualización cada 10 segundos
 HEARTBEAT_CYCLES = 30
-
-# ==================== FUNCIÓN DE SEÑAL (solo compra/venta) ====================
-def ema(data, period):
-    alpha = 2 / (period + 1)
-    ema_val = data[0]
-    for val in data[1:]:
-        ema_val = val * alpha + ema_val * (1 - alpha)
-    return ema_val
-
-def get_signal(prices):
-    """
-    Retorna 'BUY' si EMA_fast > EMA_slow, 'SELL' si EMA_fast < EMA_slow.
-    Si no hay suficientes precios, retorna 'HOLD' (pero luego se fuerza a no operar).
-    """
-    if len(prices) < EMA_SLOW:
-        return "HOLD"
-    fast = ema(prices, EMA_FAST)
-    slow = ema(prices, EMA_SLOW)
-    if fast > slow:
-        return "BUY"
-    elif fast < slow:
-        return "SELL"
-    else:
-        return "HOLD"
 
 # ==================== BITSO (DATOS REALES) ====================
 def get_bitso_ticker(book="btc_mxn"):
@@ -71,7 +51,6 @@ def get_bitso_ticker(book="btc_mxn"):
         return None, None
 
 # ==================== SIMULACIÓN (FALLBACK) ====================
-import random
 BACKUP_PRICES = {"BTC": 1_070_000, "ETH": 28_000}
 sim_prices = {"BTC": 1_070_000, "ETH": 28_000}
 
@@ -110,6 +89,23 @@ def load_state():
         except:
             pass
     return None
+
+# ==================== SEÑAL INSTANTÁNEA (con solo 2 precios) ====================
+def get_signal(price_history):
+    """
+    Retorna 'BUY' si el precio subió más de CHANGE_THRESHOLD% en el último ciclo,
+    'SELL' si bajó más de CHANGE_THRESHOLD%,
+    'HOLD' en caso contrario o si no hay suficientes datos.
+    """
+    if len(price_history) < 2:
+        return "HOLD"
+    last_change = (price_history[-1] - price_history[-2]) / price_history[-2] * 100
+    if last_change >= CHANGE_THRESHOLD:
+        return "BUY"
+    elif last_change <= -CHANGE_THRESHOLD:
+        return "SELL"
+    else:
+        return "HOLD"
 
 # ==================== EJECUCIÓN DE ÓRDENES ====================
 def can_trade(state):
@@ -167,12 +163,13 @@ else:
     }
 
 # ==================== INTERFAZ STREAMLIT ====================
-st.set_page_config(page_title="Solo Compra/Venta Rápida", layout="wide")
-st.title("⚡ Bot de Compra/Venta - Solo dos operaciones (Buy/Sell)")
+st.set_page_config(page_title="Bot Instantáneo (Solo Compra/Venta)", layout="wide")
+st.title("⚡ Bot Instantáneo - Compra/Venta basado en cambio de precio")
 
 st.sidebar.header("⚙️ Configuración")
 refresh = st.sidebar.slider("Intervalo (segundos)", 5, 30, REFRESH_INTERVAL_SEC)
 auto = st.sidebar.checkbox("Auto-refrescar", True)
+change_th = st.sidebar.number_input("Umbral de cambio % (sube/baja para operar)", 0.0, 5.0, CHANGE_THRESHOLD, 0.05)
 
 st.sidebar.subheader("💰 Cartera (MXN)")
 st.sidebar.metric("Saldo", f"${state['balance']:,.2f}")
@@ -191,10 +188,10 @@ if st.sidebar.button("Reiniciar"):
         os.remove(STATE_FILE)
     st.rerun()
 if st.sidebar.button("Prueba Telegram"):
-    send_telegram("🧪 Alerta de prueba - Bot Buy/Sell")
+    send_telegram("🧪 Alerta de prueba - Bot instantáneo")
     st.success("Enviado")
 
-st.info("⚡ El bot solo compra cuando EMA_fast > EMA_slow, y vende cuando EMA_fast < EMA_slow. Ciclos muy rápidos.")
+st.info(f"⚡ El bot opera con el cambio porcentual entre el precio actual y el anterior. Umbral actual: {change_th}%. Señal en cada ciclo (desde ciclo 2).")
 
 # ==================== OBTENER DATOS ====================
 btc_p, _ = get_bitso_ticker("btc_mxn")
@@ -219,18 +216,27 @@ if state["cycle"] % 10 == 0:
 if state["cycle"] % HEARTBEAT_CYCLES == 0 and state["cycle"]>0:
     send_telegram(f"💓 Heartbeat ciclo {state['cycle']} | Fuente: {fuente}")
 
-# ==================== LÓGICA DE COMPRA/VENTA (SOLO DOS ACCIONES) ====================
+# ==================== LÓGICA DE COMPRA/VENTA ====================
 for sym, price in [("BTC", btc_p), ("ETH", eth_p)]:
     hist = list(state["price_history"][sym])
-    if len(hist) < EMA_SLOW:
-        continue   # esperar datos suficientes
-
-    signal = get_signal(hist)   # 'BUY', 'SELL' o 'HOLD'
+    # Usar el umbral actual (puede cambiarse en la interfaz, pero aquí tomamos el valor del slider)
+    # Para que sea dinámico, pasamos el umbral a la función, pero como la función está definida arriba,
+    # la redefinimos localmente para usar el valor actual.
+    def get_signal_with_threshold(hist, threshold):
+        if len(hist) < 2:
+            return "HOLD"
+        change = (hist[-1] - hist[-2]) / hist[-2] * 100
+        if change >= threshold:
+            return "BUY"
+        elif change <= -threshold:
+            return "SELL"
+        else:
+            return "HOLD"
+    
+    signal = get_signal_with_threshold(hist, change_th)
     if signal == "HOLD":
         continue
 
-    # Si la señal es BUY y no tenemos posición -> comprar
-    # Si la señal es SELL y tenemos posición -> vender
     action = None
     if signal == "BUY" and state["positions"].get(sym, 0) == 0:
         action = "BUY"
@@ -243,7 +249,6 @@ for sym, price in [("BTC", btc_p), ("ETH", eth_p)]:
             send_telegram(msg)
             state["trades"].append((datetime.now(), msg))
             save_state(state)
-            # Registrar última acción (opcional)
             if "last_action" not in state:
                 state["last_action"] = {}
             state["last_action"][sym] = action
@@ -257,24 +262,25 @@ with col1:
         name = "Bitcoin" if sym=="BTC" else "Ethereum"
         price = state["last_prices"].get(sym, 0)
         hist = list(state["price_history"][sym])
-        if len(hist) >= EMA_SLOW:
-            s = get_signal(hist)
-            if s == "BUY":
+        if len(hist) >= 2:
+            change = (hist[-1] - hist[-2]) / hist[-2] * 100
+            if change >= change_th:
                 sig = "🟢 COMPRAR"
-            elif s == "SELL":
+            elif change <= -change_th:
                 sig = "🔴 VENDER"
             else:
-                sig = "⚪ ESPERA"
+                sig = "⚪ MANTENER"
         else:
+            change = 0.0
             sig = "⏳ Cargando..."
-        rows.append({"Moneda": name, "Precio": f"${price:,.0f}", "Señal": sig})
+        rows.append({"Moneda": name, "Precio": f"${price:,.0f}", "Cambio %": f"{change:+.2f}%", "Señal": sig})
     st.table(rows)
-    st.caption(f"Ciclo: {state['cycle']} | Fuente: {fuente}")
+    st.caption(f"Ciclo: {state['cycle']} | Fuente: {fuente} | Umbral: {change_th}%")
 with col2:
     st.subheader("📜 Operaciones")
     for ts, msg in reversed(state["trades"][-15:]):
         st.text(f"{ts.strftime('%H:%M:%S')} - {msg[:70]}")
-    st.caption("El bot opera solo con compra y venta (sin estados intermedios).")
+    st.caption("El bot opera con cambio de precio entre ciclos consecutivos (respuesta inmediata).")
 
 if auto:
     time.sleep(refresh)
