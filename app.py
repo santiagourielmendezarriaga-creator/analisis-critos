@@ -19,30 +19,33 @@ def send_telegram(msg):
 
 # ==================== PARÁMETROS ====================
 THRESHOLD = 0.1          # 0.1% de cambio para activar compra/venta
-REFRESH_INTERVAL = 10    # segundos (no menos de 10 para no saturar API)
+REFRESH_INTERVAL = 10    # segundos (mínimo 10 para respetar límites)
 MAX_POSITION_SIZE = 500.0
 MAX_DAILY_TRADES = 20
 COMMISSION = 0.1
 SLIPPAGE = 0.05
 
-# ==================== PRECIOS REALES DESDE CRYPTOCOMPARE ====================
-def get_cryptocompare_price(symbol):
+# ==================== PRECIOS REALES DESDE BITSO (MXN) ====================
+def get_bitso_price(book="btc_mxn"):
     """
-    symbol: 'BTC' o 'ETH'
+    book: "btc_mxn" o "eth_mxn"
     Retorna precio en MXN (float) o None si falla.
     """
     try:
-        url = f"https://min-api.cryptocompare.com/data/price?fsym={symbol}&tsyms=MXN"
+        url = f"https://api.bitso.com/api/v3/ticker/?book={book}"
         resp = requests.get(url, timeout=5)
         if resp.status_code != 200:
             return None
         data = resp.json()
-        price = data.get("MXN")
-        if price and price > 0:
-            return float(price)
+        payload = data.get("payload")
+        if not payload:
+            return None
+        last = payload.get("last")
+        if last:
+            return float(last)
         return None
     except Exception as e:
-        print(f"Error obteniendo precio de {symbol}: {e}")
+        print(f"Error Bitso: {e}")
         return None
 
 # ==================== PERSISTENCIA ====================
@@ -92,8 +95,8 @@ else:
     }
 
 # ==================== INTERFAZ STREAMLIT ====================
-st.set_page_config(page_title="Bot con Precios Reales (Cryptocompare)", layout="wide")
-st.title("📈 Bot con Precios Reales de Cryptocompare (MXN)")
+st.set_page_config(page_title="Bot con Precios Reales de Bitso", layout="wide")
+st.title("🇲🇽 Bot con Precios Reales de Bitso (MXN)")
 
 st.sidebar.header("Configuración")
 interval = st.sidebar.slider("Intervalo (segundos)", 10, 60, REFRESH_INTERVAL)
@@ -118,21 +121,21 @@ if st.sidebar.button("Reiniciar"):
         os.remove(STATE_FILE)
     st.rerun()
 if st.sidebar.button("Prueba Telegram"):
-    send_telegram("🧪 Bot con precios reales - funcionando")
+    send_telegram("🧪 Bot con precios reales de Bitso")
     st.success("Enviado")
 
-st.info(f"⚠️ Los precios son REALES obtenidos de Cryptocompare (BTC/MXN y ETH/MXN). Umbral: {umbral}%. Intervalo: {interval}s. No hay simulación ni inyección artificial.")
+st.info(f"✅ Precios REALES de Bitso (BTC/MXN y ETH/MXN). Umbral: {umbral}%. Intervalo: {interval}s. Sin simulación ni inyección artificial.")
 
 # ==================== OBTENER PRECIOS REALES ====================
-btc = get_cryptocompare_price("BTC")
-eth = get_cryptocompare_price("ETH")
+btc = get_bitso_price("btc_mxn")
+eth = get_bitso_price("eth_mxn")
 
 if btc is None or eth is None:
-    st.error("❌ No se pudieron obtener precios reales. Verifica tu conexión a Internet o la API de Cryptocompare.")
+    st.error("❌ No se pudieron obtener precios reales de Bitso. Verifica tu conexión a Internet o el estado de la API de Bitso.")
     st.stop()
 
 # Mostrar precios obtenidos
-st.success(f"✅ Precios reales: BTC = ${btc:,.2f} MXN, ETH = ${eth:,.2f} MXN")
+st.success(f"✅ Precios reales de Bitso: BTC = ${btc:,.2f} MXN, ETH = ${eth:,.2f} MXN")
 
 # Actualizar estado
 state["last_price"]["BTC"] = btc
@@ -208,7 +211,7 @@ for sym, precio in [("BTC", btc), ("ETH", eth)]:
 # ==================== DASHBOARD ====================
 col1, col2 = st.columns(2)
 with col1:
-    st.subheader("📊 Señales en Vivo (precios reales)")
+    st.subheader("📊 Señales en Vivo (precios reales Bitso)")
     rows = []
     for sym in ["BTC", "ETH"]:
         name = "Bitcoin" if sym == "BTC" else "Ethereum"
@@ -222,11 +225,12 @@ with col1:
             sig = "⚪ MANTENER"
         rows.append({"Moneda": name, "Precio MXN": f"${precio:,.0f}", "Var desde inicio": f"{var:+.2f}%", "Señal": sig})
     st.table(rows)
-    st.caption(f"Ciclo: {state['cycle']} | Umbral: {umbral}% | Fuente: Cryptocompare")
+    st.caption(f"Ciclo: {state['cycle']} | Umbral: {umbral}% | Fuente: Bitso real")
 with col2:
     st.subheader("📜 Historial de Operaciones")
     for ts, msg in reversed(state["trades"][-10:]):
         st.text(f"{ts.strftime('%H:%M:%S')} - {msg[:60]}")
+    st.caption("Las operaciones son simuladas (paper trading) pero con precios reales del mercado.")
 
 if auto:
     time.sleep(interval)
