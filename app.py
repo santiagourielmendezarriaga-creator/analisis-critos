@@ -20,17 +20,18 @@ def send_telegram(msg, parse_mode="Markdown"):
     except:
         return False
 
-# ==================== PARÁMETROS PARA VENTA ULTRARRÁPIDA ====================
-BUY_THRESHOLD = 55          # Compra cuando score >= 55
-SELL_THRESHOLD = 60         # Vende cuando score <= 60 (más alto que compra, así cualquier caída vende)
-STOP_LOSS_PCT = 0.5         # Stop loss al 0.5% (casi cualquier caída activa venta)
-TAKE_PROFIT_PCT = 1.5       # Take profit al 1.5%
-TRAILING_STOP_PCT = 0.5     # Trailing stop al 0.5%
+# ==================== PARÁMETROS PARA CICLOS RÁPIDOS ====================
+# Umbrales: compra y venta muy cercanos (para que el ciclo sea corto)
+BUY_THRESHOLD = 55
+SELL_THRESHOLD = 55         # Igual al de compra, así cualquier caída vende
+STOP_LOSS_PCT = 1.0         # Stop loss al 1% (venta rápida si baja)
+TAKE_PROFIT_PCT = 1.5       # Take profit al 1.5% (pequeño, asegura ganancia)
+TRAILING_STOP_PCT = 0.8     # Trailing stop al 0.8% (protege ganancias)
 MAX_POSITION_SIZE_MXN = 500.0
 MAX_DAILY_TRADES = 200
 COMMISSION_PCT = 0.1
 SLIPPAGE_PCT = 0.05
-REFRESH_INTERVAL_SEC = 20   # Actualizar cada 20 segundos
+REFRESH_INTERVAL_SEC = 15   # Actualización rápida (15 segundos)
 HEARTBEAT_CYCLES = 30
 MIN_HISTORY_LEN = 1
 
@@ -193,14 +194,14 @@ else:
     }
 
 # ==================== INTERFAZ STREAMLIT ====================
-st.set_page_config(page_title="Crypto Bot - Venta Ultra Rápida", layout="wide")
-st.title("🤖 Crypto Bot - Venta Ultrarrápida (Bitso Real)")
+st.set_page_config(page_title="Crypto Bot - Ciclos Rápidos", layout="wide")
+st.title("⚡ Crypto Bot - Ciclos Rápidos (Compra → Venta → Compra)")
 
 st.sidebar.header("⚙️ Configuración en Vivo")
 refresh = st.sidebar.slider("Intervalo (segundos)", 10, 60, REFRESH_INTERVAL_SEC)
 auto = st.sidebar.checkbox("Auto-refrescar", value=True)
 buy_th = st.sidebar.number_input("Compra si score ≥", 0, 100, BUY_THRESHOLD)
-sell_th = st.sidebar.number_input("Vende si score ≤ (más alto = vende antes)", 0, 100, SELL_THRESHOLD)
+sell_th = st.sidebar.number_input("Vende si score ≤", 0, 100, SELL_THRESHOLD)
 
 st.sidebar.subheader("💰 Cartera (MXN)")
 st.sidebar.metric("Saldo MXN", f"${state['balance']:,.2f}")
@@ -221,12 +222,12 @@ if st.sidebar.button("Reiniciar simulación"):
     st.rerun()
 
 if st.sidebar.button("📢 Enviar alerta de prueba"):
-    send_telegram("🧪 Alerta de prueba - Modo venta ultra rápida")
+    send_telegram("🧪 Alerta de prueba - Ciclos rápidos")
     st.success("Alerta enviada")
 
-st.info("⚡ VENTA ULTRARRÁPIDA: Stop Loss 0.5%, Trailing Stop 0.5%, Umbral venta = 60 (cualquier caída mínima vende)")
+st.info("🔄 Ciclo ultrarrápido: compra cuando score ≥ umbral, vende cuando score ≤ umbral o por stop/trailing. Repite continuamente.")
 
-# Obtener datos de Bitso
+# ==================== OBTENER DATOS DE BITSO ====================
 btc_price, btc_change = get_bitso_ticker("btc_mxn")
 eth_price, eth_change = get_bitso_ticker("eth_mxn")
 if btc_price is None:
@@ -250,27 +251,31 @@ if state["cycle"] % 10 == 0:
     save_state(state)
 
 if state["cycle"] % HEARTBEAT_CYCLES == 0 and state["cycle"] > 0:
-    send_telegram(f"💓 Heartbeat ciclo {state['cycle']} | Fuente: {fuente} | Venta ≤ {sell_th}")
+    send_telegram(f"💓 Heartbeat ciclo {state['cycle']} | Fuente: {fuente} | Compra ≥ {buy_th}, Venta ≤ {sell_th}")
 
-# Procesar señales
+# ==================== LÓGICA DE CICLOS RÁPIDOS ====================
 for sym, price in [("BTC", btc_price), ("ETH", eth_price)]:
     change = btc_change if sym == "BTC" else eth_change
     hist = list(state["price_history"][sym])
     score = calculate_score(price, change, fear, hist)
 
+    # Alerta de cambio de puntaje
     last_sc = state["last_score"].get(sym, 50)
     if abs(score - last_sc) >= 3:
         send_telegram(f"📊 *{sym}* Puntaje: {last_sc:.1f} → {score:.1f}")
         state["last_score"][sym] = score
 
-    # Acción según umbrales (venta muy sensible)
-    if score >= buy_th:
-        action = "BUY"
-    elif score <= sell_th:
-        action = "SELL"
+    # Determinar acción: comprar si no hay posición y score >= umbral de compra
+    # vender si hay posición y (score <= umbral de venta o condiciones de riesgo)
+    action = "HOLD"
+    if state["positions"].get(sym, 0) == 0:
+        if score >= buy_th:
+            action = "BUY"
     else:
-        action = "HOLD"
+        if score <= sell_th:
+            action = "SELL"
 
+    # Condiciones de riesgo (stop loss, take profit, trailing) -> forzar venta
     exit_reason = None
     if state["positions"].get(sym, 0) > 0:
         entry = state["entry_price"].get(sym, 0)
@@ -290,6 +295,7 @@ for sym, price in [("BTC", btc_price), ("ETH", eth_price)]:
         if price > state["highest_price"].get(sym, 0):
             state["highest_price"][sym] = price
 
+    # Ejecutar solo si la acción cambió
     last_act = state["last_action"].get(sym)
     if action != last_act and action in ("BUY", "SELL"):
         qty, msg = execute_trade(sym, action, price, state, exit_reason)
@@ -311,9 +317,9 @@ with col1:
         hist = list(state["price_history"][sym])
         score = calculate_score(price, change, fear, hist)
         if score >= buy_th:
-            sig = "🟢 COMPRAR"
+            sig = "🟢 COMPRAR (señal)"
         elif score <= sell_th:
-            sig = "🔴 VENDER"
+            sig = "🔴 VENDER (señal)"
         else:
             sig = "⚪ MANTENER"
         rows.append({
@@ -325,7 +331,7 @@ with col1:
         })
     st.table(rows)
     st.metric("Fear & Greed", f"{fear}/100 ({fear_label})")
-    st.caption(f"Ciclo: {state['cycle']} | Venta si score ≤ {sell_th} | Fuente: {fuente}")
+    st.caption(f"Ciclo: {state['cycle']} | Fuente: {fuente} | Posiciones: BTC={state['positions']['BTC']:.6f}, ETH={state['positions']['ETH']:.6f}")
 
 with col2:
     st.subheader("📜 Historial de Operaciones")
@@ -333,8 +339,9 @@ with col2:
         for ts, msg in reversed(state["trades"][-15:]):
             st.text(f"{ts.strftime('%H:%M:%S')} - {msg[:80]}...")
     else:
-        st.caption("Esperando operaciones...")
+        st.caption("Esperando primera operación...")
 
+# ==================== AUTO REFRESCO ====================
 if auto:
     time.sleep(refresh)
     st.rerun()
