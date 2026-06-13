@@ -18,17 +18,13 @@ def send_telegram(msg):
     except:
         pass
 
-# ==================== PARÁMETROS ====================
-# Umbral de cambio porcentual para decidir compra/venta
-# Si el precio sube más de este porcentaje respecto al ciclo anterior -> compra
-# Si baja más de este porcentaje -> vende
-CHANGE_THRESHOLD = 0.2   # 0.2% (ajústalo según la volatilidad que quieras)
-
+# ==================== PARÁMETROS RÁPIDOS ====================
+CHANGE_THRESHOLD = 0.1      # 0.1% de cambio para activar señal
 MAX_POSITION_SIZE_MXN = 500.0
 MAX_DAILY_TRADES = 200
 COMMISSION_PCT = 0.1
 SLIPPAGE_PCT = 0.05
-REFRESH_INTERVAL_SEC = 10   # actualización cada 10 segundos
+REFRESH_INTERVAL_SEC = 5    # ¡5 segundos!
 HEARTBEAT_CYCLES = 30
 
 # ==================== BITSO (DATOS REALES) ====================
@@ -56,7 +52,7 @@ sim_prices = {"BTC": 1_070_000, "ETH": 28_000}
 
 def get_simulated_price(symbol):
     last = sim_prices[symbol]
-    new = last * (1 + random.uniform(-0.008, 0.008))
+    new = last * (1 + random.uniform(-0.01, 0.01))
     new = max(BACKUP_PRICES[symbol]*0.9, min(BACKUP_PRICES[symbol]*1.1, new))
     sim_prices[symbol] = new
     return new, 0.0
@@ -73,7 +69,8 @@ def save_state(state):
         "last_action": state["last_action"],
         "daily_trades": state["daily_trades"],
         "last_trade_day": state["last_trade_day"],
-        "cycle": state["cycle"]
+        "cycle": state["cycle"],
+        "ref_price": state.get("ref_price", {})
     }
     with open(STATE_FILE, "w") as f:
         json.dump(to_save, f)
@@ -85,24 +82,23 @@ def load_state():
                 data = json.load(f)
                 if "price_history" not in data:
                     data["price_history"] = {"BTC": [], "ETH": []}
+                if "ref_price" not in data:
+                    data["ref_price"] = {}
                 return data
         except:
             pass
     return None
 
-# ==================== SEÑAL INSTANTÁNEA (con solo 2 precios) ====================
-def get_signal(price_history):
-    """
-    Retorna 'BUY' si el precio subió más de CHANGE_THRESHOLD% en el último ciclo,
-    'SELL' si bajó más de CHANGE_THRESHOLD%,
-    'HOLD' en caso contrario o si no hay suficientes datos.
-    """
-    if len(price_history) < 2:
+# ==================== SEÑAL INSTANTÁNEA (con un solo precio de referencia) ====================
+def get_signal(price, ref_price):
+    """Retorna 'BUY' si precio >= ref_price*(1+threshold), 'SELL' si <= ref_price*(1-threshold)"""
+    if ref_price is None or ref_price == 0:
         return "HOLD"
-    last_change = (price_history[-1] - price_history[-2]) / price_history[-2] * 100
-    if last_change >= CHANGE_THRESHOLD:
+    up = ref_price * (1 + CHANGE_THRESHOLD/100)
+    down = ref_price * (1 - CHANGE_THRESHOLD/100)
+    if price >= up:
         return "BUY"
-    elif last_change <= -CHANGE_THRESHOLD:
+    elif price <= down:
         return "SELL"
     else:
         return "HOLD"
@@ -159,17 +155,18 @@ else:
         "last_action": {"BTC": None, "ETH": None},
         "daily_trades": 0,
         "last_trade_day": datetime.now().day,
-        "cycle": 0
+        "cycle": 0,
+        "ref_price": {}
     }
 
 # ==================== INTERFAZ STREAMLIT ====================
-st.set_page_config(page_title="Bot Instantáneo (Solo Compra/Venta)", layout="wide")
-st.title("⚡ Bot Instantáneo - Compra/Venta basado en cambio de precio")
+st.set_page_config(page_title="Bot Ultrarrápido (1 ciclo)", layout="wide")
+st.title("⚡ Bot Ultrarrápido - Señal en el primer ciclo (5 segundos)")
 
 st.sidebar.header("⚙️ Configuración")
-refresh = st.sidebar.slider("Intervalo (segundos)", 5, 30, REFRESH_INTERVAL_SEC)
+refresh = st.sidebar.slider("Intervalo (segundos)", 3, 30, REFRESH_INTERVAL_SEC)
 auto = st.sidebar.checkbox("Auto-refrescar", True)
-change_th = st.sidebar.number_input("Umbral de cambio % (sube/baja para operar)", 0.0, 5.0, CHANGE_THRESHOLD, 0.05)
+change_th = st.sidebar.number_input("Umbral de cambio % (para comprar/vender)", 0.05, 2.0, CHANGE_THRESHOLD, 0.05)
 
 st.sidebar.subheader("💰 Cartera (MXN)")
 st.sidebar.metric("Saldo", f"${state['balance']:,.2f}")
@@ -188,10 +185,10 @@ if st.sidebar.button("Reiniciar"):
         os.remove(STATE_FILE)
     st.rerun()
 if st.sidebar.button("Prueba Telegram"):
-    send_telegram("🧪 Alerta de prueba - Bot instantáneo")
+    send_telegram("🧪 Alerta de prueba - Bot ultrarrápido")
     st.success("Enviado")
 
-st.info(f"⚡ El bot opera con el cambio porcentual entre el precio actual y el anterior. Umbral actual: {change_th}%. Señal en cada ciclo (desde ciclo 2).")
+st.info(f"⚡ Señal en el PRIMER ciclo: se compara el precio actual con el precio de inicio. Umbral: ±{change_th}%. Intervalo: {refresh}s. La señal aparecerá al obtener el primer precio (inmediato).")
 
 # ==================== OBTENER DATOS ====================
 btc_p, _ = get_bitso_ticker("btc_mxn")
@@ -210,6 +207,14 @@ state["last_prices"]["ETH"] = eth_p
 state["price_history"]["BTC"].append(btc_p)
 state["price_history"]["ETH"].append(eth_p)
 
+# Establecer precio de referencia si no existe
+if "ref_price" not in state:
+    state["ref_price"] = {}
+if state["ref_price"].get("BTC", 0) == 0:
+    state["ref_price"]["BTC"] = btc_p
+if state["ref_price"].get("ETH", 0) == 0:
+    state["ref_price"]["ETH"] = eth_p
+
 state["cycle"] += 1
 if state["cycle"] % 10 == 0:
     save_state(state)
@@ -218,22 +223,9 @@ if state["cycle"] % HEARTBEAT_CYCLES == 0 and state["cycle"]>0:
 
 # ==================== LÓGICA DE COMPRA/VENTA ====================
 for sym, price in [("BTC", btc_p), ("ETH", eth_p)]:
-    hist = list(state["price_history"][sym])
-    # Usar el umbral actual (puede cambiarse en la interfaz, pero aquí tomamos el valor del slider)
-    # Para que sea dinámico, pasamos el umbral a la función, pero como la función está definida arriba,
-    # la redefinimos localmente para usar el valor actual.
-    def get_signal_with_threshold(hist, threshold):
-        if len(hist) < 2:
-            return "HOLD"
-        change = (hist[-1] - hist[-2]) / hist[-2] * 100
-        if change >= threshold:
-            return "BUY"
-        elif change <= -threshold:
-            return "SELL"
-        else:
-            return "HOLD"
-    
-    signal = get_signal_with_threshold(hist, change_th)
+    ref = state["ref_price"].get(sym, price)
+    # Usar el umbral actual de la interfaz
+    signal = get_signal(price, ref)
     if signal == "HOLD":
         continue
 
@@ -261,26 +253,26 @@ with col1:
     for sym in ["BTC","ETH"]:
         name = "Bitcoin" if sym=="BTC" else "Ethereum"
         price = state["last_prices"].get(sym, 0)
-        hist = list(state["price_history"][sym])
-        if len(hist) >= 2:
-            change = (hist[-1] - hist[-2]) / hist[-2] * 100
-            if change >= change_th:
-                sig = "🟢 COMPRAR"
-            elif change <= -change_th:
-                sig = "🔴 VENDER"
-            else:
-                sig = "⚪ MANTENER"
+        ref = state["ref_price"].get(sym, price)
+        if ref == 0:
+            cambio = 0.0
         else:
-            change = 0.0
-            sig = "⏳ Cargando..."
-        rows.append({"Moneda": name, "Precio": f"${price:,.0f}", "Cambio %": f"{change:+.2f}%", "Señal": sig})
+            cambio = (price - ref) / ref * 100
+        if cambio >= change_th:
+            sig = "🟢 COMPRAR"
+        elif cambio <= -change_th:
+            sig = "🔴 VENDER"
+        else:
+            sig = "⚪ MANTENER"
+        rows.append({"Moneda": name, "Precio": f"${price:,.0f}", "Desde ref": f"{cambio:+.2f}%", "Señal": sig})
     st.table(rows)
-    st.caption(f"Ciclo: {state['cycle']} | Fuente: {fuente} | Umbral: {change_th}%")
+    st.caption(f"Ciclo: {state['cycle']} | Fuente: {fuente} | Umbral: {change_th}% | Ref actualizado solo al reiniciar.")
+    st.caption("⚡ La señal se genera en el PRIMER ciclo (inmediatamente después de obtener el primer precio).")
 with col2:
     st.subheader("📜 Operaciones")
     for ts, msg in reversed(state["trades"][-15:]):
         st.text(f"{ts.strftime('%H:%M:%S')} - {msg[:70]}")
-    st.caption("El bot opera con cambio de precio entre ciclos consecutivos (respuesta inmediata).")
+    st.caption("Operaciones basadas en cambio desde el precio de inicio.")
 
 if auto:
     time.sleep(refresh)
