@@ -17,14 +17,14 @@ def send_telegram(msg):
         pass
 
 # ==================== PARÁMETROS ====================
-THRESHOLD = 0.05          # 0.05% de cambio
+THRESHOLD = 0.05          # 0.05% de cambio para activar
 REFRESH_INTERVAL = 10     # segundos
 MAX_POSITION_SIZE = 500.0
 MAX_DAILY_TRADES = 20
 COMMISSION = 0.1
 SLIPPAGE = 0.05
 
-# ==================== BITSO API (PRECIOS REALES) ====================
+# ==================== BITSO API ====================
 def get_bitso_price(book="btc_mxn"):
     try:
         url = f"https://api.bitso.com/api/v3/ticker/?book={book}"
@@ -70,11 +70,9 @@ def load_state():
             pass
     return None
 
-# ==================== INTERFAZ (se ejecuta una vez) ====================
-st.set_page_config(page_title="Bot Bitso Real - Auto Actualización", layout="wide")
-
-# Título y sidebar (se renderizan una sola vez, luego se actualiza el contenido)
-st.title("🇲🇽 Bot con Precios Reales de Bitso (MXN) - Actualización automática cada 10s")
+# ==================== INTERFAZ STREAMLIT ====================
+st.set_page_config(page_title="Bot Bitso Real - Sin Duplicados", layout="wide")
+st.title("🇲🇽 Bot con Precios Reales de Bitso (MXN) - Sin órdenes duplicadas")
 st.sidebar.header("Configuración")
 umbral = st.sidebar.number_input("Umbral de cambio %", 0.01, 1.0, THRESHOLD, 0.01)
 
@@ -91,7 +89,7 @@ if st.sidebar.button("Reiniciar"):
     st.rerun()
 
 if st.sidebar.button("Prueba Telegram"):
-    send_telegram("🧪 Bot con precios reales - actualización automática")
+    send_telegram("🧪 Bot sin duplicados - funcionando")
     st.success("Enviado")
 
 # Contenedores para datos dinámicos
@@ -99,10 +97,9 @@ tabla_placeholder = st.empty()
 info_placeholder = st.empty()
 historial_placeholder = st.empty()
 
-# ==================== ESTADO DE SESIÓN (persistente entre ciclos) ====================
+# ==================== ESTADO INICIAL ====================
 if "running" not in st.session_state:
     st.session_state.running = True
-    # Cargar estado guardado
     saved = load_state()
     if saved:
         st.session_state.balance = saved["balance"]
@@ -125,17 +122,17 @@ if "running" not in st.session_state:
         st.session_state.ref_price = {"BTC": 0.0, "ETH": 0.0}
         st.session_state.cycle = 0
 
-# ==================== BUCLE INFINITO DE ACTUALIZACIÓN ====================
+# ==================== BUCLE PRINCIPAL ====================
 while st.session_state.running:
-    # Obtener precios actuales
+    # Obtener precios reales
     btc = get_bitso_price("btc_mxn")
     eth = get_bitso_price("eth_mxn")
     if btc is None or eth is None:
-        tabla_placeholder.error("❌ No se pudieron obtener precios de Bitso. Reintentando en 10 segundos...")
+        tabla_placeholder.error("❌ Error al obtener precios de Bitso. Reintentando en 10s...")
         time.sleep(REFRESH_INTERVAL)
         continue
 
-    # Actualizar precios en estado
+    # Actualizar últimos precios
     st.session_state.last_price["BTC"] = btc
     st.session_state.last_price["ETH"] = eth
 
@@ -164,7 +161,7 @@ while st.session_state.running:
     })
     info_placeholder.caption(f"Ciclo: {st.session_state.cycle} | Umbral: {umbral}% | Fuente: Bitso real | Refresco cada {REFRESH_INTERVAL}s")
 
-    # Actualizar sidebar con saldo y valor total
+    # Mostrar cartera en sidebar
     total_val = st.session_state.balance
     for s in ["BTC", "ETH"]:
         p = st.session_state.last_price.get(s, 0)
@@ -185,13 +182,14 @@ while st.session_state.running:
     else:
         historial_placeholder.text("Aún no hay operaciones.")
 
-    # Lógica de trading (igual que antes)
+    # ==================== LÓGICA DE TRADING SIN DUPLICADOS ====================
     hoy = datetime.now().day
     if hoy != st.session_state.last_day:
         st.session_state.daily_trades = 0
         st.session_state.last_day = hoy
 
     for sym, precio, var in [("BTC", btc, var_btc), ("ETH", eth, var_eth)]:
+        # Calcular señal basada en umbral
         if var >= umbral:
             senal = "BUY"
         elif var <= -umbral:
@@ -199,57 +197,41 @@ while st.session_state.running:
         else:
             senal = "HOLD"
 
-        action = None
-        if senal == "BUY" and st.session_state.positions.get(sym, 0) == 0 and st.session_state.daily_trades < MAX_DAILY_TRADES:
-            action = "BUY"
-        elif senal == "SELL" and st.session_state.positions.get(sym, 0) > 0 and st.session_state.daily_trades < MAX_DAILY_TRADES:
-            action = "SELL"
-
-        if action == "BUY":
-            amount = min(MAX_POSITION_SIZE, st.session_state.balance)
-            if amount > 0:
-                eff = precio * (1 + SLIPPAGE/100)
-                com = amount * COMMISSION/100
-                qty = (amount - com) / eff
-                st.session_state.balance -= amount
-                st.session_state.positions[sym] = st.session_state.positions.get(sym, 0) + qty
-                st.session_state.daily_trades += 1
-                msg = f"🟢 *COMPRA* {sym}\nCantidad: {qty:.6f}\nPrecio real: ${precio:,.2f}\nEfectivo: ${eff:,.2f}\nComisión: ${com:.2f}\nSaldo: ${st.session_state.balance:.2f}"
-                send_telegram(msg)
-                st.session_state.trades.append((datetime.now(), msg))
-                save_state({
-                    "balance": st.session_state.balance,
-                    "positions": st.session_state.positions,
-                    "trades": st.session_state.trades,
-                    "last_action": st.session_state.last_action,
-                    "daily_trades": st.session_state.daily_trades,
-                    "last_day": st.session_state.last_day,
-                    "last_price": st.session_state.last_price,
-                    "ref_price": st.session_state.ref_price
-                })
-        elif action == "SELL":
-            qty = st.session_state.positions.get(sym, 0)
-            if qty > 0:
-                eff = precio * (1 - SLIPPAGE/100)
-                gross = qty * eff
-                com = gross * COMMISSION/100
-                net = gross - com
-                st.session_state.balance += net
-                st.session_state.positions[sym] = 0
-                st.session_state.daily_trades += 1
-                msg = f"🔴 *VENTA* {sym}\nCantidad: {qty:.6f}\nPrecio real: ${precio:,.2f}\nEfectivo: ${eff:,.2f}\nComisión: ${com:.2f}\nNeto: ${net:.2f}\nSaldo: ${st.session_state.balance:.2f}"
-                send_telegram(msg)
-                st.session_state.trades.append((datetime.now(), msg))
-                save_state({
-                    "balance": st.session_state.balance,
-                    "positions": st.session_state.positions,
-                    "trades": st.session_state.trades,
-                    "last_action": st.session_state.last_action,
-                    "daily_trades": st.session_state.daily_trades,
-                    "last_day": st.session_state.last_day,
-                    "last_price": st.session_state.last_price,
-                    "ref_price": st.session_state.ref_price
-                })
+        # Determinar acción SOLO si ha cambiado respecto al ciclo anterior y no es HOLD
+        last = st.session_state.last_action.get(sym)
+        if senal != last and senal in ("BUY", "SELL"):
+            # Verificar condiciones adicionales para evitar duplicados
+            if senal == "BUY" and st.session_state.positions.get(sym, 0) == 0 and st.session_state.daily_trades < MAX_DAILY_TRADES:
+                # Ejecutar compra
+                amount = min(MAX_POSITION_SIZE, st.session_state.balance)
+                if amount > 0:
+                    eff = precio * (1 + SLIPPAGE/100)
+                    com = amount * COMMISSION/100
+                    qty = (amount - com) / eff
+                    st.session_state.balance -= amount
+                    st.session_state.positions[sym] = st.session_state.positions.get(sym, 0) + qty
+                    st.session_state.daily_trades += 1
+                    msg = f"🟢 *COMPRA* {sym}\nCantidad: {qty:.6f}\nPrecio real: ${precio:,.2f}\nEfectivo: ${eff:,.2f}\nComisión: ${com:.2f}\nSaldo: ${st.session_state.balance:.2f}"
+                    send_telegram(msg)
+                    st.session_state.trades.append((datetime.now(), msg))
+                    save_state(st.session_state.__dict__)  # Guardar estado completo
+                    st.session_state.last_action[sym] = senal
+            elif senal == "SELL" and st.session_state.positions.get(sym, 0) > 0 and st.session_state.daily_trades < MAX_DAILY_TRADES:
+                # Ejecutar venta
+                qty = st.session_state.positions.get(sym, 0)
+                if qty > 0:
+                    eff = precio * (1 - SLIPPAGE/100)
+                    gross = qty * eff
+                    com = gross * COMMISSION/100
+                    net = gross - com
+                    st.session_state.balance += net
+                    st.session_state.positions[sym] = 0
+                    st.session_state.daily_trades += 1
+                    msg = f"🔴 *VENTA* {sym}\nCantidad: {qty:.6f}\nPrecio real: ${precio:,.2f}\nEfectivo: ${eff:,.2f}\nComisión: ${com:.2f}\nNeto: ${net:.2f}\nSaldo: ${st.session_state.balance:.2f}"
+                    send_telegram(msg)
+                    st.session_state.trades.append((datetime.now(), msg))
+                    save_state(st.session_state.__dict__)
+                    st.session_state.last_action[sym] = senal
 
     # Esperar antes de la siguiente iteración
     time.sleep(REFRESH_INTERVAL)
