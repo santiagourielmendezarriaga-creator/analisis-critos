@@ -4,7 +4,6 @@ import time
 import json
 import os
 import random
-from collections import deque
 from datetime import datetime
 
 # ==================== TELEGRAM ====================
@@ -24,7 +23,7 @@ MAX_POSITION_SIZE_MXN = 500.0
 MAX_DAILY_TRADES = 200
 COMMISSION_PCT = 0.1
 SLIPPAGE_PCT = 0.05
-REFRESH_INTERVAL_SEC = 5   # 5 segundos (muy rápido)
+REFRESH_INTERVAL_SEC = 5
 HEARTBEAT_CYCLES = 30
 
 # ==================== BITSO (DATOS REALES) ====================
@@ -51,7 +50,6 @@ sim_prices = {"BTC": 1_070_000, "ETH": 28_000}
 
 def get_simulated_price(symbol):
     last = sim_prices[symbol]
-    # Volatilidad ±0.5% para garantizar movimiento
     new = last * (1 + random.uniform(-0.005, 0.005))
     new = max(BACKUP_PRICES[symbol]*0.95, min(BACKUP_PRICES[symbol]*1.05, new))
     sim_prices[symbol] = new
@@ -138,13 +136,14 @@ else:
     }
 
 # ==================== INTERFAZ STREAMLIT ====================
-st.set_page_config(page_title="Bot Compra/Venta por Cambio de Precio", layout="wide")
-st.title("⚡ Bot de Trading: COMPRA si sube, VENDE si baja (con datos reales de Bitso)")
+st.set_page_config(page_title="Bot Compra/Venta con Inyección", layout="wide")
+st.title("⚡ Bot: COMPRA si sube, VENDE si baja (con inyección de movimiento)")
 
 st.sidebar.header("⚙️ Configuración")
 refresh = st.sidebar.slider("Intervalo (segundos)", 3, 20, REFRESH_INTERVAL_SEC)
 auto = st.sidebar.checkbox("Auto-refrescar", True)
-umbral = st.sidebar.number_input("Umbral de cambio % (para activar)", 0.05, 1.0, THRESHOLD, 0.05)
+umbral = st.sidebar.number_input("Umbral de cambio %", 0.05, 1.0, THRESHOLD, 0.05)
+inyectar = st.sidebar.checkbox("Forzar movimiento artificial si el mercado está plano", value=True)
 
 st.sidebar.subheader("💰 Cartera (MXN)")
 st.sidebar.metric("Saldo", f"${state['balance']:,.2f}")
@@ -163,10 +162,10 @@ if st.sidebar.button("Reiniciar simulación"):
         os.remove(STATE_FILE)
     st.rerun()
 if st.sidebar.button("Prueba Telegram"):
-    send_telegram("🧪 Alerta - Bot operativo")
+    send_telegram("🧪 Alerta - Bot con inyección")
     st.success("Enviado")
 
-st.info(f"⚡ Señal: Si el precio sube más del {umbral}% respecto al ciclo anterior → COMPRA; si baja → VENTA. Intervalo: {refresh}s. Datos reales de Bitso (con fallback a simulación).")
+st.info(f"⚡ Si el mercado real no se mueve y activas 'Forzar movimiento', se añade una pequeña variación artificial para generar señal. Umbral: {umbral}%.")
 
 # ==================== OBTENER DATOS ====================
 btc_p, _ = get_bitso_ticker("btc_mxn")
@@ -192,14 +191,20 @@ if state["cycle"] % 10 == 0:
 if state["cycle"] % HEARTBEAT_CYCLES == 0 and state["cycle"]>0:
     send_telegram(f"💓 Heartbeat ciclo {state['cycle']} | Fuente: {fuente}")
 
-# ==================== LÓGICA DE SEÑAL ====================
+# ==================== LÓGICA DE SEÑAL CON INYECCIÓN ====================
 for sym, price in [("BTC", btc_p), ("ETH", eth_p)]:
     prev = state["last_price"].get(sym, price)
     if prev == 0:
         state["last_price"][sym] = price
         continue
     cambio = (price - prev) / prev * 100
-    # Actualizar precio para la próxima iteración
+    # Si el cambio es prácticamente cero y se solicita inyección, añadir movimiento artificial
+    if inyectar and abs(cambio) < 0.001:
+        artificial = random.uniform(-0.1, 0.1)  # ±0.1%
+        cambio += artificial
+        # No modificamos el precio real, solo el cambio para la señal
+        st.info(f"⚠️ {sym}: Movimiento artificial añadido: {artificial:+.2f}%")
+    # Actualizar precio para la próxima iteración (el precio real no se altera)
     state["last_price"][sym] = price
 
     # Señal
@@ -234,18 +239,19 @@ with col1:
     for sym in ["BTC","ETH"]:
         name = "Bitcoin" if sym=="BTC" else "Ethereum"
         price = state["last_prices"].get(sym, 0)
-        prev = state["last_price"].get(sym, price)
-        cambio = (price - prev) / prev * 100 if prev != 0 else 0
-        if cambio >= umbral:
+        prev = state["last_price"].get(sym, price)  # precio anterior real
+        cambio_real = (price - prev) / prev * 100 if prev != 0 else 0
+        # Para mostrar, usamos el cambio real (sin inyección)
+        if cambio_real >= umbral:
             sig = "🟢 COMPRAR"
-        elif cambio <= -umbral:
+        elif cambio_real <= -umbral:
             sig = "🔴 VENDER"
         else:
             sig = "⚪ MANTENER"
-        rows.append({"Moneda": name, "Precio": f"${price:,.0f}", "Var %": f"{cambio:+.2f}%", "Señal": sig})
+        rows.append({"Moneda": name, "Precio": f"${price:,.0f}", "Var real": f"{cambio_real:+.2f}%", "Señal": sig})
     st.table(rows)
     st.metric("Fuente de datos", fuente)
-    st.caption(f"Ciclo: {state['cycle']} | Umbral: {umbral}% | Intervalo: {refresh}s")
+    st.caption(f"Ciclo: {state['cycle']} | Umbral: {umbral}% | Intervalo: {refresh}s | Inyección: {'Activada' if inyectar else 'Desactivada'}")
 with col2:
     st.subheader("📜 Historial de Operaciones")
     for ts, msg in reversed(state["trades"][-15:]):
