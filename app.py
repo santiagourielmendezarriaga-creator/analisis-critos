@@ -25,7 +25,7 @@ TREND_SELL_THRESHOLD = -25
 EMA_FAST = 4
 EMA_SLOW = 12
 TREND_WINDOW = 8
-MIN_PRICES = 3                     # <--- Reducido a 3 para máxima velocidad
+MIN_PRICES = 2                     # <--- Cambiado a 2 (máxima velocidad)
 STOP_LOSS_PCT = 1.0
 TAKE_PROFIT_PCT = 1.5
 TRAILING_STOP_PCT = 0.8
@@ -72,13 +72,14 @@ def ema_trend_score(prices):
     return max(-100, min(100, diff))
 
 def recent_change_score(prices):
-    if len(prices) < 3:
+    # Cambio porcentual entre los dos últimos precios (si hay al menos 2)
+    if len(prices) < 2:
         return 0
-    change = (prices[-1] - prices[-3]) / prices[-3] * 100
-    return max(-100, min(100, change * 2.5))
+    change = (prices[-1] - prices[-2]) / prices[-2] * 100
+    return max(-100, min(100, change * 3))   # factor amplificador
 
 def calculate_trend_score(prices, fear):
-    if len(prices) < MIN_PRICES:      # Ahora MIN_PRICES = 3
+    if len(prices) < MIN_PRICES:
         return 0
     w1, w2, w3 = 0.5, 0.3, 0.2
     s1 = linear_trend_score(prices)
@@ -236,8 +237,8 @@ else:
     }
 
 # ==================== INTERFAZ STREAMLIT ====================
-st.set_page_config(page_title="Trend Bot - MIN_PRICES=3", layout="wide")
-st.title("⚡ Trend Bot - Análisis con solo 3 precios")
+st.set_page_config(page_title="Trend Bot - MIN_PRICES=2", layout="wide")
+st.title("⚡ Trend Bot - Análisis con solo 2 precios (Máxima velocidad)")
 
 st.sidebar.header("⚙️ Configuración")
 refresh = st.sidebar.slider("Intervalo (segundos)", 5, 30, REFRESH_INTERVAL_SEC)
@@ -262,7 +263,7 @@ if st.sidebar.button("Reiniciar"):
         os.remove(STATE_FILE)
     st.rerun()
 if st.sidebar.button("Prueba Telegram"):
-    send_telegram("🧪 Alerta de prueba - Trend rápido MIN=3")
+    send_telegram("🧪 Alerta de prueba - Trend MIN=2")
     st.success("Enviado")
 
 # Obtener datos
@@ -285,7 +286,7 @@ state["cycle"] += 1
 if state["cycle"] % 10 == 0:
     save_state(state)
 if state["cycle"] % HEARTBEAT_CYCLES == 0 and state["cycle"]>0:
-    send_telegram(f"💓 Heartbeat ciclo {state['cycle']} | Fuente: {fuente}")
+    send_telegram(f"💓 Heartbeat ciclo {state['cycle']} | Fuente: {fuente} | MIN_PRICES=2")
 
 # Procesar cada moneda
 for sym, price in [("BTC", btc_p), ("ETH", eth_p)]:
@@ -293,12 +294,14 @@ for sym, price in [("BTC", btc_p), ("ETH", eth_p)]:
     trend = calculate_trend_score(hist, fear)
     state["last_trend"][sym] = trend
 
-    old = state.get("last_trend_alert", {}).get(sym, 0)
-    if abs(trend - old) >= 15:
-        send_telegram(f"📊 *{sym}* Tendencia: {old:.1f} → {trend:.1f}")
-        if "last_trend_alert" not in state:
-            state["last_trend_alert"] = {}
-        state["last_trend_alert"][sym] = trend
+    # Alertar cambio brusco de tendencia (solo si hay al menos 2 datos para dar sentido)
+    if len(hist) >= 2:
+        old = state.get("last_trend_alert", {}).get(sym, 0)
+        if abs(trend - old) >= 15:
+            send_telegram(f"📊 *{sym}* Tendencia: {old:.1f} → {trend:.1f}")
+            if "last_trend_alert" not in state:
+                state["last_trend_alert"] = {}
+            state["last_trend_alert"][sym] = trend
 
     action = "HOLD"
     if state["positions"].get(sym, 0) == 0:
@@ -308,6 +311,7 @@ for sym, price in [("BTC", btc_p), ("ETH", eth_p)]:
         if trend <= sell_t:
             action = "SELL"
 
+    # Stop loss / take profit / trailing (solo si hay posición)
     exit_reason = None
     if state["positions"].get(sym, 0) > 0:
         entry = state["entry_price"].get(sym, 0)
@@ -354,12 +358,13 @@ with col1:
         rows.append({"Moneda": name, "Precio": f"${price:,.0f}", "Tendencia": f"{trend:.1f}", "Señal": sig})
     st.table(rows)
     st.metric("Fear & Greed", f"{fear}/100 ({fear_label})")
-    st.caption(f"Ciclo: {state['cycle']} | Fuente: {fuente} | MIN_PRICES=3")
+    st.caption(f"Ciclo: {state['cycle']} | Fuente: {fuente} | MIN_PRICES=2 (opera desde ciclo 2)")
+
 with col2:
     st.subheader("📜 Operaciones")
     for ts, msg in reversed(state["trades"][-15:]):
         st.text(f"{ts.strftime('%H:%M:%S')} - {msg[:70]}")
-    st.caption("Análisis de tendencia con solo 3 precios históricos.")
+    st.caption("Análisis de tendencia con solo 2 precios históricos (máxima reactividad).")
 
 if auto:
     time.sleep(refresh)
