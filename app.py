@@ -16,15 +16,15 @@ def send_telegram(msg):
     except:
         pass
 
-# ==================== PARÁMETROS DE ESTRATEGIA Y RIESGO ====================
-THRESHOLD = 0.03          # 0.03% de cambio para activar señal de entrada
-STOP_LOSS_PCT = 2.0       # Stop loss: vende si pérdida >= 2%
-TAKE_PROFIT_PCT = 5.0     # Take profit: vende si ganancia >= 5%
+# ==================== PARÁMETROS ====================
+THRESHOLD = 0.03          # 0.03% de cambio para activar señal
+STOP_LOSS_PCT = 2.0       # Stop loss 2%
+TAKE_PROFIT_PCT = 5.0     # Take profit 5%
 MAX_POSITION_SIZE = 500.0
 MAX_DAILY_TRADES = 20
-COMMISSION = 0.1          # 0.1% de comisión
-SLIPPAGE = 0.05           # 0.05% de deslizamiento
-REFRESH_INTERVAL = 10     # segundos entre actualizaciones
+COMMISSION = 0.1
+SLIPPAGE = 0.05
+REFRESH_INTERVAL = 10
 
 # ==================== BITSO API ====================
 def get_bitso_price(book="btc_mxn"):
@@ -44,22 +44,22 @@ def get_bitso_price(book="btc_mxn"):
     except:
         return None
 
-# ==================== PERSISTENCIA ====================
+# ==================== PERSISTENCIA (CORREGIDA) ====================
 STATE_FILE = "bot_state.json"
 
-def save_state(state):
-    # Convertir objetos no serializables a tipos simples
+def save_state():
+    """Guarda el estado actual de st.session_state en un archivo JSON."""
     to_save = {
-        "balance": state["balance"],
-        "positions": state["positions"],
-        "trades": [(ts.isoformat(), msg) for ts, msg in state["trades"]],
-        "last_action": state["last_action"],
-        "daily_trades": state["daily_trades"],
-        "last_day": state["last_day"],
-        "last_price": state["last_price"],
-        "ref_price": state["ref_price"],
-        "entry_price": state["entry_price"],
-        "cycle": state.get("cycle", 0)
+        "balance": st.session_state.balance,
+        "positions": st.session_state.positions,
+        "trades": [(ts.isoformat(), msg) for ts, msg in st.session_state.trades],
+        "last_action": st.session_state.last_action,
+        "daily_trades": st.session_state.daily_trades,
+        "last_day": st.session_state.last_day,
+        "last_price": st.session_state.last_price,
+        "ref_price": st.session_state.ref_price,
+        "entry_price": st.session_state.entry_price,
+        "cycle": st.session_state.cycle
     }
     with open(STATE_FILE, "w") as f:
         json.dump(to_save, f)
@@ -69,22 +69,23 @@ def load_state():
         try:
             with open(STATE_FILE, "r") as f:
                 data = json.load(f)
+            # Restaurar datetime en trades
             data["trades"] = [(datetime.fromisoformat(ts), msg) for ts, msg in data["trades"]]
             return data
         except:
             pass
     return None
 
-# ==================== INTERFAZ STREAMLIT ====================
-st.set_page_config(page_title="Bot Bitso - SL/TP", layout="wide")
-st.title("🇲🇽 Bot de Trading con Stop Loss y Take Profit (Precios reales Bitso)")
+# ==================== INTERFAZ ====================
+st.set_page_config(page_title="Bot Bitso SL/TP", layout="wide")
+st.title("🤖 Bot de Trading con Stop Loss y Take Profit (Bitso real)")
 
-st.sidebar.header("Configuración")
+st.sidebar.header("⚙️ Configuración")
 umbral = st.sidebar.number_input("Umbral de entrada (%)", 0.01, 1.0, THRESHOLD, 0.01)
 stop_loss = st.sidebar.number_input("Stop Loss (%)", 0.5, 10.0, STOP_LOSS_PCT, 0.5)
 take_profit = st.sidebar.number_input("Take Profit (%)", 0.5, 20.0, TAKE_PROFIT_PCT, 0.5)
 
-st.sidebar.subheader("Cartera")
+st.sidebar.subheader("💰 Cartera")
 saldo_placeholder = st.sidebar.empty()
 total_placeholder = st.sidebar.empty()
 ops_placeholder = st.sidebar.empty()
@@ -96,16 +97,16 @@ if st.sidebar.button("Reiniciar simulación"):
         os.remove(STATE_FILE)
     st.rerun()
 
-if st.sidebar.button("Prueba Telegram"):
-    send_telegram("🧪 Bot mejorado con SL/TP - funcionando")
+if st.sidebar.button("📢 Prueba Telegram"):
+    send_telegram("🧪 Bot SL/TP - funcionando correctamente")
     st.success("Enviado")
 
-# Contenedores para datos dinámicos
+# Contenedores dinámicos
 tabla_placeholder = st.empty()
 info_placeholder = st.empty()
 historial_placeholder = st.empty()
 
-# ==================== ESTADO INICIAL ====================
+# ==================== INICIALIZAR ESTADO ====================
 if "running" not in st.session_state:
     st.session_state.running = True
     saved = load_state()
@@ -118,7 +119,7 @@ if "running" not in st.session_state:
         st.session_state.last_day = saved["last_day"]
         st.session_state.last_price = saved["last_price"]
         st.session_state.ref_price = saved["ref_price"]
-        st.session_state.entry_price = saved.get("entry_price", {"BTC": 0.0, "ETH": 0.0})
+        st.session_state.entry_price = saved["entry_price"]
         st.session_state.cycle = saved.get("cycle", 0)
     else:
         st.session_state.balance = 1000.0
@@ -134,7 +135,7 @@ if "running" not in st.session_state:
 
 # ==================== BUCLE PRINCIPAL ====================
 while st.session_state.running:
-    # --- Obtener precios reales de Bitso ---
+    # Obtener precios reales
     btc = get_bitso_price("btc_mxn")
     eth = get_bitso_price("eth_mxn")
     if btc is None or eth is None:
@@ -142,35 +143,33 @@ while st.session_state.running:
         time.sleep(REFRESH_INTERVAL)
         continue
 
-    # Actualizar últimos precios
+    # Actualizar precios
     st.session_state.last_price["BTC"] = btc
     st.session_state.last_price["ETH"] = eth
 
-    # Establecer precios de referencia (primera vez)
+    # Precios de referencia (solo primera vez)
     if st.session_state.ref_price["BTC"] == 0:
         st.session_state.ref_price["BTC"] = btc
         st.session_state.ref_price["ETH"] = eth
 
     st.session_state.cycle += 1
 
-    # Calcular variación desde el precio de referencia
+    # Variación desde referencia
     var_btc = (btc - st.session_state.ref_price["BTC"]) / st.session_state.ref_price["BTC"] * 100
     var_eth = (eth - st.session_state.ref_price["ETH"]) / st.session_state.ref_price["ETH"] * 100
 
-    # --- Mostrar tabla de señales (según variación de referencia) ---
-    senal_mostrar_btc = "COMPRAR" if var_btc >= umbral else "VENDER" if var_btc <= -umbral else "MANTENER"
-    senal_mostrar_eth = "COMPRAR" if var_eth >= umbral else "VENDER" if var_eth <= -umbral else "MANTENER"
-
-    tabla_placeholder.subheader("📊 Señales en Vivo (precios reales Bitso)")
+    # Mostrar tabla de señales (solo referencia)
+    tabla_placeholder.subheader("📊 Señales en Vivo (Bitso real)")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
         "Precio MXN": [f"${btc:,.0f}", f"${eth:,.0f}"],
         "Var desde inicio": [f"{var_btc:+.2f}%", f"{var_eth:+.2f}%"],
-        "Señal": [senal_mostrar_btc, senal_mostrar_eth]
+        "Señal": ["COMPRAR" if var_btc >= umbral else "VENDER" if var_btc <= -umbral else "MANTENER",
+                   "COMPRAR" if var_eth >= umbral else "VENDER" if var_eth <= -umbral else "MANTENER"]
     })
     info_placeholder.caption(f"Ciclo: {st.session_state.cycle} | Umbral: {umbral}% | SL: {stop_loss}% | TP: {take_profit}% | Fuente: Bitso real")
 
-    # Mostrar cartera en sidebar
+    # Actualizar sidebar
     total_val = st.session_state.balance
     for s in ["BTC", "ETH"]:
         p = st.session_state.last_price.get(s, 0)
@@ -182,16 +181,16 @@ while st.session_state.running:
     ops_placeholder.metric("Ops hoy", st.session_state.daily_trades)
 
     # Mostrar historial
-    historial_placeholder.subheader("📜 Historial de Operaciones")
+    historial_placeholder.subheader("📜 Historial")
     if st.session_state.trades:
-        historial_text = ""
+        txt = ""
         for ts, msg in reversed(st.session_state.trades[-10:]):
-            historial_text += f"{ts.strftime('%H:%M:%S')} - {msg[:60]}\n"
-        historial_placeholder.text(historial_text)
+            txt += f"{ts.strftime('%H:%M:%S')} - {msg[:60]}\n"
+        historial_placeholder.text(txt)
     else:
-        historial_placeholder.text("Aún no hay operaciones.")
+        historial_placeholder.text("Aún sin operaciones.")
 
-    # --- Lógica de trading con Stop Loss y Take Profit ---
+    # ==================== LÓGICA DE TRADING ====================
     hoy = datetime.now().day
     if hoy != st.session_state.last_day:
         st.session_state.daily_trades = 0
@@ -201,23 +200,23 @@ while st.session_state.running:
         pos = st.session_state.positions.get(sym, 0)
         entrada = st.session_state.entry_price.get(sym, 0)
         sl_tp_activado = False
-        senal = "HOLD"   # por defecto
+        senal = "HOLD"
 
-        # 1. Verificar Stop Loss y Take Profit (solo si hay posición)
+        # 1. Stop Loss / Take Profit (solo si hay posición)
         if pos > 0 and entrada > 0:
             cambio_precio = (precio - entrada) / entrada * 100
             if cambio_precio <= -stop_loss:
                 senal = "SELL"
                 sl_tp_activado = True
                 motivo = f"Stop Loss ({stop_loss}%)"
-                st.info(f"🛑 Stop Loss {sym}: pérdida {cambio_precio:.2f}%")
+                st.info(f"🛑 {sym} Stop Loss: pérdida {cambio_precio:.2f}%")
             elif cambio_precio >= take_profit:
                 senal = "SELL"
                 sl_tp_activado = True
                 motivo = f"Take Profit ({take_profit}%)"
-                st.info(f"💰 Take Profit {sym}: ganancia {cambio_precio:.2f}%")
+                st.info(f"💰 {sym} Take Profit: ganancia {cambio_precio:.2f}%")
 
-        # 2. Si no se activó SL/TP, usar señal de tendencia (comparación con precio de referencia)
+        # 2. Si no, usar señal de tendencia
         if not sl_tp_activado:
             if var >= umbral:
                 senal = "BUY"
@@ -226,11 +225,11 @@ while st.session_state.running:
             else:
                 senal = "HOLD"
 
-        # 3. Ejecutar orden solo si cambió la acción y no es HOLD
-        last = st.session_state.last_action.get(sym)
-        if senal != last and senal in ("BUY", "SELL"):
+        # 3. Ejecutar orden si cambia y es válida
+        last_act = st.session_state.last_action.get(sym)
+        if senal != last_act and senal in ("BUY", "SELL"):
             if senal == "BUY" and pos == 0 and st.session_state.daily_trades < MAX_DAILY_TRADES:
-                # --- COMPRA ---
+                # COMPRA
                 amount = min(MAX_POSITION_SIZE, st.session_state.balance)
                 if amount > 0:
                     eff = precio * (1 + SLIPPAGE/100)
@@ -238,7 +237,7 @@ while st.session_state.running:
                     qty = (amount - com) / eff
                     st.session_state.balance -= amount
                     st.session_state.positions[sym] = qty
-                    st.session_state.entry_price[sym] = eff   # guardar precio de entrada
+                    st.session_state.entry_price[sym] = eff
                     st.session_state.daily_trades += 1
                     msg = (f"🟢 *COMPRA* {sym}\n"
                            f"Cantidad: {qty:.6f}\n"
@@ -248,10 +247,10 @@ while st.session_state.running:
                            f"Saldo: ${st.session_state.balance:.2f}")
                     send_telegram(msg)
                     st.session_state.trades.append((datetime.now(), msg))
-                    save_state(st.session_state.__dict__)
+                    save_state()
                     st.session_state.last_action[sym] = senal
             elif senal == "SELL" and pos > 0 and st.session_state.daily_trades < MAX_DAILY_TRADES:
-                # --- VENTA (por SL, TP o señal de tendencia) ---
+                # VENTA
                 qty = pos
                 eff = precio * (1 - SLIPPAGE/100)
                 gross = qty * eff
@@ -260,14 +259,7 @@ while st.session_state.running:
                 st.session_state.balance += net
                 st.session_state.positions[sym] = 0
                 st.session_state.daily_trades += 1
-                # Determinar motivo para el mensaje
-                if sl_tp_activado:
-                    if cambio_precio <= -stop_loss:
-                        razon = f"Stop Loss ({stop_loss}%)"
-                    else:
-                        razon = f"Take Profit ({take_profit}%)"
-                else:
-                    razon = "Señal de tendencia"
+                razon = motivo if sl_tp_activado else "Señal de tendencia"
                 msg = (f"🔴 *VENTA* {sym}\n"
                        f"Cantidad: {qty:.6f}\n"
                        f"Precio real: ${precio:,.2f}\n"
@@ -278,8 +270,7 @@ while st.session_state.running:
                        f"Motivo: {razon}")
                 send_telegram(msg)
                 st.session_state.trades.append((datetime.now(), msg))
-                save_state(st.session_state.__dict__)
+                save_state()
                 st.session_state.last_action[sym] = senal
 
-    # Esperar antes del próximo ciclo
     time.sleep(REFRESH_INTERVAL)
