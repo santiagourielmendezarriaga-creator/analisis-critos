@@ -4,7 +4,6 @@ import time
 import json
 import os
 from datetime import datetime
-from collections import deque
 
 # ==================== TELEGRAM ====================
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
@@ -18,19 +17,15 @@ def send_telegram(msg):
         pass
 
 # ==================== PARÁMETROS ====================
-THRESHOLD = 0.1          # 0.1% de cambio para activar compra/venta
-REFRESH_INTERVAL = 10    # segundos (mínimo 10 para respetar límites)
+THRESHOLD = 0.05          # 0.05% de cambio
+REFRESH_INTERVAL = 10     # segundos
 MAX_POSITION_SIZE = 500.0
 MAX_DAILY_TRADES = 20
 COMMISSION = 0.1
 SLIPPAGE = 0.05
 
-# ==================== PRECIOS REALES DESDE BITSO (MXN) ====================
+# ==================== BITSO API (PRECIOS REALES) ====================
 def get_bitso_price(book="btc_mxn"):
-    """
-    book: "btc_mxn" o "eth_mxn"
-    Retorna precio en MXN (float) o None si falla.
-    """
     try:
         url = f"https://api.bitso.com/api/v3/ticker/?book={book}"
         resp = requests.get(url, timeout=5)
@@ -44,8 +39,7 @@ def get_bitso_price(book="btc_mxn"):
         if last:
             return float(last)
         return None
-    except Exception as e:
-        print(f"Error Bitso: {e}")
+    except:
         return None
 
 # ==================== PERSISTENCIA ====================
@@ -59,7 +53,6 @@ def save_state(state):
         "last_action": state["last_action"],
         "daily_trades": state["daily_trades"],
         "last_day": state["last_day"],
-        "cycle": state["cycle"],
         "last_price": state["last_price"],
         "ref_price": state["ref_price"]
     }
@@ -77,42 +70,18 @@ def load_state():
             pass
     return None
 
-# ==================== INICIALIZAR ESTADO ====================
-saved = load_state()
-if saved:
-    state = saved
-else:
-    state = {
-        "balance": 1000.0,
-        "positions": {"BTC": 0.0, "ETH": 0.0},
-        "trades": [],
-        "last_action": {"BTC": None, "ETH": None},
-        "daily_trades": 0,
-        "last_day": datetime.now().day,
-        "cycle": 0,
-        "last_price": {"BTC": 0.0, "ETH": 0.0},
-        "ref_price": {"BTC": 0.0, "ETH": 0.0}
-    }
+# ==================== INTERFAZ (se ejecuta una vez) ====================
+st.set_page_config(page_title="Bot Bitso Real - Auto Actualización", layout="wide")
 
-# ==================== INTERFAZ STREAMLIT ====================
-st.set_page_config(page_title="Bot con Precios Reales de Bitso", layout="wide")
-st.title("🇲🇽 Bot con Precios Reales de Bitso (MXN)")
-
+# Título y sidebar (se renderizan una sola vez, luego se actualiza el contenido)
+st.title("🇲🇽 Bot con Precios Reales de Bitso (MXN) - Actualización automática cada 10s")
 st.sidebar.header("Configuración")
-interval = st.sidebar.slider("Intervalo (segundos)", 10, 60, REFRESH_INTERVAL)
-auto = st.sidebar.checkbox("Auto-refrescar", True)
-umbral = st.sidebar.number_input("Umbral de cambio %", 0.05, 2.0, THRESHOLD, 0.05)
+umbral = st.sidebar.number_input("Umbral de cambio %", 0.01, 1.0, THRESHOLD, 0.01)
 
 st.sidebar.subheader("Cartera")
-st.sidebar.metric("Saldo MXN", f"${state['balance']:,.2f}")
-total = state['balance']
-for s in ["BTC", "ETH"]:
-    p = state["last_price"].get(s, 0)
-    q = state["positions"].get(s, 0)
-    if q > 0 and p > 0:
-        total += q * p
-st.sidebar.metric("Valor total", f"${total:,.2f}")
-st.sidebar.metric("Ops hoy", state["daily_trades"])
+saldo_placeholder = st.sidebar.empty()
+total_placeholder = st.sidebar.empty()
+ops_placeholder = st.sidebar.empty()
 
 if st.sidebar.button("Reiniciar"):
     for key in list(st.session_state.keys()):
@@ -120,118 +89,167 @@ if st.sidebar.button("Reiniciar"):
     if os.path.exists(STATE_FILE):
         os.remove(STATE_FILE)
     st.rerun()
+
 if st.sidebar.button("Prueba Telegram"):
-    send_telegram("🧪 Bot con precios reales de Bitso")
+    send_telegram("🧪 Bot con precios reales - actualización automática")
     st.success("Enviado")
 
-st.info(f"✅ Precios REALES de Bitso (BTC/MXN y ETH/MXN). Umbral: {umbral}%. Intervalo: {interval}s. Sin simulación ni inyección artificial.")
+# Contenedores para datos dinámicos
+tabla_placeholder = st.empty()
+info_placeholder = st.empty()
+historial_placeholder = st.empty()
 
-# ==================== OBTENER PRECIOS REALES ====================
-btc = get_bitso_price("btc_mxn")
-eth = get_bitso_price("eth_mxn")
-
-if btc is None or eth is None:
-    st.error("❌ No se pudieron obtener precios reales de Bitso. Verifica tu conexión a Internet o el estado de la API de Bitso.")
-    st.stop()
-
-# Mostrar precios obtenidos
-st.success(f"✅ Precios reales de Bitso: BTC = ${btc:,.2f} MXN, ETH = ${eth:,.2f} MXN")
-
-# Actualizar estado
-state["last_price"]["BTC"] = btc
-state["last_price"]["ETH"] = eth
-
-# Establecer precio de referencia (solo la primera vez)
-if state["ref_price"]["BTC"] == 0:
-    state["ref_price"]["BTC"] = btc
-    state["ref_price"]["ETH"] = eth
-
-state["cycle"] += 1
-
-# Calcular cambio porcentual desde el precio de referencia
-cambio = {}
-for sym in ["BTC", "ETH"]:
-    ref = state["ref_price"].get(sym, state["last_price"][sym])
-    precio = state["last_price"][sym]
-    cambio[sym] = (precio - ref) / ref * 100 if ref != 0 else 0
-
-# Guardar estado cada 10 ciclos
-if state["cycle"] % 10 == 0:
-    save_state(state)
-
-# ==================== LÓGICA DE COMPRA/VENTA ====================
-hoy = datetime.now().day
-if hoy != state["last_day"]:
-    state["daily_trades"] = 0
-    state["last_day"] = hoy
-
-for sym, precio in [("BTC", btc), ("ETH", eth)]:
-    var = cambio[sym]
-    if var >= umbral:
-        senal = "BUY"
-    elif var <= -umbral:
-        senal = "SELL"
+# ==================== ESTADO DE SESIÓN (persistente entre ciclos) ====================
+if "running" not in st.session_state:
+    st.session_state.running = True
+    # Cargar estado guardado
+    saved = load_state()
+    if saved:
+        st.session_state.balance = saved["balance"]
+        st.session_state.positions = saved["positions"]
+        st.session_state.trades = saved["trades"]
+        st.session_state.last_action = saved["last_action"]
+        st.session_state.daily_trades = saved["daily_trades"]
+        st.session_state.last_day = saved["last_day"]
+        st.session_state.last_price = saved["last_price"]
+        st.session_state.ref_price = saved["ref_price"]
+        st.session_state.cycle = saved.get("cycle", 0)
     else:
-        senal = "HOLD"
+        st.session_state.balance = 1000.0
+        st.session_state.positions = {"BTC": 0.0, "ETH": 0.0}
+        st.session_state.trades = []
+        st.session_state.last_action = {"BTC": None, "ETH": None}
+        st.session_state.daily_trades = 0
+        st.session_state.last_day = datetime.now().day
+        st.session_state.last_price = {"BTC": 0.0, "ETH": 0.0}
+        st.session_state.ref_price = {"BTC": 0.0, "ETH": 0.0}
+        st.session_state.cycle = 0
 
-    action = None
-    if senal == "BUY" and state["positions"].get(sym, 0) == 0 and state["daily_trades"] < MAX_DAILY_TRADES:
-        action = "BUY"
-    elif senal == "SELL" and state["positions"].get(sym, 0) > 0 and state["daily_trades"] < MAX_DAILY_TRADES:
-        action = "SELL"
+# ==================== BUCLE INFINITO DE ACTUALIZACIÓN ====================
+while st.session_state.running:
+    # Obtener precios actuales
+    btc = get_bitso_price("btc_mxn")
+    eth = get_bitso_price("eth_mxn")
+    if btc is None or eth is None:
+        tabla_placeholder.error("❌ No se pudieron obtener precios de Bitso. Reintentando en 10 segundos...")
+        time.sleep(REFRESH_INTERVAL)
+        continue
 
-    if action == "BUY":
-        amount = min(MAX_POSITION_SIZE, state["balance"])
-        if amount > 0:
-            eff = precio * (1 + SLIPPAGE/100)
-            com = amount * COMMISSION/100
-            qty = (amount - com) / eff
-            state["balance"] -= amount
-            state["positions"][sym] = state["positions"].get(sym, 0) + qty
-            state["daily_trades"] += 1
-            msg = f"🟢 *COMPRA* {sym}\nCantidad: {qty:.6f}\nPrecio real: ${precio:,.2f}\nEfectivo: ${eff:,.2f}\nComisión: ${com:.2f}\nSaldo: ${state['balance']:.2f}"
-            send_telegram(msg)
-            state["trades"].append((datetime.now(), msg))
-            save_state(state)
-    elif action == "SELL":
-        qty = state["positions"].get(sym, 0)
-        if qty > 0:
-            eff = precio * (1 - SLIPPAGE/100)
-            gross = qty * eff
-            com = gross * COMMISSION/100
-            net = gross - com
-            state["balance"] += net
-            state["positions"][sym] = 0
-            state["daily_trades"] += 1
-            msg = f"🔴 *VENTA* {sym}\nCantidad: {qty:.6f}\nPrecio real: ${precio:,.2f}\nEfectivo: ${eff:,.2f}\nComisión: ${com:.2f}\nNeto: ${net:.2f}\nSaldo: ${state['balance']:.2f}"
-            send_telegram(msg)
-            state["trades"].append((datetime.now(), msg))
-            save_state(state)
+    # Actualizar precios en estado
+    st.session_state.last_price["BTC"] = btc
+    st.session_state.last_price["ETH"] = eth
 
-# ==================== DASHBOARD ====================
-col1, col2 = st.columns(2)
-with col1:
-    st.subheader("📊 Señales en Vivo (precios reales Bitso)")
-    rows = []
-    for sym in ["BTC", "ETH"]:
-        name = "Bitcoin" if sym == "BTC" else "Ethereum"
-        precio = state["last_price"].get(sym, 0)
-        var = cambio[sym]
+    # Establecer precios de referencia si es primera vez
+    if st.session_state.ref_price["BTC"] == 0:
+        st.session_state.ref_price["BTC"] = btc
+        st.session_state.ref_price["ETH"] = eth
+
+    st.session_state.cycle += 1
+
+    # Calcular variación
+    var_btc = (btc - st.session_state.ref_price["BTC"]) / st.session_state.ref_price["BTC"] * 100
+    var_eth = (eth - st.session_state.ref_price["ETH"]) / st.session_state.ref_price["ETH"] * 100
+
+    # Determinar señales
+    senal_btc = "COMPRAR" if var_btc >= umbral else "VENDER" if var_btc <= -umbral else "MANTENER"
+    senal_eth = "COMPRAR" if var_eth >= umbral else "VENDER" if var_eth <= -umbral else "MANTENER"
+
+    # Mostrar tabla actualizada
+    tabla_placeholder.subheader("📊 Señales en Vivo (precios reales Bitso)")
+    tabla_placeholder.table({
+        "Moneda": ["Bitcoin", "Ethereum"],
+        "Precio MXN": [f"${btc:,.0f}", f"${eth:,.0f}"],
+        "Var desde inicio": [f"{var_btc:+.2f}%", f"{var_eth:+.2f}%"],
+        "Señal": [senal_btc, senal_eth]
+    })
+    info_placeholder.caption(f"Ciclo: {st.session_state.cycle} | Umbral: {umbral}% | Fuente: Bitso real | Refresco cada {REFRESH_INTERVAL}s")
+
+    # Actualizar sidebar con saldo y valor total
+    total_val = st.session_state.balance
+    for s in ["BTC", "ETH"]:
+        p = st.session_state.last_price.get(s, 0)
+        q = st.session_state.positions.get(s, 0)
+        if q > 0 and p > 0:
+            total_val += q * p
+    saldo_placeholder.metric("Saldo MXN", f"${st.session_state.balance:,.2f}")
+    total_placeholder.metric("Valor total", f"${total_val:,.2f}")
+    ops_placeholder.metric("Ops hoy", st.session_state.daily_trades)
+
+    # Mostrar historial
+    historial_placeholder.subheader("📜 Historial de Operaciones")
+    if st.session_state.trades:
+        historial_text = ""
+        for ts, msg in reversed(st.session_state.trades[-10:]):
+            historial_text += f"{ts.strftime('%H:%M:%S')} - {msg[:60]}\n"
+        historial_placeholder.text(historial_text)
+    else:
+        historial_placeholder.text("Aún no hay operaciones.")
+
+    # Lógica de trading (igual que antes)
+    hoy = datetime.now().day
+    if hoy != st.session_state.last_day:
+        st.session_state.daily_trades = 0
+        st.session_state.last_day = hoy
+
+    for sym, precio, var in [("BTC", btc, var_btc), ("ETH", eth, var_eth)]:
         if var >= umbral:
-            sig = "🟢 COMPRAR"
+            senal = "BUY"
         elif var <= -umbral:
-            sig = "🔴 VENDER"
+            senal = "SELL"
         else:
-            sig = "⚪ MANTENER"
-        rows.append({"Moneda": name, "Precio MXN": f"${precio:,.0f}", "Var desde inicio": f"{var:+.2f}%", "Señal": sig})
-    st.table(rows)
-    st.caption(f"Ciclo: {state['cycle']} | Umbral: {umbral}% | Fuente: Bitso real")
-with col2:
-    st.subheader("📜 Historial de Operaciones")
-    for ts, msg in reversed(state["trades"][-10:]):
-        st.text(f"{ts.strftime('%H:%M:%S')} - {msg[:60]}")
-    st.caption("Las operaciones son simuladas (paper trading) pero con precios reales del mercado.")
+            senal = "HOLD"
 
-if auto:
-    time.sleep(interval)
-    st.rerun()
+        action = None
+        if senal == "BUY" and st.session_state.positions.get(sym, 0) == 0 and st.session_state.daily_trades < MAX_DAILY_TRADES:
+            action = "BUY"
+        elif senal == "SELL" and st.session_state.positions.get(sym, 0) > 0 and st.session_state.daily_trades < MAX_DAILY_TRADES:
+            action = "SELL"
+
+        if action == "BUY":
+            amount = min(MAX_POSITION_SIZE, st.session_state.balance)
+            if amount > 0:
+                eff = precio * (1 + SLIPPAGE/100)
+                com = amount * COMMISSION/100
+                qty = (amount - com) / eff
+                st.session_state.balance -= amount
+                st.session_state.positions[sym] = st.session_state.positions.get(sym, 0) + qty
+                st.session_state.daily_trades += 1
+                msg = f"🟢 *COMPRA* {sym}\nCantidad: {qty:.6f}\nPrecio real: ${precio:,.2f}\nEfectivo: ${eff:,.2f}\nComisión: ${com:.2f}\nSaldo: ${st.session_state.balance:.2f}"
+                send_telegram(msg)
+                st.session_state.trades.append((datetime.now(), msg))
+                save_state({
+                    "balance": st.session_state.balance,
+                    "positions": st.session_state.positions,
+                    "trades": st.session_state.trades,
+                    "last_action": st.session_state.last_action,
+                    "daily_trades": st.session_state.daily_trades,
+                    "last_day": st.session_state.last_day,
+                    "last_price": st.session_state.last_price,
+                    "ref_price": st.session_state.ref_price
+                })
+        elif action == "SELL":
+            qty = st.session_state.positions.get(sym, 0)
+            if qty > 0:
+                eff = precio * (1 - SLIPPAGE/100)
+                gross = qty * eff
+                com = gross * COMMISSION/100
+                net = gross - com
+                st.session_state.balance += net
+                st.session_state.positions[sym] = 0
+                st.session_state.daily_trades += 1
+                msg = f"🔴 *VENTA* {sym}\nCantidad: {qty:.6f}\nPrecio real: ${precio:,.2f}\nEfectivo: ${eff:,.2f}\nComisión: ${com:.2f}\nNeto: ${net:.2f}\nSaldo: ${st.session_state.balance:.2f}"
+                send_telegram(msg)
+                st.session_state.trades.append((datetime.now(), msg))
+                save_state({
+                    "balance": st.session_state.balance,
+                    "positions": st.session_state.positions,
+                    "trades": st.session_state.trades,
+                    "last_action": st.session_state.last_action,
+                    "daily_trades": st.session_state.daily_trades,
+                    "last_day": st.session_state.last_day,
+                    "last_price": st.session_state.last_price,
+                    "ref_price": st.session_state.ref_price
+                })
+
+    # Esperar antes de la siguiente iteración
+    time.sleep(REFRESH_INTERVAL)
