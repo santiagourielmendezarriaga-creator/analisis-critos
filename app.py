@@ -16,10 +16,10 @@ def send_telegram(msg):
     except:
         pass
 
-# ==================== PARÁMETROS ====================
-THRESHOLD = 0.03
-STOP_LOSS_PCT = 2.0
-TAKE_PROFIT_PCT = 5.0
+# ==================== PARÁMETROS (configurables en sidebar) ====================
+THRESHOLD = 0.01          # 0.01% de cambio desde inicio para comprar
+STOP_LOSS_PCT = 2.0       # Stop loss fijo 2% (respaldo)
+TRAILING_STOP_PCT = 1.0   # Trailing stop: vende si cae 1% desde máximo
 MAX_POSITION_SIZE = 500.0
 MAX_DAILY_TRADES = 20
 COMMISSION = 0.1
@@ -44,7 +44,7 @@ def get_bitso_price(book="btc_mxn"):
     except:
         return None
 
-# ==================== PERSISTENCIA (CON VERIFICACIÓN DE CLAVES) ====================
+# ==================== PERSISTENCIA ====================
 STATE_FILE = "bot_state.json"
 
 def save_state():
@@ -58,6 +58,7 @@ def save_state():
         "last_price": st.session_state.last_price,
         "ref_price": st.session_state.ref_price,
         "entry_price": st.session_state.entry_price,
+        "highest_price": st.session_state.highest_price,   # nuevo para trailing stop
         "cycle": st.session_state.cycle
     }
     with open(STATE_FILE, "w") as f:
@@ -68,32 +69,25 @@ def load_state():
         try:
             with open(STATE_FILE, "r") as f:
                 data = json.load(f)
-            # Restaurar trades (datetime)
             data["trades"] = [(datetime.fromisoformat(ts), msg) for ts, msg in data["trades"]]
-            # Asegurar claves faltantes (para compatibilidad)
+            # Asegurar claves nuevas
+            if "highest_price" not in data:
+                data["highest_price"] = {"BTC": 0.0, "ETH": 0.0}
             if "entry_price" not in data:
                 data["entry_price"] = {"BTC": 0.0, "ETH": 0.0}
-            if "ref_price" not in data:
-                data["ref_price"] = {"BTC": 0.0, "ETH": 0.0}
-            if "last_price" not in data:
-                data["last_price"] = {"BTC": 0.0, "ETH": 0.0}
-            if "last_action" not in data:
-                data["last_action"] = {"BTC": None, "ETH": None}
-            if "cycle" not in data:
-                data["cycle"] = 0
             return data
         except:
             pass
     return None
 
 # ==================== INTERFAZ ====================
-st.set_page_config(page_title="Bot Bitso SL/TP", layout="wide")
-st.title("🤖 Bot con Stop Loss y Take Profit (Bitso real)")
+st.set_page_config(page_title="Bot Trailing Stop", layout="wide")
+st.title("📈 Bot con Trailing Stop (Bitso real)")
 
 st.sidebar.header("⚙️ Configuración")
-umbral = st.sidebar.number_input("Umbral de entrada (%)", 0.01, 1.0, THRESHOLD, 0.01)
-stop_loss = st.sidebar.number_input("Stop Loss (%)", 0.5, 10.0, STOP_LOSS_PCT, 0.5)
-take_profit = st.sidebar.number_input("Take Profit (%)", 0.5, 20.0, TAKE_PROFIT_PCT, 0.5)
+umbral = st.sidebar.number_input("Umbral de entrada (%)", 0.005, 1.0, THRESHOLD, 0.005)
+stop_loss = st.sidebar.number_input("Stop Loss fijo (%)", 0.5, 10.0, STOP_LOSS_PCT, 0.5)
+trailing = st.sidebar.number_input("Trailing Stop (%)", 0.2, 5.0, TRAILING_STOP_PCT, 0.1)
 
 st.sidebar.subheader("💰 Cartera")
 saldo_placeholder = st.sidebar.empty()
@@ -108,10 +102,9 @@ if st.sidebar.button("Reiniciar simulación"):
     st.rerun()
 
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("🧪 Bot SL/TP - funcionando")
+    send_telegram("🧪 Bot Trailing Stop - activo")
     st.success("Enviado")
 
-# Contenedores
 tabla_placeholder = st.empty()
 info_placeholder = st.empty()
 historial_placeholder = st.empty()
@@ -130,6 +123,7 @@ if "running" not in st.session_state:
         st.session_state.last_price = saved["last_price"]
         st.session_state.ref_price = saved["ref_price"]
         st.session_state.entry_price = saved["entry_price"]
+        st.session_state.highest_price = saved["highest_price"]
         st.session_state.cycle = saved["cycle"]
     else:
         st.session_state.balance = 1000.0
@@ -141,6 +135,7 @@ if "running" not in st.session_state:
         st.session_state.last_price = {"BTC": 0.0, "ETH": 0.0}
         st.session_state.ref_price = {"BTC": 0.0, "ETH": 0.0}
         st.session_state.entry_price = {"BTC": 0.0, "ETH": 0.0}
+        st.session_state.highest_price = {"BTC": 0.0, "ETH": 0.0}
         st.session_state.cycle = 0
 
 # ==================== BUCLE PRINCIPAL ====================
@@ -172,7 +167,7 @@ while st.session_state.running:
         "Señal": ["COMPRAR" if var_btc >= umbral else "VENDER" if var_btc <= -umbral else "MANTENER",
                    "COMPRAR" if var_eth >= umbral else "VENDER" if var_eth <= -umbral else "MANTENER"]
     })
-    info_placeholder.caption(f"Ciclo: {st.session_state.cycle} | Umbral: {umbral}% | SL: {stop_loss}% | TP: {take_profit}%")
+    info_placeholder.caption(f"Ciclo: {st.session_state.cycle} | Umbral: {umbral}% | SL fijo: {stop_loss}% | Trailing: {trailing}%")
 
     total_val = st.session_state.balance
     for s in ["BTC", "ETH"]:
@@ -193,7 +188,7 @@ while st.session_state.running:
     else:
         historial_placeholder.text("Sin operaciones aún.")
 
-    # ==================== LÓGICA DE TRADING ====================
+    # ==================== LÓGICA DE TRADING CON TRAILING STOP ====================
     hoy = datetime.now().day
     if hoy != st.session_state.last_day:
         st.session_state.daily_trades = 0
@@ -202,31 +197,44 @@ while st.session_state.running:
     for sym, precio, var in [("BTC", btc, var_btc), ("ETH", eth, var_eth)]:
         pos = st.session_state.positions.get(sym, 0)
         entrada = st.session_state.entry_price.get(sym, 0)
-        sl_tp_activado = False
+        highest = st.session_state.highest_price.get(sym, precio)
         senal = "HOLD"
+        razon = ""
 
+        # Actualizar precio máximo si es mayor
+        if precio > highest:
+            st.session_state.highest_price[sym] = precio
+            highest = precio
+
+        # --- Condiciones de venta (prioridad) ---
         if pos > 0 and entrada > 0:
-            cambio_precio = (precio - entrada) / entrada * 100
-            if cambio_precio <= -stop_loss:
+            # 1. Stop Loss fijo (pérdida desde entrada)
+            perdida = (precio - entrada) / entrada * 100
+            if perdida <= -stop_loss:
                 senal = "SELL"
-                sl_tp_activado = True
-                motivo = f"Stop Loss ({stop_loss}%)"
-            elif cambio_precio >= take_profit:
-                senal = "SELL"
-                sl_tp_activado = True
-                motivo = f"Take Profit ({take_profit}%)"
+                razon = f"Stop Loss fijo ({stop_loss}%)"
+            # 2. Trailing Stop (caída desde el máximo)
+            elif highest > entrada:
+                caida_desde_max = (precio - highest) / highest * 100
+                if caida_desde_max <= -trailing:
+                    senal = "SELL"
+                    razon = f"Trailing Stop ({trailing}%) desde máximo ${highest:,.2f}"
 
-        if not sl_tp_activado:
+        # Si no se activó venta, usar señal de entrada
+        if senal != "SELL":
             if var >= umbral:
                 senal = "BUY"
             elif var <= -umbral:
-                senal = "SELL"
+                senal = "SELL"   # venta por señal bajista
+                razon = "Señal de tendencia baja"
             else:
                 senal = "HOLD"
 
+        # Ejecutar orden si cambia la acción y es válida
         last_act = st.session_state.last_action.get(sym)
         if senal != last_act and senal in ("BUY", "SELL"):
             if senal == "BUY" and pos == 0 and st.session_state.daily_trades < MAX_DAILY_TRADES:
+                # COMPRA
                 amount = min(MAX_POSITION_SIZE, st.session_state.balance)
                 if amount > 0:
                     eff = precio * (1 + SLIPPAGE/100)
@@ -235,13 +243,20 @@ while st.session_state.running:
                     st.session_state.balance -= amount
                     st.session_state.positions[sym] = qty
                     st.session_state.entry_price[sym] = eff
+                    st.session_state.highest_price[sym] = eff   # inicializar máximo
                     st.session_state.daily_trades += 1
-                    msg = (f"🟢 *COMPRA* {sym}\nCantidad: {qty:.6f}\nPrecio: ${precio:,.2f}\nEfectivo: ${eff:,.2f}\nComisión: ${com:.2f}\nSaldo: ${st.session_state.balance:.2f}")
+                    msg = (f"🟢 *COMPRA* {sym}\n"
+                           f"Cantidad: {qty:.6f}\n"
+                           f"Precio: ${precio:,.2f}\n"
+                           f"Efectivo: ${eff:,.2f}\n"
+                           f"Comisión: ${com:.2f}\n"
+                           f"Saldo: ${st.session_state.balance:.2f}")
                     send_telegram(msg)
                     st.session_state.trades.append((datetime.now(), msg))
                     save_state()
                     st.session_state.last_action[sym] = senal
             elif senal == "SELL" and pos > 0 and st.session_state.daily_trades < MAX_DAILY_TRADES:
+                # VENTA (por trailing, stop loss o señal)
                 qty = pos
                 eff = precio * (1 - SLIPPAGE/100)
                 gross = qty * eff
@@ -250,8 +265,14 @@ while st.session_state.running:
                 st.session_state.balance += net
                 st.session_state.positions[sym] = 0
                 st.session_state.daily_trades += 1
-                razon = motivo if sl_tp_activado else "Señal de tendencia"
-                msg = (f"🔴 *VENTA* {sym}\nCantidad: {qty:.6f}\nPrecio: ${precio:,.2f}\nEfectivo: ${eff:,.2f}\nComisión: ${com:.2f}\nNeto: ${net:.2f}\nSaldo: ${st.session_state.balance:.2f}\nMotivo: {razon}")
+                msg = (f"🔴 *VENTA* {sym}\n"
+                       f"Cantidad: {qty:.6f}\n"
+                       f"Precio: ${precio:,.2f}\n"
+                       f"Efectivo: ${eff:,.2f}\n"
+                       f"Comisión: ${com:.2f}\n"
+                       f"Neto: ${net:.2f}\n"
+                       f"Saldo: ${st.session_state.balance:.2f}\n"
+                       f"Motivo: {razon}")
                 send_telegram(msg)
                 st.session_state.trades.append((datetime.now(), msg))
                 save_state()
