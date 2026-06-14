@@ -302,20 +302,18 @@ if st.session_state.user_data is None:
 else:
     restore_user_state()
 
-# ==================== CONTROL DE ACCESO (prueba 24h) - VERSIÓN CORREGIDA ====================
+# ==================== CONTROL DE ACCESO (prueba 24h) - CORREGIDO ====================
 trial_end_value = st.session_state.user_data.get("trial_end")
 if trial_end_value:
-    # Convertir a datetime de forma segura
+    # Convertir a datetime si es string; si falla, asignar fecha futura
     try:
         if isinstance(trial_end_value, str):
             trial_end = datetime.fromisoformat(trial_end_value)
         else:
             trial_end = trial_end_value
     except Exception:
-        # Si hay error, asumimos fecha futura para no bloquear
         trial_end = datetime.now() + timedelta(days=1)
     
-    # Comparación segura
     if datetime.now() > trial_end and not st.session_state.user_data.get("is_premium", False):
         st.error("🔒 Tu período de prueba de 24 horas ha terminado. Debes suscribirte para seguir usando el bot.")
         if st.session_state.user_email == "santiagourielmendezarriga@gmail.com":
