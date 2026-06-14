@@ -270,7 +270,8 @@ def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow, f
     elif sell_score > buy_score:
         return "SELL", rsi
     else:
-        return "HOLD", rsi# ==================== LOGIN ====================
+        return "HOLD", rsi
+        # ==================== LOGIN ====================
 if not st.session_state.authenticated:
     st.title("🤖 Crypto Trading Bot")
     tab1, tab2 = st.tabs(["Iniciar sesión", "Registrarse"])
@@ -299,17 +300,19 @@ if not st.session_state.authenticated:
 if st.session_state.user_data is None:
     init_new_user_state()
 else:
-    restore_user_state()# ==================== CONTROL DE ACCESO (prueba 24h) CORREGIDO ====================
+    restore_user_state()
+
+# ==================== CONTROL DE ACCESO (prueba 24h) CORREGIDO ====================
 trial_end_value = st.session_state.user_data.get("trial_end")
 if trial_end_value:
+    # Convertir a datetime de forma segura
     try:
-        # Convertir a datetime si es string
         if isinstance(trial_end_value, str):
             trial_end = datetime.fromisoformat(trial_end_value)
         else:
             trial_end = trial_end_value
-    except:
-        # Si falla la conversión, asumir que la prueba no ha expirado
+    except Exception:
+        # Si hay error (formato inválido), asumimos prueba activa (no bloqueamos)
         trial_end = datetime.now() + timedelta(days=1)
     
     if datetime.now() > trial_end and not st.session_state.user_data.get("is_premium", False):
