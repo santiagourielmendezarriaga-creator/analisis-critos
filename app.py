@@ -136,7 +136,7 @@ def init_new_user_state():
     st.session_state.take_profit = 2.5
     st.session_state.trailing = 1.0
     st.session_state.expert_score = 30
-    st.session_state.expert_comment = "Acción prioritaria: Reduce tu exposición, NO compres en este nivel."
+    st.session_state.expert_comment = ""
 
 # ==================== TELEGRAM ====================
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
@@ -489,4 +489,5 @@ while True:
                        f"Precio: ${precio:,.0f} MXN\n"
                        f"Saldo: ${st.session_state.balance:.2f}\n"
                        f"Razón: {razon_extra}")
-    
+                send_telegram(msg)
+                st.session_state
