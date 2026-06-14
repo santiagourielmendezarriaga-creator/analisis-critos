@@ -121,9 +121,9 @@ def restore_user_state():
     st.session_state.rsi_ob = data.get("rsi_ob", 70)
     st.session_state.ema_fast = data.get("ema_fast", 5)
     st.session_state.ema_slow = data.get("ema_slow", 20)
-    st.session_state.stop_loss = data.get("stop_loss", 2.0)
-    st.session_state.take_profit = data.get("take_profit", 2.5)
-    st.session_state.trailing = data.get("trailing_stop", 1.0)
+    st.session_state.stop_loss = float(data.get("stop_loss", 2.0))
+    st.session_state.take_profit = float(data.get("take_profit", 2.5))
+    st.session_state.trailing = float(data.get("trailing_stop", 1.0))
     st.session_state.expert_score = data.get("expert_score", 30)
     st.session_state.expert_comment = data.get("expert_comment", "")
     st.session_state.is_premium = data.get("is_premium", False)
@@ -302,8 +302,7 @@ if st.session_state.user_data is None:
 else:
     restore_user_state()
 
-# ==================== CONTROL DE ACCESO (DESACTIVADO) ====================
-# (El bloque de prueba de 24h está desactivado para evitar errores de tipo)
+# ==================== CONTROL DE ACCESO (DESACTIVADO TEMPORALMENTE) ====================
 pass
 
 # ==================== INTERFAZ PRINCIPAL ====================
@@ -312,19 +311,19 @@ st.title("📊 Bot de Trading con Estrategia Experta (RSI, EMA, Fear & Greed)")
 
 # Sidebar
 st.sidebar.header("⚙️ Configuración General")
-umbral = st.sidebar.number_input("Umbral de entrada (%)", 0.005, 1.0, st.session_state.umbral, 0.005, key="umbral_input")
-rsi_os = st.sidebar.number_input("RSI sobreventa", 20, 40, st.session_state.rsi_os, key="rsi_os_input")
-rsi_ob = st.sidebar.number_input("RSI sobrecompra", 60, 80, st.session_state.rsi_ob, key="rsi_ob_input")
-ema_fast = st.sidebar.number_input("EMA rápida (periodos)", 3, 20, st.session_state.ema_fast, key="ema_fast_input")
-ema_slow = st.sidebar.number_input("EMA lenta (periodos)", 10, 50, st.session_state.ema_slow, key="ema_slow_input")
+umbral = st.sidebar.number_input("Umbral de entrada (%)", min_value=0.005, max_value=1.0, value=float(st.session_state.umbral), step=0.005)
+rsi_os = st.sidebar.number_input("RSI sobreventa", min_value=20, max_value=40, value=int(st.session_state.rsi_os), step=1)
+rsi_ob = st.sidebar.number_input("RSI sobrecompra", min_value=60, max_value=80, value=int(st.session_state.rsi_ob), step=1)
+ema_fast = st.sidebar.number_input("EMA rápida (periodos)", min_value=3, max_value=20, value=int(st.session_state.ema_fast), step=1)
+ema_slow = st.sidebar.number_input("EMA lenta (periodos)", min_value=10, max_value=50, value=int(st.session_state.ema_slow), step=1)
 
 st.sidebar.header("🛡️ Gestión de Riesgo")
-stop_loss = st.sidebar.number_input("Stop Loss fijo (%)", 0.5, 10.0, st.session_state.stop_loss, 0.5, key="stop_loss_input")
-take_profit = st.sidebar.number_input("Take Profit fijo (%)", 0.5, 20.0, st.session_state.take_profit, 0.5, key="take_profit_input")
-trailing = st.sidebar.number_input("Trailing Stop (%)", 0.2, 5.0, st.session_state.trailing, 0.1, key="trailing_input")
+stop_loss = st.sidebar.number_input("Stop Loss fijo (%)", min_value=0.5, max_value=10.0, value=float(st.session_state.stop_loss), step=0.5)
+take_profit = st.sidebar.number_input("Take Profit fijo (%)", min_value=0.5, max_value=20.0, value=float(st.session_state.take_profit), step=0.5)
+trailing = st.sidebar.number_input("Trailing Stop (%)", min_value=0.2, max_value=5.0, value=float(st.session_state.trailing), step=0.1)
 
 st.sidebar.header("🧠 Análisis de Expertos (Basado en la 'Guía')")
-expert_score = st.sidebar.slider("Puntaje de tendencia (0=Muy Bajista, 100=Muy Alcista)", 0, 100, st.session_state.expert_score, 5, key="expert_score_slider")
+expert_score = st.sidebar.slider("Puntaje de tendencia (0=Muy Bajista, 100=Muy Alcista)", 0, 100, st.session_state.expert_score, 5)
 expert_comment = st.sidebar.text_area("Comentario / Estrategia", value=st.session_state.expert_comment, height=100, key="expert_comment_area")
 if st.sidebar.button("Actualizar Análisis Experto"):
     st.session_state.expert_score = expert_score
@@ -335,7 +334,7 @@ if st.sidebar.button("Actualizar Análisis Experto"):
 # Personalizar saldo (solo premium)
 if st.session_state.user_data.get("is_premium", False):
     st.sidebar.subheader("💰 Personalizar saldo")
-    nuevo_saldo = st.sidebar.number_input("Saldo inicial (MXN)", value=st.session_state.balance, step=100.0, format="%.2f")
+    nuevo_saldo = st.sidebar.number_input("Saldo inicial (MXN)", value=float(st.session_state.balance), step=100.0, format="%.2f")
     if nuevo_saldo != st.session_state.balance:
         st.session_state.balance = nuevo_saldo
         supabase.table("user_data").update({"custom_balance": nuevo_saldo}).eq("user_id", st.session_state.user_id).execute()
