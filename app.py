@@ -7,8 +7,7 @@ from datetime import datetime
 from collections import deque
 from supabase import create_client, Client
 
-# ==================== CONFIGURACIÓN SUPABASE ====================
-# Obtiene las claves desde los secretos de Streamlit Cloud
+# ==================== SUPABASE (secretos) ====================
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -19,7 +18,7 @@ if "authenticated" not in st.session_state:
     st.session_state.user_id = None
     st.session_state.user_data = None
 
-# ==================== FUNCIONES DE AUTENTICACIÓN ====================
+# ==================== AUTENTICACIÓN ====================
 def sign_up(email, password):
     try:
         resp = supabase.auth.sign_up({"email": email, "password": password})
@@ -250,7 +249,7 @@ def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow, f
     else:
         return "HOLD", rsi
 
-# ==================== PANTALLA DE LOGIN ====================
+# ==================== PANTALLA LOGIN ====================
 if not st.session_state.authenticated:
     st.title("🤖 Crypto Trading Bot")
     tab1, tab2 = st.tabs(["Iniciar sesión", "Registrarse"])
@@ -275,7 +274,7 @@ if not st.session_state.authenticated:
                 st.error(msg)
     st.stop()
 
-# ==================== RESTAURAR DATOS DEL USUARIO ====================
+# ==================== INICIALIZAR DATOS DEL USUARIO ====================
 if st.session_state.user_data is None:
     init_new_user_state()
 else:
@@ -397,7 +396,8 @@ while True:
         if len(hist) >= max(st.session_state.ema_slow, 15):
             signal_auto, rsi_val = get_enhanced_signal(
                 hist, st.session_state.umbral, st.session_state.rsi_os, st.session_state.rsi_ob,
-                st.session_state.ema_fast, st.session_state.ema_slow, fng_value)
+                st.session_state.ema_fast, st.session_state.ema_slow, fng_value
+            )
         else:
             signal_auto = "HOLD"
             rsi_val = 50
@@ -418,12 +418,18 @@ while True:
         else:
             buy_votes = 0
             sell_votes = 0
-            if signal_auto == "BUY": buy_votes += 40
-            elif signal_auto == "SELL": sell_votes += 40
-            if signal_expert == "BUY": buy_votes += 35
-            elif signal_expert == "SELL": sell_votes += 35
-            if fng_value <= 20: buy_votes += 25
-            elif fng_value >= 80: sell_votes += 25
+            if signal_auto == "BUY":
+                buy_votes += 40
+            elif signal_auto == "SELL":
+                sell_votes += 40
+            if signal_expert == "BUY":
+                buy_votes += 35
+            elif signal_expert == "SELL":
+                sell_votes += 35
+            if fng_value <= 20:
+                buy_votes += 25
+            elif fng_value >= 80:
+                sell_votes += 25
             if buy_votes > sell_votes:
                 senal = "BUY"
                 razon_extra = "Ponderado"
@@ -480,5 +486,4 @@ while True:
                 msg = (f"🟢 COMPRA {sym}\n"
                        f"Cantidad: {qty:.6f}\n"
                        f"Precio: ${precio:,.0f} MXN\n"
-                       f"Saldo: ${st.session_state.balance:.2f}\n"
-                       f
+                       f"Saldo: ${st.session_state.balance
