@@ -7,12 +7,11 @@ from datetime import datetime
 from collections import deque
 from supabase import create_client, Client
 
-# ==================== SUPABASE (secretos) ====================
+# ==================== SUPABASE ====================
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Estado de sesión
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
     st.session_state.user_id = None
@@ -249,7 +248,7 @@ def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow, f
     else:
         return "HOLD", rsi
 
-# ==================== PANTALLA LOGIN ====================
+# ==================== LOGIN ====================
 if not st.session_state.authenticated:
     st.title("🤖 Crypto Trading Bot")
     tab1, tab2 = st.tabs(["Iniciar sesión", "Registrarse"])
@@ -274,13 +273,13 @@ if not st.session_state.authenticated:
                 st.error(msg)
     st.stop()
 
-# ==================== INICIALIZAR DATOS DEL USUARIO ====================
+# ==================== INICIALIZAR DATOS ====================
 if st.session_state.user_data is None:
     init_new_user_state()
 else:
     restore_user_state()
 
-# ==================== INTERFAZ PRINCIPAL ====================
+# ==================== INTERFAZ ====================
 st.set_page_config(page_title="Bot de Trading con Autenticación", layout="wide")
 st.title("📊 Bot de Trading con Estrategia Experta (RSI, EMA, Fear & Greed)")
 
@@ -362,8 +361,10 @@ while True:
         "Moneda": ["Bitcoin", "Ethereum"],
         "Precio MXN": [f"${btc:,.0f}", f"${eth:,.0f}"],
         "Var desde inicio": [f"{var_btc:+.2f}%", f"{var_eth:+.2f}%"],
-        "Señal (solo info)": ["COMPRAR" if var_btc >= st.session_state.umbral else "VENDER" if var_btc <= -st.session_state.umbral else "MANTENER",
-                              "COMPRAR" if var_eth >= st.session_state.umbral else "VENDER" if var_eth <= -st.session_state.umbral else "MANTENER"]
+        "Señal (solo info)": [
+            "COMPRAR" if var_btc >= st.session_state.umbral else "VENDER" if var_btc <= -st.session_state.umbral else "MANTENER",
+            "COMPRAR" if var_eth >= st.session_state.umbral else "VENDER" if var_eth <= -st.session_state.umbral else "MANTENER"
+        ]
     })
     info_placeholder.caption(f"Ciclo: {st.session_state.cycle} | Umbral: {st.session_state.umbral}% | SL: {st.session_state.stop_loss}% | TP: {st.session_state.take_profit}% | Trailing: {st.session_state.trailing}% | Fear & Greed: {fng_value}/100 ({fng_label})")
 
@@ -486,4 +487,6 @@ while True:
                 msg = (f"🟢 COMPRA {sym}\n"
                        f"Cantidad: {qty:.6f}\n"
                        f"Precio: ${precio:,.0f} MXN\n"
-                       f"Saldo: ${st.session_state.balance
+                       f"Saldo: ${st.session_state.balance:.2f}\n"
+                       f"Razón: {razon_extra}")
+    
