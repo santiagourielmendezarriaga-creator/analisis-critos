@@ -17,9 +17,10 @@ def send_telegram(msg):
     except:
         pass
 
-# ==================== PARÁMETROS (configurables en sidebar) ====================
-DEFAULT_THRESHOLD = 0.01        # 0.01% de cambio desde inicio
+# ==================== PARÁMETROS ====================
+DEFAULT_THRESHOLD = 0.01        # 0.01% de cambio desde inicio para entrar
 DEFAULT_STOP_LOSS = 2.0         # Stop loss fijo 2%
+DEFAULT_TAKE_PROFIT = 5.0       # Take profit fijo 5%
 DEFAULT_TRAILING = 1.0          # Trailing stop 1%
 DEFAULT_RSI_OVERSOLD = 30
 DEFAULT_RSI_OVERBOUGHT = 70
@@ -73,16 +74,9 @@ def compute_rsi(prices, period=14):
     return 100 - (100 / (1 + rs))
 
 def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow):
-    """
-    Retorna ("BUY"/"SELL"/"HOLD", rsi_value)
-    Basado en votación de tres indicadores:
-    - Cambio porcentual desde el primer precio de la lista (umbral)
-    - Cruce de EMAs (rápida > lenta → BUY, inverso → SELL)
-    - RSI (sobreventa → BUY, sobrecompra → SELL)
-    """
     if len(prices) < max(ema_slow, 15):
         return "HOLD", 50
-    # 1. Cambio porcentual
+    # Cambio porcentual
     ref = prices[0]
     current = prices[-1]
     change_pct = (current - ref) / ref * 100 if ref != 0 else 0
@@ -93,7 +87,7 @@ def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow):
     else:
         signal_change = "HOLD"
 
-    # 2. EMA cruce
+    # EMA cruce
     ema_f = compute_ema(prices, ema_fast)
     ema_s = compute_ema(prices, ema_slow)
     if ema_f is None or ema_s is None:
@@ -101,7 +95,7 @@ def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow):
     else:
         signal_ema = "BUY" if ema_f > ema_s else "SELL" if ema_f < ema_s else "HOLD"
 
-    # 3. RSI
+    # RSI
     rsi = compute_rsi(prices)
     if rsi <= rsi_os:
         signal_rsi = "BUY"
@@ -110,7 +104,6 @@ def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow):
     else:
         signal_rsi = "HOLD"
 
-    # Votación
     votes = [signal_change, signal_ema, signal_rsi]
     buy_votes = votes.count("BUY")
     sell_votes = votes.count("SELL")
@@ -149,7 +142,6 @@ def load_state():
                 data = json.load(f)
             data["trades"] = [(datetime.fromisoformat(ts), msg) for ts, msg in data["trades"]]
             data["price_history"] = {k: deque(v, maxlen=200) for k, v in data.get("price_history", {}).items()}
-            # Asegurar claves nuevas
             for key in ["highest_price", "entry_price", "ref_price", "last_price", "last_action"]:
                 if key not in data:
                     data[key] = {"BTC": 0.0, "ETH": 0.0} if key != "last_action" else {"BTC": None, "ETH": None}
@@ -161,8 +153,8 @@ def load_state():
     return None
 
 # ==================== INTERFAZ ====================
-st.set_page_config(page_title="Bot con Señal Mejorada + Trailing Stop", layout="wide")
-st.title("📊 Bot de Trading con RSI, EMA y Trailing Stop (Bitso real)")
+st.set_page_config(page_title="Bot con Take Profit + Trailing Stop", layout="wide")
+st.title("📊 Bot de Trading con Take Profit Fijo, Trailing Stop y Stop Loss")
 
 st.sidebar.header("⚙️ Configuración de Estrategia")
 umbral = st.sidebar.number_input("Umbral cambio % (desde inicio)", 0.005, 1.0, DEFAULT_THRESHOLD, 0.005)
@@ -173,6 +165,7 @@ ema_slow = st.sidebar.number_input("EMA lenta (periodos)", 10, 50, DEFAULT_EMA_S
 
 st.sidebar.header("🛡️ Gestión de Riesgo")
 stop_loss = st.sidebar.number_input("Stop Loss fijo (%)", 0.5, 10.0, DEFAULT_STOP_LOSS, 0.5)
+take_profit = st.sidebar.number_input("Take Profit fijo (%)", 0.5, 20.0, DEFAULT_TAKE_PROFIT, 0.5)
 trailing = st.sidebar.number_input("Trailing Stop (%)", 0.2, 5.0, DEFAULT_TRAILING, 0.1)
 
 st.sidebar.subheader("💰 Cartera")
@@ -188,7 +181,7 @@ if st.sidebar.button("Reiniciar simulación"):
     st.rerun()
 
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("🧪 Bot mejorado RSI+EMA+Trailing - activo")
+    send_telegram("🧪 Bot con Take Profit fijo - activo")
     st.success("Enviado")
 
 tabla_placeholder = st.empty()
@@ -241,21 +234,19 @@ while st.session_state.running:
     st.session_state.last_price["BTC"] = btc
     st.session_state.last_price["ETH"] = eth
 
-    # Actualizar historial de precios
     st.session_state.price_history["BTC"].append(btc)
     st.session_state.price_history["ETH"].append(eth)
 
-    # Precios de referencia (para la señal de cambio)
     if st.session_state.ref_price["BTC"] == 0:
         st.session_state.ref_price["BTC"] = btc
         st.session_state.ref_price["ETH"] = eth
 
     st.session_state.cycle += 1
 
-    # Mostrar tabla con señales (solo informativa, basada en cambio)
     var_btc = (btc - st.session_state.ref_price["BTC"]) / st.session_state.ref_price["BTC"] * 100
     var_eth = (eth - st.session_state.ref_price["ETH"]) / st.session_state.ref_price["ETH"] * 100
-    tabla_placeholder.subheader("📊 Señales en Vivo (Bitso real)")
+
+    tabla_placeholder.subheader("📊 Señales en Vivo")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
         "Precio MXN": [f"${btc:,.0f}", f"${eth:,.0f}"],
@@ -263,9 +254,8 @@ while st.session_state.running:
         "Señal (solo info)": ["COMPRAR" if var_btc >= umbral else "VENDER" if var_btc <= -umbral else "MANTENER",
                               "COMPRAR" if var_eth >= umbral else "VENDER" if var_eth <= -umbral else "MANTENER"]
     })
-    info_placeholder.caption(f"Ciclo: {st.session_state.cycle} | Umbral: {umbral}% | SL: {stop_loss}% | Trailing: {trailing}% | RSI: {rsi_os}/{rsi_ob} | EMA({ema_fast},{ema_slow})")
+    info_placeholder.caption(f"Ciclo: {st.session_state.cycle} | Umbral: {umbral}% | SL: {stop_loss}% | TP: {take_profit}% | Trailing: {trailing}% | RSI: {rsi_os}/{rsi_ob} | EMA({ema_fast},{ema_slow})")
 
-    # Actualizar sidebar
     total_val = st.session_state.balance
     for s in ["BTC", "ETH"]:
         p = st.session_state.last_price.get(s, 0)
@@ -285,7 +275,7 @@ while st.session_state.running:
     else:
         historial_placeholder.text("Sin operaciones aún.")
 
-    # ==================== LÓGICA DE TRADING CON SEÑAL MEJORADA ====================
+    # ==================== LÓGICA DE TRADING ====================
     hoy = datetime.now().day
     if hoy != st.session_state.last_day:
         st.session_state.daily_trades = 0
@@ -293,7 +283,6 @@ while st.session_state.running:
 
     for sym, precio in [("BTC", btc), ("ETH", eth)]:
         hist = list(st.session_state.price_history[sym])
-        # Señal mejorada (votación)
         if len(hist) >= max(ema_slow, 15):
             senal, rsi_val = get_enhanced_signal(hist, umbral, rsi_os, rsi_ob, ema_fast, ema_slow)
         else:
@@ -306,34 +295,36 @@ while st.session_state.running:
         razon = ""
         accion = None
 
-        # Actualizar máximo para trailing stop
         if precio > highest:
             st.session_state.highest_price[sym] = precio
             highest = precio
 
-        # --- Condiciones de salida (prioritarias sobre la señal) ---
+        # Salidas priorizadas
         if pos > 0 and entrada > 0:
-            # Stop loss fijo
-            perdida = (precio - entrada) / entrada * 100
-            if perdida <= -stop_loss:
+            ganancia = (precio - entrada) / entrada * 100
+            # Take Profit
+            if ganancia >= take_profit:
                 accion = "SELL"
-                razon = f"Stop Loss fijo ({stop_loss}%)"
-            # Trailing stop
+                razon = f"Take Profit ({take_profit}%)"
+            # Stop Loss
+            elif ganancia <= -stop_loss:
+                accion = "SELL"
+                razon = f"Stop Loss ({stop_loss}%)"
+            # Trailing Stop
             elif highest > entrada:
                 caida = (precio - highest) / highest * 100
                 if caida <= -trailing:
                     accion = "SELL"
                     razon = f"Trailing Stop ({trailing}%) desde máximo ${highest:,.2f}"
 
-        # Si no se activó salida, usar la señal mejorada
+        # Si no hay salida, usar señal de entrada
         if accion is None:
             if senal == "BUY" and pos == 0:
                 accion = "BUY"
             elif senal == "SELL" and pos > 0:
                 accion = "SELL"
-                razon = "Señal de venta (RSI/EMA/cambio)"
+                razon = "Señal de venta"
 
-        # Ejecutar orden si cambia la acción y hay límites
         last_act = st.session_state.last_action.get(sym)
         if accion and accion != last_act and st.session_state.daily_trades < MAX_DAILY_TRADES:
             if accion == "BUY":
