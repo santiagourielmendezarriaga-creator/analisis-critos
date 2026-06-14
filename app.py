@@ -60,7 +60,6 @@ def load_user_data():
     if resp.data:
         st.session_state.user_data = resp.data[0]
     else:
-        # Crear registro por defecto si no existe (por compatibilidad)
         trial_end = (datetime.now() + timedelta(hours=24)).isoformat()
         supabase.table("user_data").insert({
             "user_id": st.session_state.user_id,
@@ -271,9 +270,7 @@ def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow, f
     elif sell_score > buy_score:
         return "SELL", rsi
     else:
-        return "HOLD", rsi
-
-# ==================== LOGIN ====================
+        return "HOLD", rsi# ==================== LOGIN ====================
 if not st.session_state.authenticated:
     st.title("🤖 Crypto Trading Bot")
     tab1, tab2 = st.tabs(["Iniciar sesión", "Registrarse"])
@@ -310,7 +307,6 @@ if trial_end_str:
     trial_end = datetime.fromisoformat(trial_end_str)
     if datetime.now() > trial_end and not st.session_state.user_data.get("is_premium", False):
         st.error("🔒 Tu período de prueba de 24 horas ha terminado. Debes suscribirte para seguir usando el bot.")
-        # Botón para simular pago (solo para el administrador)
         if st.session_state.user_email == "santiagourielmendezarriga@gmail.com":
             if st.button("💎 Simular pago (activar premium)"):
                 supabase.table("user_data").update({"is_premium": True}).eq("user_id", st.session_state.user_id).execute()
@@ -322,6 +318,7 @@ if trial_end_str:
 st.set_page_config(page_title="Bot de Trading con Suscripción", layout="wide")
 st.title("📊 Bot de Trading con Estrategia Experta (RSI, EMA, Fear & Greed)")
 
+# Sidebar
 st.sidebar.header("⚙️ Configuración General")
 umbral = st.sidebar.number_input("Umbral de entrada (%)", 0.005, 1.0, st.session_state.umbral, 0.005, key="umbral_input")
 rsi_os = st.sidebar.number_input("RSI sobreventa", 20, 40, st.session_state.rsi_os, key="rsi_os_input")
@@ -343,7 +340,7 @@ if st.sidebar.button("Actualizar Análisis Experto"):
     save_user_data()
     st.success("Análisis de expertos actualizado.")
 
-# ==================== PERSONALIZAR SALDO (SOLO PREMIUM) ====================
+# Personalizar saldo (solo premium)
 if st.session_state.user_data.get("is_premium", False):
     st.sidebar.subheader("💰 Personalizar saldo")
     nuevo_saldo = st.sidebar.number_input("Saldo inicial (MXN)", value=st.session_state.balance, step=100.0, format="%.2f")
@@ -354,7 +351,7 @@ if st.session_state.user_data.get("is_premium", False):
 else:
     st.sidebar.info("🔓 Para personalizar tu saldo, suscríbete al plan premium.")
 
-# ==================== CARTERA Y CONTROLES COMUNES ====================
+# Cartera
 st.sidebar.subheader("💰 Cartera")
 saldo_placeholder = st.sidebar.empty()
 total_placeholder = st.sidebar.empty()
@@ -372,7 +369,7 @@ if st.sidebar.button("📢 Prueba Telegram"):
     send_telegram("🧪 Bot con suscripción - activo")
     st.success("Enviado")
 
-# Actualizar parámetros en estado
+# Actualizar parámetros
 st.session_state.umbral = umbral
 st.session_state.rsi_os = rsi_os
 st.session_state.rsi_ob = rsi_ob
@@ -382,6 +379,7 @@ st.session_state.stop_loss = stop_loss
 st.session_state.take_profit = take_profit
 st.session_state.trailing = trailing
 
+# Contenedores dinámicos
 tabla_placeholder = st.empty()
 info_placeholder = st.empty()
 historial_placeholder = st.empty()
@@ -419,7 +417,7 @@ while True:
             "COMPRAR" if var_eth >= st.session_state.umbral else "VENDER" if var_eth <= -st.session_state.umbral else "MANTENER"
         ]
     })
-    info_placeholder.caption(f"Ciclo: {st.session_state.cycle} | Umbral: {st.session_state.umbral}% | SL: {st.session_state.stop_loss}% | TP: {st.session_state.take_profit}% | Trailing: {st.session_state.trailing}% | Fear & Greed: {fng_value}/100 ({fng_label}) | Premium: {st.session_state.is_premium} | Prueba termina: {st.session_state.user_data.get('trial_end', 'N/A')[:19]}")
+    info_placeholder.caption(f"Ciclo: {st.session_state.cycle} | Umbral: {st.session_state.umbral}% | SL: {st.session_state.stop_loss}% | TP: {st.session_state.take_profit}% | Trailing: {st.session_state.trailing}% | Fear & Greed: {fng_value}/100 ({fng_label})")
 
     total_val = st.session_state.balance
     for s in ["BTC", "ETH"]:
@@ -472,4 +470,94 @@ while True:
         else:
             buy_votes = 0
             sell_votes = 0
-            if 
+            if signal_auto == "BUY": buy_votes += 40
+            elif signal_auto == "SELL": sell_votes += 40
+            if signal_expert == "BUY": buy_votes += 35
+            elif signal_expert == "SELL": sell_votes += 35
+            if fng_value <= 20: buy_votes += 25
+            elif fng_value >= 80: sell_votes += 25
+            if buy_votes > sell_votes:
+                senal = "BUY"
+                razon_extra = "Ponderado"
+            elif sell_votes > buy_votes:
+                senal = "SELL"
+                razon_extra = "Ponderado"
+            else:
+                senal = "HOLD"
+                razon_extra = "Empate"
+
+        pos = st.session_state.positions.get(sym, 0)
+        entry = st.session_state.entry_price.get(sym, 0)
+        highest = st.session_state.highest_price.get(sym, precio)
+        razon = ""
+        accion = None
+
+        if precio > highest:
+            st.session_state.highest_price[sym] = precio
+            highest = precio
+
+        if pos > 0 and entry > 0:
+            ganancia = (precio - entry) / entry * 100
+            if ganancia >= st.session_state.take_profit:
+                accion = "SELL"
+                razon = f"Take Profit ({st.session_state.take_profit}%)"
+            elif ganancia <= -st.session_state.stop_loss:
+                accion = "SELL"
+                razon = f"Stop Loss ({st.session_state.stop_loss}%)"
+            elif highest > entry:
+                caida = (precio - highest) / highest * 100
+                if caida <= -st.session_state.trailing:
+                    accion = "SELL"
+                    razon = f"Trailing Stop ({st.session_state.trailing}%)"
+
+        if accion is None:
+            if senal == "BUY" and pos == 0:
+                accion = "BUY"
+            elif senal == "SELL" and pos > 0:
+                accion = "SELL"
+                razon = razon_extra
+
+        last_act = st.session_state.last_action.get(sym)
+        if accion and accion != last_act and st.session_state.daily_trades < 20:
+            amount = min(500.0, st.session_state.balance)
+            if accion == "BUY" and amount > 0:
+                eff = precio * 1.0005
+                com = amount * 0.001
+                qty = (amount - com) / eff
+                st.session_state.balance -= amount
+                st.session_state.positions[sym] = qty
+                st.session_state.entry_price[sym] = eff
+                st.session_state.highest_price[sym] = eff
+                st.session_state.daily_trades += 1
+                msg = (f"🟢 COMPRA {sym}\n"
+                       f"Cantidad: {qty:.6f}\n"
+                       f"Precio: ${precio:,.0f} MXN\n"
+                       f"Saldo: ${st.session_state.balance:.2f}\n"
+                       f"Razón: {razon_extra}")
+                send_telegram(msg)
+                st.session_state.trades.append((datetime.now(), msg))
+                save_user_data()
+                st.session_state.last_action[sym] = accion
+            elif accion == "SELL" and pos > 0:
+                qty = pos
+                eff = precio * 0.9995
+                gross = qty * eff
+                com = gross * 0.001
+                net = gross - com
+                st.session_state.balance += net
+                st.session_state.positions[sym] = 0
+                st.session_state.daily_trades += 1
+                msg = (f"🔴 VENTA {sym}\n"
+                       f"Cantidad: {qty:.6f}\n"
+                       f"Precio: ${precio:,.0f} MXN\n"
+                       f"Neto: ${net:.2f}\n"
+                       f"Motivo: {razon}")
+                send_telegram(msg)
+                st.session_state.trades.append((datetime.now(), msg))
+                save_user_data()
+                st.session_state.last_action[sym] = accion
+
+    if st.session_state.cycle % 10 == 0:
+        save_user_data()
+
+    time.sleep(10)
