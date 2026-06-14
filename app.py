@@ -8,10 +8,12 @@ from collections import deque
 from supabase import create_client, Client
 
 # ==================== CONFIGURACIÓN SUPABASE ====================
+# Obtiene las claves desde los secretos de Streamlit Cloud
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# Estado de sesión
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
     st.session_state.user_id = None
@@ -479,6 +481,4 @@ while True:
                        f"Cantidad: {qty:.6f}\n"
                        f"Precio: ${precio:,.0f} MXN\n"
                        f"Saldo: ${st.session_state.balance:.2f}\n"
-                       f"Razón: {razon_extra}")
-                send_telegram(msg)
-                st.
+                       f
