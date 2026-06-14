@@ -302,26 +302,10 @@ if st.session_state.user_data is None:
 else:
     restore_user_state()
 
-# ==================== CONTROL DE ACCESO (prueba 24h) - CORREGIDO ====================
-trial_end_value = st.session_state.user_data.get("trial_end")
-if trial_end_value:
-    # Convertir a datetime si es string; si falla, asignar fecha futura
-    try:
-        if isinstance(trial_end_value, str):
-            trial_end = datetime.fromisoformat(trial_end_value)
-        else:
-            trial_end = trial_end_value
-    except Exception:
-        trial_end = datetime.now() + timedelta(days=1)
-    
-    if datetime.now() > trial_end and not st.session_state.user_data.get("is_premium", False):
-        st.error("🔒 Tu período de prueba de 24 horas ha terminado. Debes suscribirte para seguir usando el bot.")
-        if st.session_state.user_email == "santiagourielmendezarriga@gmail.com":
-            if st.button("💎 Simular pago (activar premium)"):
-                supabase.table("user_data").update({"is_premium": True}).eq("user_id", st.session_state.user_id).execute()
-                st.success("Membresía activada. Recarga la página.")
-                st.rerun()
-        st.stop()
+# ==================== CONTROL DE ACCESO (prueba 24h) - DESACTIVADO ====================
+# El bloque está desactivado temporalmente para evitar errores de tipo.
+# Más adelante se activará cuando la base de datos esté correctamente configurada.
+pass
 
 # ==================== INTERFAZ PRINCIPAL ====================
 st.set_page_config(page_title="Bot de Trading con Suscripción", layout="wide")
