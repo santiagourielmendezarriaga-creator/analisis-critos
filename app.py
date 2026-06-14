@@ -299,19 +299,17 @@ if not st.session_state.authenticated:
 if st.session_state.user_data is None:
     init_new_user_state()
 else:
-    restore_user_state()
-
-# ==================== CONTROL DE ACCESO (prueba 24h) CORREGIDO ====================
+    restore_user_state()# ==================== CONTROL DE ACCESO (prueba 24h) CORREGIDO ====================
 trial_end_value = st.session_state.user_data.get("trial_end")
 if trial_end_value:
     try:
-        # Si es string, convertir a datetime
+        # Convertir a datetime si es string
         if isinstance(trial_end_value, str):
             trial_end = datetime.fromisoformat(trial_end_value)
         else:
             trial_end = trial_end_value
     except:
-        # En caso de error, asignar una fecha futura (un día después)
+        # Si falla la conversión, asumir que la prueba no ha expirado
         trial_end = datetime.now() + timedelta(days=1)
     
     if datetime.now() > trial_end and not st.session_state.user_data.get("is_premium", False):
