@@ -19,7 +19,6 @@ def send_telegram(msg):
 
 # ==================== BITSO API ====================
 def get_bitso_price(book="btc_mxn"):
-    """Obtiene precio en MXN desde API pública de Bitso"""
     try:
         url = f"https://api.bitso.com/api/v3/ticker/?book={book}"
         resp = requests.get(url, timeout=5)
@@ -37,7 +36,6 @@ def get_bitso_price(book="btc_mxn"):
         return None
 
 def get_volume(book="btc_mxn"):
-    """Obtiene volumen de las últimas 24h desde API pública de Bitso"""
     try:
         url = f"https://api.bitso.com/api/v3/ticker/?book={book}"
         resp = requests.get(url, timeout=5)
@@ -55,7 +53,6 @@ def get_volume(book="btc_mxn"):
         return None
 
 def get_fear_greed():
-    """Obtiene índice de Miedo y Avaricia"""
     try:
         resp = requests.get("https://api.alternative.me/fng/", timeout=5)
         if resp.status_code == 200:
@@ -66,13 +63,8 @@ def get_fear_greed():
     return 50, "Neutral"
 
 def get_macro_event_adjustment():
-    """
-    Devuelve un factor de ajuste (entre 0 y 1) basado en eventos macroeconómicos.
-    Si hay un evento relevante en las próximas 48 horas, reduce el tamaño de la operación.
-    """
-    # Eventos macro relevantes para junio 2026
     macro_events = {
-        "2026-06-18": "Fed Rate Decision",   # Próximo jueves
+        "2026-06-18": "Fed Rate Decision",
         "2026-06-19": "BOJ Rate Decision"
     }
     today = datetime.now().date()
@@ -80,8 +72,7 @@ def get_macro_event_adjustment():
         event_dt = datetime.strptime(event_date, "%Y-%m-%d").date()
         days_until = (event_dt - today).days
         if 0 <= days_until <= 2:
-            # Si hay evento en los próximos 2 días, reducimos el tamaño de la orden
-            return 0.5  # reduce a la mitad
+            return 0.5
     return 1.0
 
 # ==================== INDICADORES ====================
@@ -110,7 +101,7 @@ def compute_rsi(prices, period=14):
 def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow, fng_value):
     if len(prices) < max(ema_slow, 15):
         return "HOLD", 50
-    # 1. Cambio porcentual
+    # Cambio porcentual
     ref = prices[0]
     current = prices[-1]
     change_pct = (current - ref) / ref * 100 if ref != 0 else 0
@@ -121,7 +112,7 @@ def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow, f
     else:
         signal_change = "HOLD"
 
-    # 2. EMA cruce
+    # EMA cruce
     ema_f = compute_ema(prices, ema_fast)
     ema_s = compute_ema(prices, ema_slow)
     if ema_f is None or ema_s is None:
@@ -129,7 +120,7 @@ def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow, f
     else:
         signal_ema = "BUY" if ema_f > ema_s else "SELL" if ema_f < ema_s else "HOLD"
 
-    # 3. RSI
+    # RSI
     rsi = compute_rsi(prices)
     if rsi <= rsi_os:
         signal_rsi = "BUY"
@@ -138,16 +129,15 @@ def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow, f
     else:
         signal_rsi = "HOLD"
 
-    # 4. Sentimiento (Fear & Greed)
+    # Sentimiento
     if fng_value <= 20:
-        signal_fng = "BUY"   # Miedo extremo => oportunidad de compra
+        signal_fng = "BUY"
     elif fng_value >= 80:
-        signal_fng = "SELL"  # Avaricia extrema => oportunidad de venta
+        signal_fng = "SELL"
     else:
         signal_fng = "HOLD"
 
-    # Votación ponderada: las señales técnicas tienen más peso que el sentimiento
-    # Asignamos pesos: cambio 25%, EMA 25%, RSI 25%, Sentimiento 25%
+    # Votación ponderada
     buy_score = 0
     sell_score = 0
     if signal_change == "BUY": buy_score += 25
@@ -230,7 +220,7 @@ expert_comment = st.sidebar.text_area("Comentario / Estrategia", height=100, key
 if st.sidebar.button("Actualizar Análisis Experto"):
     st.success("Análisis de expertos actualizado. El bot lo usará en su próxima decisión.")
 
-# Sidebar: Estado de la cartera (se actualizará dinámicamente)
+# Sidebar: Estado de la cartera
 st.sidebar.subheader("💰 Cartera")
 saldo_placeholder = st.sidebar.empty()
 total_placeholder = st.sidebar.empty()
@@ -288,7 +278,6 @@ if "running" not in st.session_state:
 
 # ==================== BUCLE PRINCIPAL ====================
 while st.session_state.running:
-    # 1. Obtener datos del mercado
     btc = get_bitso_price("btc_mxn")
     eth = get_bitso_price("eth_mxn")
     btc_vol = get_volume("btc_mxn")
@@ -298,7 +287,6 @@ while st.session_state.running:
         time.sleep(refresh)
         continue
 
-    # 2. Actualizar precios e historial
     st.session_state.last_price["BTC"] = btc
     st.session_state.last_price["ETH"] = eth
     st.session_state.price_history["BTC"].append(btc)
@@ -310,15 +298,12 @@ while st.session_state.running:
 
     st.session_state.cycle += 1
 
-    # 3. Obtener datos macro (sentimiento y eventos)
     fng_value, fng_label = get_fear_greed()
     macro_factor = get_macro_event_adjustment()
 
-    # 4. Calcular variación desde referencia (solo para mostrar)
     var_btc = (btc - st.session_state.ref_price["BTC"]) / st.session_state.ref_price["BTC"] * 100
     var_eth = (eth - st.session_state.ref_price["ETH"]) / st.session_state.ref_price["ETH"] * 100
 
-    # 5. Mostrar tabla informativa
     tabla_placeholder.subheader("📊 Señales en Vivo")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
@@ -330,7 +315,6 @@ while st.session_state.running:
     })
     info_placeholder.caption(f"Ciclo: {st.session_state.cycle} | Umbral: {umbral}% | SL: {stop_loss}% | TP: {take_profit}% | Trailing: {trailing}% | Fear & Greed: {fng_value}/100 ({fng_label}) | Macro Ajuste: {macro_factor:.2f}")
 
-    # 6. Actualizar sidebar
     total_val = st.session_state.balance
     for s in ["BTC", "ETH"]:
         p = st.session_state.last_price.get(s, 0)
@@ -341,7 +325,6 @@ while st.session_state.running:
     total_placeholder.metric("Valor total", f"${total_val:,.2f}")
     ops_placeholder.metric("Ops hoy", st.session_state.daily_trades)
 
-    # 7. Mostrar historial
     historial_placeholder.subheader("📜 Historial")
     if st.session_state.trades:
         txt = ""
@@ -351,8 +334,6 @@ while st.session_state.running:
     else:
         historial_placeholder.text("Sin operaciones aún.")
 
-    # ==================== LÓGICA DE TRADING MEJORADA ====================
-    # Reset diario
     hoy = datetime.now().day
     if hoy != st.session_state.last_day:
         st.session_state.daily_trades = 0
@@ -360,15 +341,12 @@ while st.session_state.running:
 
     for sym, precio in [("BTC", btc), ("ETH", eth)]:
         hist = list(st.session_state.price_history[sym])
-        # Señal autónoma del bot
         if len(hist) >= max(ema_slow, 15):
             signal_autonomous, rsi_val = get_enhanced_signal(hist, umbral, rsi_os, rsi_ob, ema_fast, ema_slow, fng_value)
         else:
             signal_autonomous = "HOLD"
             rsi_val = 50
 
-        # Calcular señal final combinando análisis autónomo con análisis experto
-        # La señal experto se calcula a partir del expert_score
         if expert_score >= 80:
             signal_expert = "BUY"
         elif expert_score <= 20:
@@ -376,8 +354,7 @@ while st.session_state.running:
         else:
             signal_expert = "HOLD"
 
-        # Regla de decisión final por mayoría ponderada
-        # Si el análisis experto es muy fuerte (score >= 80 o <= 20), fuerza la señal
+        # Decisión final
         if expert_score >= 80:
             senal = "BUY"
             razon_extra = f"Señal forzada por análisis experto (Puntaje: {expert_score})"
@@ -385,16 +362,12 @@ while st.session_state.running:
             senal = "SELL"
             razon_extra = f"Señal forzada por análisis experto (Puntaje: {expert_score})"
         else:
-            # Votación ponderada
             buy_votes = 0
             sell_votes = 0
-            # Voto del análisis autónomo (peso 40%)
             if signal_autonomous == "BUY": buy_votes += 40
             elif signal_autonomous == "SELL": sell_votes += 40
-            # Voto del análisis experto (peso 35%)
             if signal_expert == "BUY": buy_votes += 35
             elif signal_expert == "SELL": sell_votes += 35
-            # Voto del Fear & Greed (peso 25%)
             if fng_value <= 20: buy_votes += 25
             elif fng_value >= 80: sell_votes += 25
             if buy_votes > sell_votes:
@@ -407,37 +380,30 @@ while st.session_state.running:
                 senal = "HOLD"
                 razon_extra = "Votación empatada"
 
-        # Gestión de posición y riesgos
         pos = st.session_state.positions.get(sym, 0)
         entrada = st.session_state.entry_price.get(sym, 0)
         highest = st.session_state.highest_price.get(sym, precio)
         razon = ""
         accion = None
 
-        # Actualizar máximo para trailing stop
         if precio > highest:
             st.session_state.highest_price[sym] = precio
             highest = precio
 
-        # Condiciones de salida (prioridad)
         if pos > 0 and entrada > 0:
             ganancia = (precio - entrada) / entrada * 100
-            # Take Profit
             if ganancia >= take_profit:
                 accion = "SELL"
                 razon = f"Take Profit ({take_profit}%)"
-            # Stop Loss
             elif ganancia <= -stop_loss:
                 accion = "SELL"
                 razon = f"Stop Loss ({stop_loss}%)"
-            # Trailing Stop
             elif highest > entrada:
                 caida = (precio - highest) / highest * 100
                 if caida <= -trailing:
                     accion = "SELL"
                     razon = f"Trailing Stop ({trailing}%) desde máximo ${highest:,.2f}"
 
-        # Si no hay salida, usar la señal combinada
         if accion is None:
             if senal == "BUY" and pos == 0:
                 accion = "BUY"
@@ -446,10 +412,8 @@ while st.session_state.running:
                 if razon_extra:
                     razon = razon_extra
 
-        # Ejecutar orden
         last_act = st.session_state.last_action.get(sym)
         if accion and accion != last_act and st.session_state.daily_trades < 20:
-            # Ajustar tamaño por macro eventos
             position_multiplier = macro_factor
             amount = min(500.0, st.session_state.balance) * position_multiplier
             if accion == "BUY" and amount > 0:
@@ -490,3 +454,12 @@ while st.session_state.running:
                        f"Efectivo: ${eff:,.2f}\n"
                        f"Comisión: ${com:.2f}\n"
                        f"Neto: ${net:.2f}\n"
+                       f"Saldo: ${st.session_state.balance:.2f}\n"
+                       f"Motivo: {razon}\n"
+                       f"Fear & Greed: {fng_value}")
+                send_telegram(msg)
+                st.session_state.trades.append((datetime.now(), msg))
+                save_state()
+                st.session_state.last_action[sym] = accion
+
+    time.sleep(refresh)
