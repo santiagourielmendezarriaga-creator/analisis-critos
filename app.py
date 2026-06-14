@@ -92,7 +92,7 @@ def save_user_data():
         "ema_slow": st.session_state.ema_slow,
         "stop_loss": st.session_state.stop_loss,
         "take_profit": st.session_state.take_profit,
-        "trailing": st.session_state.trailing,
+        "trailing_stop": st.session_state.trailing,
         "expert_score": st.session_state.expert_score,
         "expert_comment": st.session_state.expert_comment,
         "custom_balance": st.session_state.get("custom_balance", None),
@@ -123,7 +123,7 @@ def restore_user_state():
     st.session_state.ema_slow = data.get("ema_slow", 20)
     st.session_state.stop_loss = data.get("stop_loss", 2.0)
     st.session_state.take_profit = data.get("take_profit", 2.5)
-    st.session_state.trailing = data.get("trailing", 1.0)
+    st.session_state.trailing = data.get("trailing_stop", 1.0)
     st.session_state.expert_score = data.get("expert_score", 30)
     st.session_state.expert_comment = data.get("expert_comment", "")
     st.session_state.is_premium = data.get("is_premium", False)
@@ -302,9 +302,8 @@ if st.session_state.user_data is None:
 else:
     restore_user_state()
 
-# ==================== CONTROL DE ACCESO (prueba 24h) - DESACTIVADO ====================
-# El bloque está desactivado temporalmente para evitar errores de tipo.
-# Más adelante se activará cuando la base de datos esté correctamente configurada.
+# ==================== CONTROL DE ACCESO (DESACTIVADO) ====================
+# (El bloque de prueba de 24h está desactivado para evitar errores de tipo)
 pass
 
 # ==================== INTERFAZ PRINCIPAL ====================
