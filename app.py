@@ -8,7 +8,6 @@ from collections import deque
 from supabase import create_client, Client
 
 # ==================== SUPABASE (CREDENCIALES DIRECTAS) ====================
-# ¡Cámbialas por variables de entorno antes de lanzar!
 SUPABASE_URL = "https://nzoerhdtsnvzshwirjvt.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im56b2VyaGR0c252enNod2lyanZ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE0NTkyNzcsImV4cCI6MjA5NzAzNTI3N30.Z2M1zYAMXf-L-Y8lpkWk6lAOD5-ts-F3KP97aPrAYtg"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -122,8 +121,9 @@ def restore_user_state():
     st.session_state.entry_price = data.get("entry_price", {"BTC": 0.0, "ETH": 0.0})
     st.session_state.highest_price = data.get("highest_price", {"BTC": 0.0, "ETH": 0.0})
     st.session_state.cycle = data.get("cycle", 0)
-    # Parámetros mejorados
-    st.session_state.umbral = data.get("umbral", 0.25)
+    # FORZAR umbral a mínimo 0.1 para evitar error en number_input
+    raw_umbral = data.get("umbral", 0.25)
+    st.session_state.umbral = max(0.1, float(raw_umbral))
     st.session_state.rsi_os = data.get("rsi_os", 30)
     st.session_state.rsi_ob = data.get("rsi_ob", 80)
     st.session_state.ema_fast = data.get("ema_fast", 5)
@@ -142,7 +142,6 @@ def restore_user_state():
         st.session_state.custom_balance = None
     ph = data.get("price_history", {"BTC": [], "ETH": []})
     st.session_state.price_history = {k: deque(v, maxlen=200) for k, v in ph.items()}
-    # Nuevas variables para rebote SL y umbral dinámico
     st.session_state.sl_triggered = data.get("sl_triggered", {"BTC": False, "ETH": False})
     st.session_state.sl_low_price = data.get("sl_low_price", {"BTC": 0.0, "ETH": 0.0})
 
@@ -250,17 +249,17 @@ def calcular_atr(prices, periodo=14):
 
 def umbral_dinamico(prices, umbral_base=0.25):
     if len(prices) < 15:
-        return umbral_base
+        return max(0.1, umbral_base)
     atr = calcular_atr(prices)
     if atr is None or prices[-1] == 0:
-        return umbral_base
+        return max(0.1, umbral_base)
     volatilidad_pct = (atr / prices[-1]) * 100
     if volatilidad_pct > 1.5:
-        return min(0.6, umbral_base * 1.6)
+        return max(0.1, min(0.6, umbral_base * 1.6))
     elif volatilidad_pct < 0.5:
-        return max(0.15, umbral_base * 0.7)
+        return max(0.1, max(0.15, umbral_base * 0.7))
     else:
-        return umbral_base
+        return max(0.1, umbral_base)
 
 def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow, fng_value):
     if len(prices) < max(ema_slow, 15):
@@ -293,7 +292,6 @@ def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow, f
         signal_fng = "SELL"
     else:
         signal_fng = "HOLD"
-    # Ponderación: cambio 40%, EMA 25%, RSI 20%, F&G 15%
     buy_score = 0
     sell_score = 0
     if signal_change == "BUY": buy_score += 40
@@ -361,7 +359,9 @@ st.title("📊 Bot de Trading con Estrategia Experta (RSI, EMA, Fear & Greed)")
 
 # Sidebar
 st.sidebar.header("⚙️ Configuración General")
-umbral_base = st.sidebar.number_input("Umbral base (%)", min_value=0.1, max_value=2.0, step=0.05, value=float(st.session_state.umbral), help="Se ajustará automáticamente por volatilidad")
+# Forzar que el valor nunca sea menor a 0.1
+valor_umbral = max(0.1, float(st.session_state.umbral))
+umbral_base = st.sidebar.number_input("Umbral base (%)", min_value=0.1, max_value=2.0, step=0.05, value=valor_umbral, help="Se ajustará automáticamente por volatilidad")
 rsi_os = st.sidebar.number_input("RSI sobreventa", min_value=20, max_value=40, value=int(st.session_state.rsi_os), step=1)
 rsi_ob = st.sidebar.number_input("RSI sobrecompra", min_value=70, max_value=90, value=int(st.session_state.rsi_ob), step=1)
 ema_fast = st.sidebar.number_input("EMA rápida (periodos)", min_value=3, max_value=20, value=int(st.session_state.ema_fast), step=1)
@@ -406,8 +406,8 @@ if st.sidebar.button("📢 Prueba Telegram"):
     send_telegram("🧪 Bot mejorado - activo")
     st.success("Enviado")
 
-# Actualizar parámetros en sesión
-st.session_state.umbral = umbral_base
+# Actualizar parámetros en sesión (asegurando que el umbral no baje de 0.1)
+st.session_state.umbral = max(0.1, umbral_base)
 st.session_state.rsi_os = rsi_os
 st.session_state.rsi_ob = rsi_ob
 st.session_state.ema_fast = ema_fast
@@ -439,7 +439,7 @@ while True:
         st.session_state.ref_price["BTC"] = btc
         st.session_state.ref_price["ETH"] = eth
 
-    # Calcular umbrales dinámicos para cada moneda
+    # Calcular umbrales dinámicos
     hist_btc = list(st.session_state.price_history["BTC"])
     hist_eth = list(st.session_state.price_history["ETH"])
     umbral_btc = umbral_dinamico(hist_btc, st.session_state.umbral)
@@ -518,7 +518,6 @@ while True:
             if fng_value <= 20: buy_votes += 25
             elif fng_value >= 80: sell_votes += 25
 
-            # Veto
             if st.session_state.expert_score < 40 and buy_votes > sell_votes:
                 senal = "HOLD"
                 razon_extra = "Vetado por experto bajista"
@@ -632,4 +631,3 @@ while True:
         save_user_data()
 
     time.sleep(30)
-        
