@@ -7,9 +7,9 @@ from datetime import datetime, timedelta
 from collections import deque
 from supabase import create_client, Client
 
-# ==================== SUPABASE ====================
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+# ==================== SUPABASE (CREDENCIALES DIRECTAS) ====================
+SUPABASE_URL = "https://nzoerhdtsnvzshwirjvt.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im56b2VyaGR0c252enNod2lyanZ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE0NTkyNzcsImV4cCI6MjA5NzAzNTI3N30.Z2M1zYAMXf-L-Y8lpkWk6lAOD5-ts-F3KP97aPrAYtg"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 if "authenticated" not in st.session_state:
@@ -17,6 +17,7 @@ if "authenticated" not in st.session_state:
     st.session_state.user_id = None
     st.session_state.user_data = None
     st.session_state.user_email = None
+    st.session_state.data_loaded = False
 
 # ==================== AUTENTICACIÓN ====================
 def sign_up(email, password):
@@ -53,6 +54,7 @@ def sign_out():
     st.session_state.user_id = None
     st.session_state.user_data = None
     st.session_state.user_email = None
+    st.session_state.data_loaded = False
     st.rerun()
 
 def load_user_data():
@@ -96,7 +98,8 @@ def save_user_data():
         "expert_score": st.session_state.expert_score,
         "expert_comment": st.session_state.expert_comment,
         "custom_balance": st.session_state.get("custom_balance", None),
-        "is_premium": st.session_state.is_premium
+        "is_premium": st.session_state.is_premium,
+        "trial_end": st.session_state.user_data.get("trial_end")
     }
     supabase.table("user_data").update(data).eq("user_id", st.session_state.user_id).execute()
 
@@ -296,13 +299,16 @@ if not st.session_state.authenticated:
                 st.error(msg)
     st.stop()
 
-# ==================== RESTAURAR DATOS ====================
-if st.session_state.user_data is None:
-    init_new_user_state()
-else:
-    restore_user_state()
+# ==================== RESTAURAR DATOS CON SPINNER ====================
+if not st.session_state.data_loaded:
+    with st.spinner("Cargando tu cartera y configuración..."):
+        if st.session_state.user_data is None:
+            init_new_user_state()
+        else:
+            restore_user_state()
+        st.session_state.data_loaded = True
 
-# ==================== CONTROL DE ACCESO (DESACTIVADO TEMPORALMENTE) ====================
+# ==================== CONTROL DE ACCESO (DESACTIVADO) ====================
 pass
 
 # ==================== INTERFAZ PRINCIPAL ====================
