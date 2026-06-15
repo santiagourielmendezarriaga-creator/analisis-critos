@@ -119,11 +119,11 @@ def restore_user_state():
     st.session_state.entry_price = data.get("entry_price", {"BTC": 0.0, "ETH": 0.0})
     st.session_state.highest_price = data.get("highest_price", {"BTC": 0.0, "ETH": 0.0})
     st.session_state.cycle = data.get("cycle", 0)
-    st.session_state.umbral = data.get("umbral", 0.01)
+    st.session_state.umbral = data.get("umbral", 0.005)
     st.session_state.rsi_os = data.get("rsi_os", 30)
-    st.session_state.rsi_ob = data.get("rsi_ob", 70)
+    st.session_state.rsi_ob = data.get("rsi_ob", 80)
     st.session_state.ema_fast = data.get("ema_fast", 5)
-    st.session_state.ema_slow = data.get("ema_slow", 20)
+    st.session_state.ema_slow = data.get("ema_slow", 10)
     st.session_state.stop_loss = float(data.get("stop_loss", 2.0))
     st.session_state.take_profit = float(data.get("take_profit", 2.5))
     st.session_state.trailing = float(data.get("trailing_stop", 1.0))
@@ -152,11 +152,11 @@ def init_new_user_state():
     st.session_state.highest_price = {"BTC": 0.0, "ETH": 0.0}
     st.session_state.cycle = 0
     st.session_state.price_history = {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)}
-    st.session_state.umbral = 0.01
+    st.session_state.umbral = 0.005
     st.session_state.rsi_os = 30
-    st.session_state.rsi_ob = 70
+    st.session_state.rsi_ob = 80
     st.session_state.ema_fast = 5
-    st.session_state.ema_slow = 20
+    st.session_state.ema_slow = 10
     st.session_state.stop_loss = 2.0
     st.session_state.take_profit = 2.5
     st.session_state.trailing = 1.0
@@ -204,7 +204,7 @@ def get_fear_greed():
         pass
     return 50, "Neutral"
 
-# ==================== INDICADORES ====================
+# ==================== INDICADORES CON PESOS AJUSTADOS ====================
 def compute_ema(prices, period):
     if len(prices) < period:
         return None
@@ -258,16 +258,17 @@ def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow, f
         signal_fng = "SELL"
     else:
         signal_fng = "HOLD"
+    # Ponderación ajustada: cambio 50%, otros 20%, 15%, 15%
     buy_score = 0
     sell_score = 0
-    if signal_change == "BUY": buy_score += 25
-    elif signal_change == "SELL": sell_score += 25
-    if signal_ema == "BUY": buy_score += 25
-    elif signal_ema == "SELL": sell_score += 25
-    if signal_rsi == "BUY": buy_score += 25
-    elif signal_rsi == "SELL": sell_score += 25
-    if signal_fng == "BUY": buy_score += 25
-    elif signal_fng == "SELL": sell_score += 25
+    if signal_change == "BUY": buy_score += 50
+    elif signal_change == "SELL": sell_score += 50
+    if signal_ema == "BUY": buy_score += 20
+    elif signal_ema == "SELL": sell_score += 20
+    if signal_rsi == "BUY": buy_score += 15
+    elif signal_rsi == "SELL": sell_score += 15
+    if signal_fng == "BUY": buy_score += 15
+    elif signal_fng == "SELL": sell_score += 15
     if buy_score > sell_score:
         return "BUY", rsi
     elif sell_score > buy_score:
