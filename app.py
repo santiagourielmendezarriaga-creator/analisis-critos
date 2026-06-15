@@ -8,6 +8,7 @@ from collections import deque
 from supabase import create_client, Client
 
 # ==================== SUPABASE (CREDENCIALES DIRECTAS) ====================
+# ¡Cámbialas por variables de entorno antes de lanzar!
 SUPABASE_URL = "https://nzoerhdtsnvzshwirjvt.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im56b2VyaGR0c252enNod2lyanZ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE0NTkyNzcsImV4cCI6MjA5NzAzNTI3N30.Z2M1zYAMXf-L-Y8lpkWk6lAOD5-ts-F3KP97aPrAYtg"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -99,7 +100,9 @@ def save_user_data():
         "expert_comment": st.session_state.expert_comment,
         "custom_balance": st.session_state.get("custom_balance", None),
         "is_premium": st.session_state.is_premium,
-        "trial_end": st.session_state.user_data.get("trial_end")
+        "trial_end": st.session_state.user_data.get("trial_end"),
+        "sl_triggered": st.session_state.sl_triggered,
+        "sl_low_price": st.session_state.sl_low_price
     }
     supabase.table("user_data").update(data).eq("user_id", st.session_state.user_id).execute()
 
@@ -119,11 +122,12 @@ def restore_user_state():
     st.session_state.entry_price = data.get("entry_price", {"BTC": 0.0, "ETH": 0.0})
     st.session_state.highest_price = data.get("highest_price", {"BTC": 0.0, "ETH": 0.0})
     st.session_state.cycle = data.get("cycle", 0)
-    st.session_state.umbral = data.get("umbral", 0.005)
+    # Parámetros mejorados
+    st.session_state.umbral = data.get("umbral", 0.25)   # base 0.25% (ajustable)
     st.session_state.rsi_os = data.get("rsi_os", 30)
     st.session_state.rsi_ob = data.get("rsi_ob", 80)
     st.session_state.ema_fast = data.get("ema_fast", 5)
-    st.session_state.ema_slow = data.get("ema_slow", 10)
+    st.session_state.ema_slow = data.get("ema_slow", 12)  # más sensible
     st.session_state.stop_loss = float(data.get("stop_loss", 2.0))
     st.session_state.take_profit = float(data.get("take_profit", 2.5))
     st.session_state.trailing = float(data.get("trailing_stop", 1.0))
@@ -138,6 +142,9 @@ def restore_user_state():
         st.session_state.custom_balance = None
     ph = data.get("price_history", {"BTC": [], "ETH": []})
     st.session_state.price_history = {k: deque(v, maxlen=200) for k, v in ph.items()}
+    # Nuevas variables para rebote SL y umbral dinámico
+    st.session_state.sl_triggered = data.get("sl_triggered", {"BTC": False, "ETH": False})
+    st.session_state.sl_low_price = data.get("sl_low_price", {"BTC": 0.0, "ETH": 0.0})
 
 def init_new_user_state():
     st.session_state.balance = 1000.0
@@ -152,11 +159,11 @@ def init_new_user_state():
     st.session_state.highest_price = {"BTC": 0.0, "ETH": 0.0}
     st.session_state.cycle = 0
     st.session_state.price_history = {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)}
-    st.session_state.umbral = 0.005
+    st.session_state.umbral = 0.25       # base 0.25%
     st.session_state.rsi_os = 30
     st.session_state.rsi_ob = 80
     st.session_state.ema_fast = 5
-    st.session_state.ema_slow = 10
+    st.session_state.ema_slow = 12
     st.session_state.stop_loss = 2.0
     st.session_state.take_profit = 2.5
     st.session_state.trailing = 1.0
@@ -164,6 +171,8 @@ def init_new_user_state():
     st.session_state.expert_comment = ""
     st.session_state.is_premium = False
     st.session_state.custom_balance = None
+    st.session_state.sl_triggered = {"BTC": False, "ETH": False}
+    st.session_state.sl_low_price = {"BTC": 0.0, "ETH": 0.0}
 
 # ==================== TELEGRAM ====================
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
@@ -204,7 +213,7 @@ def get_fear_greed():
         pass
     return 50, "Neutral"
 
-# ==================== INDICADORES CON PESOS AJUSTADOS ====================
+# ==================== INDICADORES Y ATR ====================
 def compute_ema(prices, period):
     if len(prices) < period:
         return None
@@ -226,6 +235,34 @@ def compute_rsi(prices, period=14):
         return 100
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
+
+def calcular_atr(prices, periodo=14):
+    """Average True Range (ATR) basado en rango entre precios consecutivos."""
+    if len(prices) < periodo + 1:
+        return None
+    atr = 0.0
+    for i in range(1, len(prices)):
+        rango = abs(prices[i] - prices[i-1])
+        if i == 1:
+            atr = rango
+        else:
+            atr = (atr * (periodo - 1) + rango) / periodo
+    return atr
+
+def umbral_dinamico(prices, umbral_base=0.25):
+    """Umbral adaptativo según volatilidad (ATR)."""
+    if len(prices) < 15:
+        return umbral_base
+    atr = calcular_atr(prices)
+    if atr is None or prices[-1] == 0:
+        return umbral_base
+    volatilidad_pct = (atr / prices[-1]) * 100
+    if volatilidad_pct > 1.5:
+        return min(0.6, umbral_base * 1.6)   # máximo 0.6%
+    elif volatilidad_pct < 0.5:
+        return max(0.15, umbral_base * 0.7)  # mínimo 0.15%
+    else:
+        return umbral_base
 
 def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow, fng_value):
     if len(prices) < max(ema_slow, 15):
@@ -258,15 +295,15 @@ def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow, f
         signal_fng = "SELL"
     else:
         signal_fng = "HOLD"
-    # Ponderación ajustada: cambio 50%, otros 20%, 15%, 15%
+    # Ponderación: cambio 40%, EMA 25%, RSI 20%, F&G 15%
     buy_score = 0
     sell_score = 0
-    if signal_change == "BUY": buy_score += 50
-    elif signal_change == "SELL": sell_score += 50
-    if signal_ema == "BUY": buy_score += 20
-    elif signal_ema == "SELL": sell_score += 20
-    if signal_rsi == "BUY": buy_score += 15
-    elif signal_rsi == "SELL": sell_score += 15
+    if signal_change == "BUY": buy_score += 40
+    elif signal_change == "SELL": sell_score += 40
+    if signal_ema == "BUY": buy_score += 25
+    elif signal_ema == "SELL": sell_score += 25
+    if signal_rsi == "BUY": buy_score += 20
+    elif signal_rsi == "SELL": sell_score += 20
     if signal_fng == "BUY": buy_score += 15
     elif signal_fng == "SELL": sell_score += 15
     if buy_score > sell_score:
@@ -275,7 +312,20 @@ def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow, f
         return "SELL", rsi
     else:
         return "HOLD", rsi
-        # ==================== LOGIN ====================
+
+def confirmacion_vela(historial, senal_esperada):
+    """Confirma la señal con el cierre de la última vela (dos precios consecutivos)."""
+    if len(historial) < 2:
+        return True
+    prev = historial[-2]
+    curr = historial[-1]
+    if senal_esperada == "BUY":
+        return curr > prev
+    elif senal_esperada == "SELL":
+        return curr < prev
+    return True
+
+# ==================== LOGIN ====================
 if not st.session_state.authenticated:
     st.title("🤖 Crypto Trading Bot")
     tab1, tab2 = st.tabs(["Iniciar sesión", "Registrarse"])
@@ -300,7 +350,7 @@ if not st.session_state.authenticated:
                 st.error(msg)
     st.stop()
 
-# ==================== RESTAURAR DATOS CON SPINNER ====================
+# ==================== RESTAURAR DATOS ====================
 if not st.session_state.data_loaded:
     with st.spinner("Cargando tu cartera y configuración..."):
         if st.session_state.user_data is None:
@@ -308,19 +358,15 @@ if not st.session_state.data_loaded:
         else:
             restore_user_state()
         st.session_state.data_loaded = True
-
-# ==================== CONTROL DE ACCESO (DESACTIVADO) ====================
-pass
-
-# ==================== INTERFAZ PRINCIPAL ====================
-st.set_page_config(page_title="Bot de Trading con Suscripción", layout="wide")
+        # ==================== INTERFAZ PRINCIPAL ====================
+st.set_page_config(page_title="Bot de Trading Premium", layout="wide")
 st.title("📊 Bot de Trading con Estrategia Experta (RSI, EMA, Fear & Greed)")
 
 # Sidebar
 st.sidebar.header("⚙️ Configuración General")
-umbral = st.sidebar.number_input("Umbral de entrada (%)", min_value=0.005, max_value=1.0, value=float(st.session_state.umbral), step=0.005)
+umbral_base = st.sidebar.number_input("Umbral base (%)", min_value=0.1, max_value=2.0, value=float(st.session_state.umbral), step=0.05, help="Se ajustará automáticamente por volatilidad")
 rsi_os = st.sidebar.number_input("RSI sobreventa", min_value=20, max_value=40, value=int(st.session_state.rsi_os), step=1)
-rsi_ob = st.sidebar.number_input("RSI sobrecompra", min_value=60, max_value=80, value=int(st.session_state.rsi_ob), step=1)
+rsi_ob = st.sidebar.number_input("RSI sobrecompra", min_value=70, max_value=90, value=int(st.session_state.rsi_ob), step=1)
 ema_fast = st.sidebar.number_input("EMA rápida (periodos)", min_value=3, max_value=20, value=int(st.session_state.ema_fast), step=1)
 ema_slow = st.sidebar.number_input("EMA lenta (periodos)", min_value=10, max_value=50, value=int(st.session_state.ema_slow), step=1)
 
@@ -329,16 +375,15 @@ stop_loss = st.sidebar.number_input("Stop Loss fijo (%)", min_value=0.5, max_val
 take_profit = st.sidebar.number_input("Take Profit fijo (%)", min_value=0.5, max_value=20.0, value=float(st.session_state.take_profit), step=0.5)
 trailing = st.sidebar.number_input("Trailing Stop (%)", min_value=0.2, max_value=5.0, value=float(st.session_state.trailing), step=0.1)
 
-st.sidebar.header("🧠 Análisis de Expertos (Basado en la 'Guía')")
+st.sidebar.header("🧠 Análisis de Expertos")
 expert_score = st.sidebar.slider("Puntaje de tendencia (0=Muy Bajista, 100=Muy Alcista)", 0, 100, st.session_state.expert_score, 5)
 expert_comment = st.sidebar.text_area("Comentario / Estrategia", value=st.session_state.expert_comment, height=100, key="expert_comment_area")
 if st.sidebar.button("Actualizar Análisis Experto"):
     st.session_state.expert_score = expert_score
     st.session_state.expert_comment = expert_comment
     save_user_data()
-    st.success("Análisis de expertos actualizado.")
+    st.success("Análisis actualizado.")
 
-# Personalizar saldo (solo premium)
 if st.session_state.user_data.get("is_premium", False):
     st.sidebar.subheader("💰 Personalizar saldo")
     nuevo_saldo = st.sidebar.number_input("Saldo inicial (MXN)", value=float(st.session_state.balance), step=100.0, format="%.2f")
@@ -349,7 +394,6 @@ if st.session_state.user_data.get("is_premium", False):
 else:
     st.sidebar.info("🔓 Para personalizar tu saldo, suscríbete al plan premium.")
 
-# Cartera
 st.sidebar.subheader("💰 Cartera")
 saldo_placeholder = st.sidebar.empty()
 total_placeholder = st.sidebar.empty()
@@ -357,18 +401,16 @@ ops_placeholder = st.sidebar.empty()
 
 if st.sidebar.button("Cerrar sesión"):
     sign_out()
-
 if st.sidebar.button("Reiniciar simulación"):
     init_new_user_state()
     save_user_data()
     st.rerun()
-
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("🧪 Bot con suscripción - activo")
+    send_telegram("🧪 Bot mejorado - activo")
     st.success("Enviado")
 
-# Actualizar parámetros
-st.session_state.umbral = umbral
+# Actualizar parámetros en sesión
+st.session_state.umbral = umbral_base
 st.session_state.rsi_os = rsi_os
 st.session_state.rsi_ob = rsi_ob
 st.session_state.ema_fast = ema_fast
@@ -400,6 +442,12 @@ while True:
         st.session_state.ref_price["BTC"] = btc
         st.session_state.ref_price["ETH"] = eth
 
+    # Calcular umbrales dinámicos para cada moneda
+    hist_btc = list(st.session_state.price_history["BTC"])
+    hist_eth = list(st.session_state.price_history["ETH"])
+    umbral_btc = umbral_dinamico(hist_btc, st.session_state.umbral)
+    umbral_eth = umbral_dinamico(hist_eth, st.session_state.umbral)
+
     st.session_state.cycle += 1
     fng_value, fng_label = get_fear_greed()
     var_btc = (btc - st.session_state.ref_price["BTC"]) / st.session_state.ref_price["BTC"] * 100
@@ -411,11 +459,11 @@ while True:
         "Precio MXN": [f"${btc:,.0f}", f"${eth:,.0f}"],
         "Var desde inicio": [f"{var_btc:+.2f}%", f"{var_eth:+.2f}%"],
         "Señal (solo info)": [
-            "COMPRAR" if var_btc >= st.session_state.umbral else "VENDER" if var_btc <= -st.session_state.umbral else "MANTENER",
-            "COMPRAR" if var_eth >= st.session_state.umbral else "VENDER" if var_eth <= -st.session_state.umbral else "MANTENER"
+            "COMPRAR" if var_btc >= umbral_btc else "VENDER" if var_btc <= -umbral_btc else "MANTENER",
+            "COMPRAR" if var_eth >= umbral_eth else "VENDER" if var_eth <= -umbral_eth else "MANTENER"
         ]
     })
-    info_placeholder.caption(f"Ciclo: {st.session_state.cycle} | Umbral: {st.session_state.umbral}% | SL: {st.session_state.stop_loss}% | TP: {st.session_state.take_profit}% | Trailing: {st.session_state.trailing}% | Fear & Greed: {fng_value}/100 ({fng_label})")
+    info_placeholder.caption(f"Ciclo: {st.session_state.cycle} | Umbral base: {st.session_state.umbral}% | BTC umbral: {umbral_btc:.2f}% | ETH umbral: {umbral_eth:.2f}% | SL: {st.session_state.stop_loss}% | TP: {st.session_state.take_profit}% | Trailing: {st.session_state.trailing}% | Fear & Greed: {fng_value}/100 ({fng_label})")
 
     total_val = st.session_state.balance
     for s in ["BTC", "ETH"]:
@@ -427,11 +475,12 @@ while True:
     total_placeholder.metric("Valor total", f"${total_val:,.2f}")
     ops_placeholder.metric("Ops hoy", st.session_state.daily_trades)
 
-    historial_placeholder.subheader("📜 Historial")
+    historial_placeholder.subheader("📜 Historial (últimas 10)")
     if st.session_state.trades:
         txt = ""
         for ts, msg in reversed(st.session_state.trades[-10:]):
-            txt += f"{ts.strftime('%H:%M:%S')} - {msg[:60]}\n"
+            short_msg = msg.replace("\n", " | ")[:80]
+            txt += f"{ts.strftime('%H:%M:%S')} - {short_msg}\n"
         historial_placeholder.text(txt)
     else:
         historial_placeholder.text("Sin operaciones aún.")
@@ -443,46 +492,52 @@ while True:
 
     for sym, precio in [("BTC", btc), ("ETH", eth)]:
         hist = list(st.session_state.price_history[sym])
+        umbral_actual = umbral_btc if sym == "BTC" else umbral_eth
         if len(hist) >= max(st.session_state.ema_slow, 15):
             signal_auto, rsi_val = get_enhanced_signal(
-                hist, st.session_state.umbral, st.session_state.rsi_os, st.session_state.rsi_ob,
+                hist, umbral_actual, st.session_state.rsi_os, st.session_state.rsi_ob,
                 st.session_state.ema_fast, st.session_state.ema_slow, fng_value
             )
         else:
             signal_auto = "HOLD"
             rsi_val = 50
 
-        if st.session_state.expert_score >= 80:
-            signal_expert = "BUY"
-        elif st.session_state.expert_score <= 20:
-            signal_expert = "SELL"
-        else:
-            signal_expert = "HOLD"
-
+        # Votación con veto por experto
         if st.session_state.expert_score >= 80:
             senal = "BUY"
-            razon_extra = f"Experto ({st.session_state.expert_score})"
+            razon_extra = "Experto Muy Alcista"
         elif st.session_state.expert_score <= 20:
             senal = "SELL"
-            razon_extra = f"Experto ({st.session_state.expert_score})"
+            razon_extra = "Experto Muy Bajista"
         else:
             buy_votes = 0
             sell_votes = 0
             if signal_auto == "BUY": buy_votes += 40
             elif signal_auto == "SELL": sell_votes += 40
-            if signal_expert == "BUY": buy_votes += 35
-            elif signal_expert == "SELL": sell_votes += 35
+            if st.session_state.expert_score >= 60:
+                buy_votes += 35
+            elif st.session_state.expert_score <= 40:
+                sell_votes += 35
             if fng_value <= 20: buy_votes += 25
             elif fng_value >= 80: sell_votes += 25
-            if buy_votes > sell_votes:
-                senal = "BUY"
-                razon_extra = "Ponderado"
-            elif sell_votes > buy_votes:
-                senal = "SELL"
-                razon_extra = "Ponderado"
-            else:
+
+            # Veto: experto bajista anula compra, alcista anula venta
+            if st.session_state.expert_score < 40 and buy_votes > sell_votes:
                 senal = "HOLD"
-                razon_extra = "Empate"
+                razon_extra = "Vetado por experto bajista"
+            elif st.session_state.expert_score > 60 and sell_votes > buy_votes:
+                senal = "HOLD"
+                razon_extra = "Vetado por experto alcista"
+            else:
+                if buy_votes > sell_votes:
+                    senal = "BUY"
+                    razon_extra = "Ponderado"
+                elif sell_votes > buy_votes:
+                    senal = "SELL"
+                    razon_extra = "Ponderado"
+                else:
+                    senal = "HOLD"
+                    razon_extra = "Empate"
 
         pos = st.session_state.positions.get(sym, 0)
         entry = st.session_state.entry_price.get(sym, 0)
@@ -494,52 +549,72 @@ while True:
             st.session_state.highest_price[sym] = precio
             highest = precio
 
+        # Gestión de posición abierta con rebote al SL
         if pos > 0 and entry > 0:
             ganancia = (precio - entry) / entry * 100
+
             if ganancia >= st.session_state.take_profit:
                 accion = "SELL"
                 razon = f"Take Profit ({st.session_state.take_profit}%)"
-            elif ganancia <= -st.session_state.stop_loss:
-                accion = "SELL"
-                razon = f"Stop Loss ({st.session_state.stop_loss}%)"
-            elif highest > entry:
-                caida = (precio - highest) / highest * 100
-                if caida <= -st.session_state.trailing:
-                    accion = "SELL"
-                    razon = f"Trailing Stop ({st.session_state.trailing}%)"
+                st.session_state.sl_triggered[sym] = False
+            else:
+                if st.session_state.sl_triggered.get(sym, False):
+                    low = st.session_state.sl_low_price.get(sym, precio)
+                    rebound_pct = 0.5
+                    if precio >= low * (1 + rebound_pct/100):
+                        accion = "SELL"
+                        razon = f"Rebote SL (+{rebound_pct}% desde ${low:,.0f})"
+                        st.session_state.sl_triggered[sym] = False
+                else:
+                    if ganancia <= -st.session_state.stop_loss:
+                        st.session_state.sl_triggered[sym] = True
+                        st.session_state.sl_low_price[sym] = precio
+                        send_telegram(f"⚠️ {sym} tocó SL ({st.session_state.stop_loss}%) - esperando rebote 0.5%")
+                    else:
+                        if highest > entry:
+                            caida = (precio - highest) / highest * 100
+                            if caida <= -st.session_state.trailing:
+                                accion = "SELL"
+                                razon = f"Trailing Stop ({st.session_state.trailing}%)"
+                                st.session_state.sl_triggered[sym] = False
 
         if accion is None:
             if senal == "BUY" and pos == 0:
-                accion = "BUY"
+                if confirmacion_vela(hist, "BUY"):
+                    accion = "BUY"
             elif senal == "SELL" and pos > 0:
-                accion = "SELL"
-                razon = razon_extra
+                if confirmacion_vela(hist, "SELL"):
+                    accion = "SELL"
+                    razon = razon_extra
 
         last_act = st.session_state.last_action.get(sym)
-        if accion and accion != last_act and st.session_state.daily_trades < 20:
-            amount = min(500.0, st.session_state.balance)
-            if accion == "BUY" and amount > 0:
-                eff = precio * 1.0005
-                com = amount * 0.001
-                qty = (amount - com) / eff
-                st.session_state.balance -= amount
-                st.session_state.positions[sym] = qty
-                st.session_state.entry_price[sym] = eff
-                st.session_state.highest_price[sym] = eff
-                st.session_state.daily_trades += 1
-                msg = (f"🟢 COMPRA {sym}\n"
-                       f"Cantidad: {qty:.6f}\n"
-                       f"Precio: ${precio:,.0f} MXN\n"
-                       f"Saldo: ${st.session_state.balance:.2f}\n"
-                       f"Razón: {razon_extra}")
-                send_telegram(msg)
-                st.session_state.trades.append((datetime.now(), msg))
-                save_user_data()
-                st.session_state.last_action[sym] = accion
+        if accion and accion != last_act and st.session_state.daily_trades < 12:  # límite diario 12
+            if accion == "BUY":
+                amount = st.session_state.balance * 0.20
+                amount = max(200.0, min(1000.0, amount))
+                if amount > st.session_state.balance:
+                    amount = st.session_state.balance
+                if amount >= 200.0:
+                    com = amount * 0.001
+                    qty = (amount - com) / precio
+                    st.session_state.balance -= amount
+                    st.session_state.positions[sym] = qty
+                    st.session_state.entry_price[sym] = precio
+                    st.session_state.highest_price[sym] = precio
+                    st.session_state.daily_trades += 1
+                    msg = (f"🟢 COMPRA {sym}\n"
+                           f"Monto: ${amount:.0f}\n"
+                           f"Cantidad: {qty:.6f}\n"
+                           f"Precio: ${precio:,.0f}\n"
+                           f"Saldo: ${st.session_state.balance:.2f}\n"
+                           f"Razón: {razon_extra}")
+                    send_telegram(msg)
+                    st.session_state.trades.append((datetime.now(), msg))
+                    save_user_data()
+                    st.session_state.last_action[sym] = accion
             elif accion == "SELL" and pos > 0:
                 qty = pos
-                eff = precio * 0.9995
-                gross = qty * eff
+                gross = qty * precio
                 com = gross * 0.001
                 net = gross - com
                 st.session_state.balance += net
@@ -547,15 +622,16 @@ while True:
                 st.session_state.daily_trades += 1
                 msg = (f"🔴 VENTA {sym}\n"
                        f"Cantidad: {qty:.6f}\n"
-                       f"Precio: ${precio:,.0f} MXN\n"
+                       f"Precio: ${precio:,.0f}\n"
                        f"Neto: ${net:.2f}\n"
                        f"Motivo: {razon}")
                 send_telegram(msg)
                 st.session_state.trades.append((datetime.now(), msg))
                 save_user_data()
                 st.session_state.last_action[sym] = accion
+                st.session_state.sl_triggered[sym] = False
 
     if st.session_state.cycle % 10 == 0:
         save_user_data()
 
-    time.sleep(10)
+    time.sleep(30)   # pausa de 30 segundos
