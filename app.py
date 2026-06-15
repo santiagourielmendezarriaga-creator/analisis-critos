@@ -123,11 +123,11 @@ def restore_user_state():
     st.session_state.highest_price = data.get("highest_price", {"BTC": 0.0, "ETH": 0.0})
     st.session_state.cycle = data.get("cycle", 0)
     # Parámetros mejorados
-    st.session_state.umbral = data.get("umbral", 0.25)   # base 0.25% (ajustable)
+    st.session_state.umbral = data.get("umbral", 0.25)
     st.session_state.rsi_os = data.get("rsi_os", 30)
     st.session_state.rsi_ob = data.get("rsi_ob", 80)
     st.session_state.ema_fast = data.get("ema_fast", 5)
-    st.session_state.ema_slow = data.get("ema_slow", 12)  # más sensible
+    st.session_state.ema_slow = data.get("ema_slow", 12)
     st.session_state.stop_loss = float(data.get("stop_loss", 2.0))
     st.session_state.take_profit = float(data.get("take_profit", 2.5))
     st.session_state.trailing = float(data.get("trailing_stop", 1.0))
@@ -159,7 +159,7 @@ def init_new_user_state():
     st.session_state.highest_price = {"BTC": 0.0, "ETH": 0.0}
     st.session_state.cycle = 0
     st.session_state.price_history = {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)}
-    st.session_state.umbral = 0.25       # base 0.25%
+    st.session_state.umbral = 0.25
     st.session_state.rsi_os = 30
     st.session_state.rsi_ob = 80
     st.session_state.ema_fast = 5
@@ -237,7 +237,6 @@ def compute_rsi(prices, period=14):
     return 100 - (100 / (1 + rs))
 
 def calcular_atr(prices, periodo=14):
-    """Average True Range (ATR) basado en rango entre precios consecutivos."""
     if len(prices) < periodo + 1:
         return None
     atr = 0.0
@@ -250,7 +249,6 @@ def calcular_atr(prices, periodo=14):
     return atr
 
 def umbral_dinamico(prices, umbral_base=0.25):
-    """Umbral adaptativo según volatilidad (ATR)."""
     if len(prices) < 15:
         return umbral_base
     atr = calcular_atr(prices)
@@ -258,9 +256,9 @@ def umbral_dinamico(prices, umbral_base=0.25):
         return umbral_base
     volatilidad_pct = (atr / prices[-1]) * 100
     if volatilidad_pct > 1.5:
-        return min(0.6, umbral_base * 1.6)   # máximo 0.6%
+        return min(0.6, umbral_base * 1.6)
     elif volatilidad_pct < 0.5:
-        return max(0.15, umbral_base * 0.7)  # mínimo 0.15%
+        return max(0.15, umbral_base * 0.7)
     else:
         return umbral_base
 
@@ -314,7 +312,6 @@ def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow, f
         return "HOLD", rsi
 
 def confirmacion_vela(historial, senal_esperada):
-    """Confirma la señal con el cierre de la última vela (dos precios consecutivos)."""
     if len(historial) < 2:
         return True
     prev = historial[-2]
@@ -364,7 +361,7 @@ st.title("📊 Bot de Trading con Estrategia Experta (RSI, EMA, Fear & Greed)")
 
 # Sidebar
 st.sidebar.header("⚙️ Configuración General")
-umbral_base = st.sidebar.number_input("Umbral base (%)", min_value=0.1, max_value=2.0, value=float(st.session_state.umbral), step=0.05, help="Se ajustará automáticamente por volatilidad")
+umbral_base = st.sidebar.number_input("Umbral base (%)", min_value=0.1, max_value=2.0, step=0.05, value=float(st.session_state.umbral), help="Se ajustará automáticamente por volatilidad")
 rsi_os = st.sidebar.number_input("RSI sobreventa", min_value=20, max_value=40, value=int(st.session_state.rsi_os), step=1)
 rsi_ob = st.sidebar.number_input("RSI sobrecompra", min_value=70, max_value=90, value=int(st.session_state.rsi_ob), step=1)
 ema_fast = st.sidebar.number_input("EMA rápida (periodos)", min_value=3, max_value=20, value=int(st.session_state.ema_fast), step=1)
@@ -521,7 +518,7 @@ while True:
             if fng_value <= 20: buy_votes += 25
             elif fng_value >= 80: sell_votes += 25
 
-            # Veto: experto bajista anula compra, alcista anula venta
+            # Veto
             if st.session_state.expert_score < 40 and buy_votes > sell_votes:
                 senal = "HOLD"
                 razon_extra = "Vetado por experto bajista"
@@ -588,7 +585,7 @@ while True:
                     razon = razon_extra
 
         last_act = st.session_state.last_action.get(sym)
-        if accion and accion != last_act and st.session_state.daily_trades < 12:  # límite diario 12
+        if accion and accion != last_act and st.session_state.daily_trades < 12:
             if accion == "BUY":
                 amount = st.session_state.balance * 0.20
                 amount = max(200.0, min(1000.0, amount))
@@ -634,4 +631,5 @@ while True:
     if st.session_state.cycle % 10 == 0:
         save_user_data()
 
-    time.sleep(30)   # pausa de 30 segundos
+    time.sleep(30)
+        
