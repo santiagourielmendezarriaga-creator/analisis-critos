@@ -5,84 +5,26 @@ import json
 import os
 from datetime import datetime, timedelta
 from collections import deque
-from supabase import create_client, Client
 
-# ==================== SUPABASE ====================
-SUPABASE_URL = "https://nzoerhdtsnvzshwirjvt.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im56b2VyaGR0c252enNod2lyanZ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE0NTkyNzcsImV4cCI6MjA5NzAzNTI3N30.Z2M1zYAMXf-L-Y8lpkWk6lAOD5-ts-F3KP97aPrAYtg"
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# ==================== ARCHIVO LOCAL PARA GUARDAR DATOS ====================
+DATA_FILE = "data.json"
 
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
-    st.session_state.user_id = None
-    st.session_state.user_data = None
-    st.session_state.user_email = None
-    st.session_state.data_loaded = False
+def load_data():
+    """Carga los datos desde data.json. Si no existe, crea valores por defecto."""
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return None
+    return None
 
-# ==================== AUTENTICACIÓN ====================
-def sign_up(email, password):
-    try:
-        resp = supabase.auth.sign_up({"email": email, "password": password})
-        if resp.user:
-            trial_end = (datetime.now() + timedelta(hours=24)).isoformat()
-            supabase.table("user_data").insert({
-                "user_id": resp.user.id,
-                "trial_end": trial_end,
-                "is_premium": False
-            }).execute()
-            return True, "Registro exitoso. Prueba gratuita de 24 horas activada."
-        return False, "Error en el registro."
-    except Exception as e:
-        return False, str(e)
-
-def sign_in(email, password):
-    try:
-        resp = supabase.auth.sign_in_with_password({"email": email, "password": password})
-        if resp.user:
-            st.session_state.authenticated = True
-            st.session_state.user_id = resp.user.id
-            st.session_state.user_email = resp.user.email
-            load_user_data()
-            return True, "Bienvenido"
-        return False, "Correo o contraseña incorrectos"
-    except Exception as e:
-        return False, str(e)
-
-def sign_out():
-    supabase.auth.sign_out()
-    st.session_state.authenticated = False
-    st.session_state.user_id = None
-    st.session_state.user_data = None
-    st.session_state.user_email = None
-    st.session_state.data_loaded = False
-    st.rerun()
-
-def load_user_data():
-    resp = supabase.table("user_data").select("*").eq("user_id", st.session_state.user_id).execute()
-    if resp.data:
-        st.session_state.user_data = resp.data[0]
-    else:
-        trial_end = (datetime.now() + timedelta(hours=24)).isoformat()
-        supabase.table("user_data").insert({
-            "user_id": st.session_state.user_id,
-            "trial_end": trial_end,
-            "is_premium": False
-        }).execute()
-        resp = supabase.table("user_data").select("*").eq("user_id", st.session_state.user_id).execute()
-        st.session_state.user_data = resp.data[0]
-
-def save_user_data():
-    if not st.session_state.user_id:
-        return
-    # Convertir trades a lista de listas [timestamp, mensaje]
-    trades_serializable = []
-    for ts, msg in st.session_state.trades[-100:]:
-        trades_serializable.append([ts.isoformat(), msg])
-    
+def save_data():
+    """Guarda todo el estado de la sesión en data.json."""
     data = {
         "balance": st.session_state.balance,
         "positions": st.session_state.positions,
-        "trades": trades_serializable,
+        "trades": [(t.isoformat(), msg) for t, msg in st.session_state.trades[-100:]],
         "price_history": {k: list(v) for k, v in st.session_state.price_history.items()},
         "last_action": st.session_state.last_action,
         "daily_trades": st.session_state.daily_trades,
@@ -99,59 +41,17 @@ def save_user_data():
         "ema_slow": st.session_state.ema_slow,
         "stop_loss": st.session_state.stop_loss,
         "take_profit": st.session_state.take_profit,
-        "trailing_stop": st.session_state.trailing,
+        "trailing": st.session_state.trailing,
         "expert_score": st.session_state.expert_score,
         "expert_comment": st.session_state.expert_comment,
-        "custom_balance": st.session_state.get("custom_balance", None),
-        "is_premium": st.session_state.is_premium,
-        "trial_end": st.session_state.user_data.get("trial_end"),
         "sl_triggered": st.session_state.sl_triggered,
         "sl_low_price": st.session_state.sl_low_price
     }
-    supabase.table("user_data").update(data).eq("user_id", st.session_state.user_id).execute()
-
-def restore_user_state():
-    data = st.session_state.user_data
-    trades = []
-    for ts, msg in data.get("trades", []):
-        trades.append((datetime.fromisoformat(ts), msg))
-    st.session_state.balance = data.get("balance", 1000.0)
-    st.session_state.positions = data.get("positions", {"BTC": 0.0, "ETH": 0.0})
-    st.session_state.trades = trades
-    st.session_state.last_action = data.get("last_action", {"BTC": None, "ETH": None})
-    st.session_state.daily_trades = data.get("daily_trades", 0)
-    st.session_state.last_day = data.get("last_day", datetime.now().day)
-    st.session_state.ref_price = data.get("ref_price", {"BTC": 0.0, "ETH": 0.0})
-    st.session_state.last_price = data.get("last_price", {"BTC": 0.0, "ETH": 0.0})
-    st.session_state.entry_price = data.get("entry_price", {"BTC": 0.0, "ETH": 0.0})
-    st.session_state.highest_price = data.get("highest_price", {"BTC": 0.0, "ETH": 0.0})
-    st.session_state.cycle = data.get("cycle", 0)
-    # Forzar umbral mínimo 0.1
-    raw_umbral = data.get("umbral", 0.25)
-    st.session_state.umbral = max(0.1, float(raw_umbral))
-    st.session_state.rsi_os = data.get("rsi_os", 30)
-    st.session_state.rsi_ob = data.get("rsi_ob", 80)
-    st.session_state.ema_fast = data.get("ema_fast", 5)
-    st.session_state.ema_slow = data.get("ema_slow", 12)
-    st.session_state.stop_loss = float(data.get("stop_loss", 2.0))
-    st.session_state.take_profit = float(data.get("take_profit", 2.5))
-    st.session_state.trailing = float(data.get("trailing_stop", 1.0))
-    st.session_state.expert_score = data.get("expert_score", 30)
-    st.session_state.expert_comment = data.get("expert_comment", "")
-    st.session_state.is_premium = data.get("is_premium", False)
-    custom = data.get("custom_balance")
-    if custom is not None and st.session_state.is_premium:
-        st.session_state.balance = custom
-        st.session_state.custom_balance = custom
-    else:
-        st.session_state.custom_balance = None
-    ph = data.get("price_history", {"BTC": [], "ETH": []})
-    st.session_state.price_history = {k: deque(v, maxlen=200) for k, v in ph.items()}
-    # Cargar flags de SL (ya deben existir en la BD)
-    st.session_state.sl_triggered = data.get("sl_triggered", {"BTC": False, "ETH": False})
-    st.session_state.sl_low_price = data.get("sl_low_price", {"BTC": 0.0, "ETH": 0.0})
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 def init_new_user_state():
+    """Inicializa el estado por defecto (saldo $1,000, sin posiciones)."""
     st.session_state.balance = 1000.0
     st.session_state.positions = {"BTC": 0.0, "ETH": 0.0}
     st.session_state.trades = []
@@ -174,10 +74,46 @@ def init_new_user_state():
     st.session_state.trailing = 1.0
     st.session_state.expert_score = 30
     st.session_state.expert_comment = ""
-    st.session_state.is_premium = False
-    st.session_state.custom_balance = None
     st.session_state.sl_triggered = {"BTC": False, "ETH": False}
     st.session_state.sl_low_price = {"BTC": 0.0, "ETH": 0.0}
+
+def restore_from_file():
+    """Carga los datos desde data.json y restaura el estado."""
+    data = load_data()
+    if data is None:
+        init_new_user_state()
+        return
+    
+    trades = []
+    for ts, msg in data.get("trades", []):
+        trades.append((datetime.fromisoformat(ts), msg))
+    
+    st.session_state.balance = data.get("balance", 1000.0)
+    st.session_state.positions = data.get("positions", {"BTC": 0.0, "ETH": 0.0})
+    st.session_state.trades = trades
+    st.session_state.last_action = data.get("last_action", {"BTC": None, "ETH": None})
+    st.session_state.daily_trades = data.get("daily_trades", 0)
+    st.session_state.last_day = data.get("last_day", datetime.now().day)
+    st.session_state.ref_price = data.get("ref_price", {"BTC": 0.0, "ETH": 0.0})
+    st.session_state.last_price = data.get("last_price", {"BTC": 0.0, "ETH": 0.0})
+    st.session_state.entry_price = data.get("entry_price", {"BTC": 0.0, "ETH": 0.0})
+    st.session_state.highest_price = data.get("highest_price", {"BTC": 0.0, "ETH": 0.0})
+    st.session_state.cycle = data.get("cycle", 0)
+    st.session_state.umbral = data.get("umbral", 0.25)
+    st.session_state.rsi_os = data.get("rsi_os", 30)
+    st.session_state.rsi_ob = data.get("rsi_ob", 80)
+    st.session_state.ema_fast = data.get("ema_fast", 5)
+    st.session_state.ema_slow = data.get("ema_slow", 12)
+    st.session_state.stop_loss = data.get("stop_loss", 2.0)
+    st.session_state.take_profit = data.get("take_profit", 2.5)
+    st.session_state.trailing = data.get("trailing", 1.0)
+    st.session_state.expert_score = data.get("expert_score", 30)
+    st.session_state.expert_comment = data.get("expert_comment", "")
+    st.session_state.sl_triggered = data.get("sl_triggered", {"BTC": False, "ETH": False})
+    st.session_state.sl_low_price = data.get("sl_low_price", {"BTC": 0.0, "ETH": 0.0})
+    
+    ph = data.get("price_history", {"BTC": [], "ETH": []})
+    st.session_state.price_history = {k: deque(v, maxlen=200) for k, v in ph.items()}
 
 # ==================== TELEGRAM ====================
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
@@ -326,47 +262,18 @@ def confirmacion_vela(historial, senal_esperada):
         return curr < prev
     return True
 
-# ==================== LOGIN ====================
-if not st.session_state.authenticated:
-    st.title("🤖 Crypto Trading Bot")
-    tab1, tab2 = st.tabs(["Iniciar sesión", "Registrarse"])
-    with tab1:
-        email = st.text_input("Correo electrónico", key="login_email")
-        password = st.text_input("Contraseña", type="password", key="login_pass")
-        if st.button("Ingresar"):
-            ok, msg = sign_in(email, password)
-            if ok:
-                st.success(msg)
-                st.rerun()
-            else:
-                st.error(msg)
-    with tab2:
-        email = st.text_input("Correo electrónico", key="reg_email")
-        password = st.text_input("Contraseña", type="password", key="reg_pass")
-        if st.button("Registrarse"):
-            ok, msg = sign_up(email, password)
-            if ok:
-                st.success(msg)
-            else:
-                st.error(msg)
-    st.stop()
-
-# ==================== RESTAURAR DATOS ====================
-if not st.session_state.data_loaded:
-    with st.spinner("Cargando tu cartera y configuración..."):
-        if st.session_state.user_data is None:
-            init_new_user_state()
-        else:
-            restore_user_state()
-        st.session_state.data_loaded = True
-        # ==================== INTERFAZ PRINCIPAL ====================
-st.set_page_config(page_title="Bot de Trading Premium", layout="wide")
-st.title("📊 Bot de Trading con Estrategia Experta (RSI, EMA, Fear & Greed)")
+# ==================== INICIALIZAR ESTADO ====================
+if "data_loaded" not in st.session_state:
+    restore_from_file()
+    st.session_state.data_loaded = True
+    # ==================== INTERFAZ PRINCIPAL ====================
+st.set_page_config(page_title="Bot de Trading - Simulador", layout="wide")
+st.title("📊 Simulador de Trading (RSI, EMA, Fear & Greed)")
 
 # Sidebar
 st.sidebar.header("⚙️ Configuración General")
 valor_umbral = max(0.1, float(st.session_state.umbral))
-umbral_base = st.sidebar.number_input("Umbral base (%)", min_value=0.1, max_value=2.0, step=0.05, value=valor_umbral, help="Se ajusta por volatilidad")
+umbral_base = st.sidebar.number_input("Umbral base (%)", min_value=0.1, max_value=2.0, step=0.05, value=valor_umbral)
 rsi_os = st.sidebar.number_input("RSI sobreventa", min_value=20, max_value=40, value=int(st.session_state.rsi_os), step=1)
 rsi_ob = st.sidebar.number_input("RSI sobrecompra", min_value=70, max_value=90, value=int(st.session_state.rsi_ob), step=1)
 ema_fast = st.sidebar.number_input("EMA rápida (periodos)", min_value=3, max_value=20, value=int(st.session_state.ema_fast), step=1)
@@ -379,36 +286,24 @@ trailing = st.sidebar.number_input("Trailing Stop (%)", min_value=0.2, max_value
 
 st.sidebar.header("🧠 Análisis de Expertos")
 expert_score = st.sidebar.slider("Puntaje de tendencia (0=Muy Bajista, 100=Muy Alcista)", 0, 100, st.session_state.expert_score, 5)
-expert_comment = st.sidebar.text_area("Comentario / Estrategia", value=st.session_state.expert_comment, height=100, key="expert_comment_area")
+expert_comment = st.sidebar.text_area("Comentario / Estrategia", value=st.session_state.expert_comment, height=100)
 if st.sidebar.button("Actualizar Análisis Experto"):
     st.session_state.expert_score = expert_score
     st.session_state.expert_comment = expert_comment
-    save_user_data()
+    save_data()
     st.success("Análisis actualizado.")
-
-if st.session_state.user_data.get("is_premium", False):
-    st.sidebar.subheader("💰 Personalizar saldo")
-    nuevo_saldo = st.sidebar.number_input("Saldo inicial (MXN)", value=float(st.session_state.balance), step=100.0, format="%.2f")
-    if nuevo_saldo != st.session_state.balance:
-        st.session_state.balance = nuevo_saldo
-        supabase.table("user_data").update({"custom_balance": nuevo_saldo}).eq("user_id", st.session_state.user_id).execute()
-        st.sidebar.success("Saldo actualizado.")
-else:
-    st.sidebar.info("🔓 Para personalizar tu saldo, suscríbete al plan premium.")
 
 st.sidebar.subheader("💰 Cartera")
 saldo_placeholder = st.sidebar.empty()
 total_placeholder = st.sidebar.empty()
 ops_placeholder = st.sidebar.empty()
 
-if st.sidebar.button("Cerrar sesión"):
-    sign_out()
 if st.sidebar.button("Reiniciar simulación"):
     init_new_user_state()
-    save_user_data()
+    save_data()
     st.rerun()
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("🧪 Bot mejorado - activo")
+    send_telegram("🧪 Bot activo (sin Supabase)")
     st.success("Enviado")
 
 # Actualizar parámetros
@@ -444,7 +339,6 @@ while True:
         st.session_state.ref_price["BTC"] = btc
         st.session_state.ref_price["ETH"] = eth
 
-    # Umbrales dinámicos
     hist_btc = list(st.session_state.price_history["BTC"])
     hist_eth = list(st.session_state.price_history["ETH"])
     umbral_btc = umbral_dinamico(hist_btc, st.session_state.umbral)
@@ -504,7 +398,6 @@ while True:
             signal_auto = "HOLD"
             rsi_val = 50
 
-        # Votación con veto por experto
         if st.session_state.expert_score >= 80:
             senal = "BUY"
             razon_extra = "Experto Muy Alcista"
@@ -523,7 +416,6 @@ while True:
             if fng_value <= 20: buy_votes += 25
             elif fng_value >= 80: sell_votes += 25
 
-            # Veto más agresivo (cambia según tu preferencia)
             if st.session_state.expert_score < 40 and buy_votes > sell_votes:
                 senal = "HOLD"
                 razon_extra = "Vetado por experto bajista"
@@ -551,7 +443,6 @@ while True:
             st.session_state.highest_price[sym] = precio
             highest = precio
 
-        # Gestión de posición con rebote al SL
         if pos > 0 and entry > 0:
             ganancia = (precio - entry) / entry * 100
 
@@ -612,7 +503,7 @@ while True:
                            f"Razón: {razon_extra}")
                     send_telegram(msg)
                     st.session_state.trades.append((datetime.now(), msg))
-                    save_user_data()
+                    save_data()
                     st.session_state.last_action[sym] = accion
             elif accion == "SELL" and pos > 0:
                 qty = pos
@@ -629,11 +520,11 @@ while True:
                        f"Motivo: {razon}")
                 send_telegram(msg)
                 st.session_state.trades.append((datetime.now(), msg))
-                save_user_data()
+                save_data()
                 st.session_state.last_action[sym] = accion
                 st.session_state.sl_triggered[sym] = False
 
     if st.session_state.cycle % 10 == 0:
-        save_user_data()
+        save_data()
 
     time.sleep(30)
