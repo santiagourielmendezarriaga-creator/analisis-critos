@@ -483,29 +483,72 @@ while True:
         last_act = st.session_state.last_action.get(sym)
         if accion and accion != last_act and st.session_state.daily_trades < 12:
             if accion == "BUY":
-                amount = st.session_state.balance * 0.20
-                amount = max(200.0, min(1000.0, amount))
-                if amount > st.session_state.balance:
-                    amount = st.session_state.balance
-                if amount >= 200.0:
-                    com = amount * 0.001
-                    qty = (amount - com) / precio
-                    st.session_state.balance -= amount
-                    st.session_state.positions[sym] = qty
-                    st.session_state.entry_price[sym] = precio
-                    st.session_state.highest_price[sym] = precio
-                    st.session_state.daily_trades += 1
-                    msg = (f"🟢 COMPRA {sym}\n"
-                           f"Monto: ${amount:.0f}\n"
-                           f"Cantidad: {qty:.6f}\n"
-                           f"Precio: ${precio:,.0f}\n"
-                           f"Saldo: ${st.session_state.balance:.2f}\n"
-                           f"Razón: {razon_extra}")
-                    send_telegram(msg)
-                    st.session_state.trades.append((datetime.now(), msg))
-                    save_data()
-                    st.session_state.last_action[sym] = accion
+                # =========================================================
+                # NUEVA LÓGICA: 5 COMPRAS DE $100 MXN CADA UNA
+                # =========================================================
+                cantidad_compras = 5      # NÚMERO DE COMPRAS
+                monto_por_compra = 100.0  # MONTO POR COMPRA
+                monto_total = cantidad_compras * monto_por_compra
+                
+                # Verificar si hay suficiente saldo para al menos 1 compra
+                if st.session_state.balance >= monto_por_compra:
+                    compras_ejecutadas = 0
+                    
+                    # Si el saldo no alcanza para las 5 compras, ajustar automáticamente
+                    if st.session_state.balance < monto_total:
+                        cantidad_compras = int(st.session_state.balance // monto_por_compra)
+                        if cantidad_compras == 0:
+                            st.warning("Saldo insuficiente, necesitas al menos $100 MXN")
+                    
+                    # Bucle para ejecutar las compras una por una
+                    for i in range(cantidad_compras):
+                        if st.session_state.balance >= monto_por_compra:
+                            # Comisión simulada (0.1%)
+                            com = monto_por_compra * 0.001
+                            qty = (monto_por_compra - com) / precio
+                            
+                            # Restar saldo
+                            st.session_state.balance -= monto_por_compra
+                            
+                            # ACUMULAR posición (NO sobrescribir)
+                            st.session_state.positions[sym] += qty
+                            
+                            # Guardar precio de entrada SOLO si es la primera compra
+                            if st.session_state.entry_price[sym] == 0:
+                                st.session_state.entry_price[sym] = precio
+                            
+                            # Actualizar precio máximo para el trailing stop
+                            st.session_state.highest_price[sym] = precio
+                            
+                            # Aumentar contador de operaciones del día
+                            st.session_state.daily_trades += 1
+                            compras_ejecutadas += 1
+                            
+                            # Mensaje para Telegram e historial
+                            msg = (f"🟢 COMPRA {sym} #{i+1}\n"
+                                   f"Monto: ${monto_por_compra:.0f}\n"
+                                   f"Cantidad: {qty:.6f}\n"
+                                   f"Precio: ${precio:,.0f}\n"
+                                   f"Saldo restante: ${st.session_state.balance:.2f}")
+                            send_telegram(msg)
+                            st.session_state.trades.append((datetime.now(), msg))
+                        else:
+                            break
+                    
+                    # Guardar en el archivo local
+                    if compras_ejecutadas > 0:
+                        save_data()
+                        st.session_state.last_action[sym] = accion
+                        st.success(f"✅ {compras_ejecutadas} compras ejecutadas de {sym} por ${monto_por_compra:.0f} c/u")
+                    else:
+                        st.warning("Saldo insuficiente para la compra mínima de $100")
+                else:
+                    st.warning("Saldo insuficiente para la compra mínima de $100")
+            
             elif accion == "SELL" and pos > 0:
+                # =========================================================
+                # CÓDIGO DE VENTA (NO se modifica)
+                # =========================================================
                 qty = pos
                 gross = qty * precio
                 com = gross * 0.001
