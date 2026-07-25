@@ -109,6 +109,7 @@ def restore_from_file():
     st.session_state.expert_comment = data.get("expert_comment", "")
     st.session_state.sl_triggered = data.get("sl_triggered", {"BTC": False, "ETH": False})
     st.session_state.sl_low_price = data.get("sl_low_price", {"BTC": 0.0, "ETH": 0.0})
+    # Asegurar que partial_sell_done siempre exista
     st.session_state.partial_sell_done = data.get("partial_sell_done", {"BTC": False, "ETH": False})
     
     ph = data.get("price_history", {"BTC": [], "ETH": []})
@@ -265,9 +266,16 @@ def confirmacion_vela(historial, senal_esperada):
 if "data_loaded" not in st.session_state:
     restore_from_file()
     st.session_state.data_loaded = True
-    # ==================== INTERFAZ PRINCIPAL ====================
+
+# ==================== INTERFAZ PRINCIPAL ====================
 st.set_page_config(page_title="Bot de Trading - Simulador", layout="wide")
 st.title("📊 Simulador de Trading (RSI, EMA, Fear & Greed)")
+
+# =====================================================
+# ASEGURAR QUE partial_sell_done EXISTA EN EL ESTADO
+# =====================================================
+if "partial_sell_done" not in st.session_state:
+    st.session_state.partial_sell_done = {"BTC": False, "ETH": False}
 
 # Sidebar
 st.sidebar.header("⚙️ Configuración General")
