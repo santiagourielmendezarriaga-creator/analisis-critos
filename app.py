@@ -5,6 +5,7 @@ import json
 import os
 from datetime import datetime, timedelta
 from collections import deque
+import yfinance as yf  # NUEVA LIBRERÍA PARA TENDENCIA EXTERNA
 
 # ==================== ARCHIVO LOCAL PARA GUARDAR DATOS ====================
 DATA_FILE = "data.json"
@@ -75,6 +76,7 @@ def init_new_user_state():
     st.session_state.sl_triggered = {"BTC": False, "ETH": False}
     st.session_state.sl_low_price = {"BTC": 0.0, "ETH": 0.0}
     st.session_state.partial_sell_done = {"BTC": False, "ETH": False}
+    st.session_state.external_trend = {"BTC": "NEUTRAL", "ETH": "NEUTRAL"}  # NUEVO
 
 def restore_from_file():
     data = load_data()
@@ -109,8 +111,8 @@ def restore_from_file():
     st.session_state.expert_comment = data.get("expert_comment", "")
     st.session_state.sl_triggered = data.get("sl_triggered", {"BTC": False, "ETH": False})
     st.session_state.sl_low_price = data.get("sl_low_price", {"BTC": 0.0, "ETH": 0.0})
-    # Asegurar que partial_sell_done siempre exista
     st.session_state.partial_sell_done = data.get("partial_sell_done", {"BTC": False, "ETH": False})
+    st.session_state.external_trend = data.get("external_trend", {"BTC": "NEUTRAL", "ETH": "NEUTRAL"})
     
     ph = data.get("price_history", {"BTC": [], "ETH": []})
     st.session_state.price_history = {k: deque(v, maxlen=200) for k, v in ph.items()}
@@ -153,6 +155,48 @@ def get_fear_greed():
     except:
         pass
     return 50, "Neutral"
+
+# ==================== TENDENCIA EXTERNA (Base de datos web) ====================
+def get_external_trend(symbol, timeframe="1h", lookback=50):
+    """
+    Consulta la tendencia desde Yahoo Finance (base de datos externa).
+    Retorna "UP" si la tendencia es alcista, "DOWN" si es bajista.
+    """
+    try:
+        # Mapeo de símbolos: Bitso (BTC/MXN) -> Yahoo (BTC-USD)
+        if symbol == "BTC":
+            ticker = "BTC-USD"
+        elif symbol == "ETH":
+            ticker = "ETH-USD"
+        else:
+            return "NEUTRAL"
+        
+        # Descargar datos de las últimas 50 velas (por defecto 1h)
+        data = yf.download(ticker, period="2d", interval=timeframe, progress=False)
+        
+        if data.empty:
+            return "NEUTRAL"
+        
+        # Calcular EMA rápida (12) y EMA lenta (26)
+        ema_fast = data['Close'].ewm(span=12, adjust=False).mean().iloc[-1]
+        ema_slow = data['Close'].ewm(span=26, adjust=False).mean().iloc[-1]
+        current_price = data['Close'].iloc[-1]
+        
+        # Regla de tendencia
+        if current_price > ema_fast and ema_fast > ema_slow:
+            return "UP"
+        elif current_price < ema_fast and ema_fast < ema_slow:
+            return "DOWN"
+        else:
+            # Si están cruzadas, usamos la pendiente de la EMA rápida
+            prev_ema_fast = data['Close'].ewm(span=12, adjust=False).mean().iloc[-2]
+            if ema_fast > prev_ema_fast:
+                return "UP"
+            else:
+                return "DOWN"
+    except Exception as e:
+        print(f"Error obteniendo tendencia externa: {e}")
+        return "NEUTRAL"
 
 # ==================== INDICADORES Y ATR ====================
 def compute_ema(prices, period):
@@ -266,16 +310,17 @@ def confirmacion_vela(historial, senal_esperada):
 if "data_loaded" not in st.session_state:
     restore_from_file()
     st.session_state.data_loaded = True
-
-# ==================== INTERFAZ PRINCIPAL ====================
+    # ==================== INTERFAZ PRINCIPAL ====================
 st.set_page_config(page_title="Bot de Trading - Simulador", layout="wide")
 st.title("📊 Simulador de Trading (RSI, EMA, Fear & Greed)")
 
 # =====================================================
-# ASEGURAR QUE partial_sell_done EXISTA EN EL ESTADO
+# ASEGURAR QUE TODAS LAS CLAVES EXISTAN EN EL ESTADO
 # =====================================================
 if "partial_sell_done" not in st.session_state:
     st.session_state.partial_sell_done = {"BTC": False, "ETH": False}
+if "external_trend" not in st.session_state:
+    st.session_state.external_trend = {"BTC": "NEUTRAL", "ETH": "NEUTRAL"}
 
 # Sidebar
 st.sidebar.header("⚙️ Configuración General")
@@ -356,6 +401,15 @@ while True:
     var_btc = (btc - st.session_state.ref_price["BTC"]) / st.session_state.ref_price["BTC"] * 100
     var_eth = (eth - st.session_state.ref_price["ETH"]) / st.session_state.ref_price["ETH"] * 100
 
+    # =============================================================
+    # ACTUALIZAR TENDENCIA EXTERNA (cada 10 ciclos)
+    # =============================================================
+    if st.session_state.cycle % 10 == 0:
+        st.session_state.external_trend["BTC"] = get_external_trend("BTC", "1h")
+        st.session_state.external_trend["ETH"] = get_external_trend("ETH", "1h")
+        # Mostrar en la interfaz la tendencia actual
+        st.caption(f"Tendencia externa: BTC={st.session_state.external_trend['BTC']} | ETH={st.session_state.external_trend['ETH']}")
+
     tabla_placeholder.subheader("📊 Señales en Vivo")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
@@ -405,6 +459,9 @@ while True:
             signal_auto = "HOLD"
             rsi_val = 50
 
+        # =====================================================
+        # VOTACIÓN DE SEÑALES (Experto + Indicadores)
+        # =====================================================
         if st.session_state.expert_score >= 80:
             senal = "BUY"
             razon_extra = "Experto Muy Alcista"
@@ -439,6 +496,22 @@ while True:
                 else:
                     senal = "HOLD"
                     razon_extra = "Empate"
+
+        # =====================================================
+        # FILTRO DE TENDENCIA EXTERNA (NUEVO)
+        # =====================================================
+        # Obtener tendencia externa para esta moneda
+        external_trend = st.session_state.external_trend.get(sym, "NEUTRAL")
+        
+        # Aplicar veto solo a señales estratégicas (NO afecta TP/SL/Trailing)
+        if external_trend == "UP":
+            if senal == "SELL" and st.session_state.positions.get(sym, 0) == 0:
+                senal = "HOLD"
+                razon_extra = f"Vetado por tendencia ALCISTA externa"
+        elif external_trend == "DOWN":
+            if senal == "BUY":
+                senal = "HOLD"
+                razon_extra = f"Vetado por tendencia BAJISTA externa"
 
         pos = st.session_state.positions.get(sym, 0)
         entry = st.session_state.entry_price.get(sym, 0)
