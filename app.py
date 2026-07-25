@@ -5,7 +5,7 @@ import json
 import os
 from datetime import datetime, timedelta
 from collections import deque
-import yfinance as yf  # NUEVA LIBRERÍA PARA TENDENCIA EXTERNA
+import yfinance as yf
 
 # ==================== ARCHIVO LOCAL PARA GUARDAR DATOS ====================
 DATA_FILE = "data.json"
@@ -45,7 +45,7 @@ def save_data():
         "expert_comment": st.session_state.expert_comment,
         "sl_triggered": st.session_state.sl_triggered,
         "sl_low_price": st.session_state.sl_low_price,
-        "partial_sell_done": st.session_state.partial_sell_done
+        "external_trend": st.session_state.external_trend
     }
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -75,8 +75,7 @@ def init_new_user_state():
     st.session_state.expert_comment = ""
     st.session_state.sl_triggered = {"BTC": False, "ETH": False}
     st.session_state.sl_low_price = {"BTC": 0.0, "ETH": 0.0}
-    st.session_state.partial_sell_done = {"BTC": False, "ETH": False}
-    st.session_state.external_trend = {"BTC": "NEUTRAL", "ETH": "NEUTRAL"}  # NUEVO
+    st.session_state.external_trend = {"BTC": "NEUTRAL", "ETH": "NEUTRAL"}
 
 def restore_from_file():
     data = load_data()
@@ -111,7 +110,6 @@ def restore_from_file():
     st.session_state.expert_comment = data.get("expert_comment", "")
     st.session_state.sl_triggered = data.get("sl_triggered", {"BTC": False, "ETH": False})
     st.session_state.sl_low_price = data.get("sl_low_price", {"BTC": 0.0, "ETH": 0.0})
-    st.session_state.partial_sell_done = data.get("partial_sell_done", {"BTC": False, "ETH": False})
     st.session_state.external_trend = data.get("external_trend", {"BTC": "NEUTRAL", "ETH": "NEUTRAL"})
     
     ph = data.get("price_history", {"BTC": [], "ETH": []})
@@ -158,12 +156,7 @@ def get_fear_greed():
 
 # ==================== TENDENCIA EXTERNA (Base de datos web) ====================
 def get_external_trend(symbol, timeframe="1h", lookback=50):
-    """
-    Consulta la tendencia desde Yahoo Finance (base de datos externa).
-    Retorna "UP" si la tendencia es alcista, "DOWN" si es bajista.
-    """
     try:
-        # Mapeo de símbolos: Bitso (BTC/MXN) -> Yahoo (BTC-USD)
         if symbol == "BTC":
             ticker = "BTC-USD"
         elif symbol == "ETH":
@@ -171,24 +164,19 @@ def get_external_trend(symbol, timeframe="1h", lookback=50):
         else:
             return "NEUTRAL"
         
-        # Descargar datos de las últimas 50 velas (por defecto 1h)
         data = yf.download(ticker, period="2d", interval=timeframe, progress=False)
-        
         if data.empty:
             return "NEUTRAL"
         
-        # Calcular EMA rápida (12) y EMA lenta (26)
         ema_fast = data['Close'].ewm(span=12, adjust=False).mean().iloc[-1]
         ema_slow = data['Close'].ewm(span=26, adjust=False).mean().iloc[-1]
         current_price = data['Close'].iloc[-1]
         
-        # Regla de tendencia
         if current_price > ema_fast and ema_fast > ema_slow:
             return "UP"
         elif current_price < ema_fast and ema_fast < ema_slow:
             return "DOWN"
         else:
-            # Si están cruzadas, usamos la pendiente de la EMA rápida
             prev_ema_fast = data['Close'].ewm(span=12, adjust=False).mean().iloc[-2]
             if ema_fast > prev_ema_fast:
                 return "UP"
@@ -314,11 +302,7 @@ if "data_loaded" not in st.session_state:
 st.set_page_config(page_title="Bot de Trading - Simulador", layout="wide")
 st.title("📊 Simulador de Trading (RSI, EMA, Fear & Greed)")
 
-# =====================================================
-# ASEGURAR QUE TODAS LAS CLAVES EXISTAN EN EL ESTADO
-# =====================================================
-if "partial_sell_done" not in st.session_state:
-    st.session_state.partial_sell_done = {"BTC": False, "ETH": False}
+# Asegurar que external_trend exista
 if "external_trend" not in st.session_state:
     st.session_state.external_trend = {"BTC": "NEUTRAL", "ETH": "NEUTRAL"}
 
@@ -355,7 +339,7 @@ if st.sidebar.button("Reiniciar simulación"):
     save_data()
     st.rerun()
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("🧪 Bot activo (sin Supabase)")
+    send_telegram("🧪 Bot activo - Venta total al 0.01%")
     st.success("Enviado")
 
 # Actualizar parámetros
@@ -401,13 +385,10 @@ while True:
     var_btc = (btc - st.session_state.ref_price["BTC"]) / st.session_state.ref_price["BTC"] * 100
     var_eth = (eth - st.session_state.ref_price["ETH"]) / st.session_state.ref_price["ETH"] * 100
 
-    # =============================================================
-    # ACTUALIZAR TENDENCIA EXTERNA (cada 10 ciclos)
-    # =============================================================
+    # Actualizar tendencia externa cada 10 ciclos
     if st.session_state.cycle % 10 == 0:
         st.session_state.external_trend["BTC"] = get_external_trend("BTC", "1h")
         st.session_state.external_trend["ETH"] = get_external_trend("ETH", "1h")
-        # Mostrar en la interfaz la tendencia actual
         st.caption(f"Tendencia externa: BTC={st.session_state.external_trend['BTC']} | ETH={st.session_state.external_trend['ETH']}")
 
     tabla_placeholder.subheader("📊 Señales en Vivo")
@@ -459,9 +440,7 @@ while True:
             signal_auto = "HOLD"
             rsi_val = 50
 
-        # =====================================================
-        # VOTACIÓN DE SEÑALES (Experto + Indicadores)
-        # =====================================================
+        # Votación de señales
         if st.session_state.expert_score >= 80:
             senal = "BUY"
             razon_extra = "Experto Muy Alcista"
@@ -497,13 +476,8 @@ while True:
                     senal = "HOLD"
                     razon_extra = "Empate"
 
-        # =====================================================
-        # FILTRO DE TENDENCIA EXTERNA (NUEVO)
-        # =====================================================
-        # Obtener tendencia externa para esta moneda
+        # Filtro de tendencia externa
         external_trend = st.session_state.external_trend.get(sym, "NEUTRAL")
-        
-        # Aplicar veto solo a señales estratégicas (NO afecta TP/SL/Trailing)
         if external_trend == "UP":
             if senal == "SELL" and st.session_state.positions.get(sym, 0) == 0:
                 senal = "HOLD"
@@ -524,57 +498,37 @@ while True:
             highest = precio
 
         # =============================================================
-        # GESTIÓN DE POSICIÓN ABIERTA (CON VENTA PARCIAL AL 0.02%)
+        # GESTIÓN DE POSICIÓN ABIERTA (VENTA TOTAL AL 0.01%)
         # =============================================================
         if pos > 0 and entry > 0:
             ganancia = (precio - entry) / entry * 100
 
-            # VENTA PARCIAL AL 0.02% (solo una vez)
-            if not st.session_state.partial_sell_done.get(sym, False):
-                if ganancia >= 0.02:
-                    qty_a_vender = pos * 0.5
-                    gross = qty_a_vender * precio
-                    com = gross * 0.001
-                    net = gross - com
-                    st.session_state.balance += net
-                    st.session_state.positions[sym] -= qty_a_vender
-                    st.session_state.partial_sell_done[sym] = True
-                    st.session_state.daily_trades += 1
-                    msg = (f"🔸 VENTA PARCIAL {sym} (50%)\n"
-                           f"Cantidad: {qty_a_vender:.6f}\n"
-                           f"Precio: ${precio:,.0f}\n"
-                           f"Neto: ${net:.2f}\n"
-                           f"Razón: 0.02% de ganancia")
-                    send_telegram(msg)
-                    st.session_state.trades.append((datetime.now(), msg))
-                    save_data()
-
-            # REGLAS NORMALES (solo si queda posición)
-            if st.session_state.positions[sym] > 0:
-                if ganancia >= st.session_state.take_profit:
-                    accion = "SELL"
-                    razon = f"Take Profit ({st.session_state.take_profit}%)"
-                    st.session_state.sl_triggered[sym] = False
+            # VENTA TOTAL AL 0.01%
+            if ganancia >= 0.01:
+                accion = "SELL"
+                razon = "Take Profit (0.01%)"
+                st.session_state.sl_triggered[sym] = False
+            else:
+                # Stop Loss y Trailing Stop
+                if st.session_state.sl_triggered.get(sym, False):
+                    low = st.session_state.sl_low_price.get(sym, precio)
+                    rebound_pct = 0.5
+                    if precio >= low * (1 + rebound_pct/100):
+                        accion = "SELL"
+                        razon = f"Rebote SL (+{rebound_pct}% desde ${low:,.0f})"
+                        st.session_state.sl_triggered[sym] = False
                 else:
-                    if st.session_state.sl_triggered.get(sym, False):
-                        low = st.session_state.sl_low_price.get(sym, precio)
-                        rebound_pct = 0.5
-                        if precio >= low * (1 + rebound_pct/100):
-                            accion = "SELL"
-                            razon = f"Rebote SL (+{rebound_pct}% desde ${low:,.0f})"
-                            st.session_state.sl_triggered[sym] = False
+                    if ganancia <= -st.session_state.stop_loss:
+                        st.session_state.sl_triggered[sym] = True
+                        st.session_state.sl_low_price[sym] = precio
+                        send_telegram(f"⚠️ {sym} tocó SL ({st.session_state.stop_loss}%) - esperando rebote 0.5%")
                     else:
-                        if ganancia <= -st.session_state.stop_loss:
-                            st.session_state.sl_triggered[sym] = True
-                            st.session_state.sl_low_price[sym] = precio
-                            send_telegram(f"⚠️ {sym} tocó SL ({st.session_state.stop_loss}%) - esperando rebote 0.5%")
-                        else:
-                            if highest > entry:
-                                caida = (precio - highest) / highest * 100
-                                if caida <= -st.session_state.trailing:
-                                    accion = "SELL"
-                                    razon = f"Trailing Stop ({st.session_state.trailing}%)"
-                                    st.session_state.sl_triggered[sym] = False
+                        if highest > entry:
+                            caida = (precio - highest) / highest * 100
+                            if caida <= -st.session_state.trailing:
+                                accion = "SELL"
+                                razon = f"Trailing Stop ({st.session_state.trailing}%)"
+                                st.session_state.sl_triggered[sym] = False
 
         if accion is None:
             if senal == "BUY" and pos == 0:
@@ -588,9 +542,6 @@ while True:
         last_act = st.session_state.last_action.get(sym)
         if accion and accion != last_act and st.session_state.daily_trades < 12:
             if accion == "BUY":
-                # =============================================================
-                # 5 COMPRAS DE $100 MXN
-                # =============================================================
                 cantidad_compras = 5
                 monto_por_compra = 100.0
                 
@@ -639,7 +590,6 @@ while True:
                 st.session_state.balance += net
                 st.session_state.positions[sym] = 0
                 st.session_state.daily_trades += 1
-                st.session_state.partial_sell_done[sym] = False
                 st.session_state.entry_price[sym] = 0
                 msg = (f"🔴 VENTA {sym}\n"
                        f"Cantidad: {qty:.6f}\n"
