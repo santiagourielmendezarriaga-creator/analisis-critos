@@ -293,11 +293,6 @@ def confirmacion_vela(historial, senal_esperada):
     elif senal_esperada == "SELL":
         return curr < prev
     return True
-
-# ==================== INICIALIZAR ESTADO ====================
-if "data_loaded" not in st.session_state:
-    restore_from_file()
-    st.session_state.data_loaded = True
     # ==================== INTERFAZ PRINCIPAL ====================
 st.set_page_config(page_title="Bot de Trading - Simulador", layout="wide")
 st.title("📊 Simulador de Trading (RSI, EMA, Fear & Greed)")
@@ -498,15 +493,15 @@ while True:
             highest = precio
 
         # =============================================================
-        # GESTIÓN DE POSICIÓN ABIERTA (VENTA TOTAL AL 0.01%)
+        # GESTIÓN DE POSICIÓN ABIERTA (VENTA TOTAL AL 0.02%)
         # =============================================================
         if pos > 0 and entry > 0:
             ganancia = (precio - entry) / entry * 100
 
-            # VENTA TOTAL AL 0.01%
-            if ganancia >= 0.01:
+            # VENTA TOTAL AL 0.02% (Take Profit)
+            if ganancia >= 0.02:
                 accion = "SELL"
-                razon = "Take Profit (0.01%)"
+                razon = "Take Profit (0.02%)"
                 st.session_state.sl_triggered[sym] = False
             else:
                 # Stop Loss y Trailing Stop
@@ -546,7 +541,10 @@ while True:
         # =============================================================
         if accion and accion != last_act:
             if accion == "BUY":
-                cantidad_compras = 5
+                # =============================================================
+                # 3 COMPRAS DE $100 MXN (reducido de 5 a 3)
+                # =============================================================
+                cantidad_compras = 3
                 monto_por_compra = 100.0
                 
                 if st.session_state.balance >= monto_por_compra:
@@ -610,3 +608,8 @@ while True:
         save_data()
 
     time.sleep(30)
+
+# ==================== INICIALIZAR ESTADO ====================
+if "data_loaded" not in st.session_state:
+    restore_from_file()
+    st.session_state.data_loaded = True
