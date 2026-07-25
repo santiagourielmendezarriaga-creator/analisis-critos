@@ -293,6 +293,11 @@ def confirmacion_vela(historial, senal_esperada):
     elif senal_esperada == "SELL":
         return curr < prev
     return True
+
+# ==================== INICIALIZAR ESTADO ====================
+if "data_loaded" not in st.session_state:
+    restore_from_file()
+    st.session_state.data_loaded = True
     # ==================== INTERFAZ PRINCIPAL ====================
 st.set_page_config(page_title="Bot de Trading - Simulador", layout="wide")
 st.title("📊 Simulador de Trading (RSI, EMA, Fear & Greed)")
@@ -334,7 +339,7 @@ if st.sidebar.button("Reiniciar simulación"):
     save_data()
     st.rerun()
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("🧪 Bot activo - Sin límite diario")
+    send_telegram("🧪 Bot activo - Take Profit 0.03%")
     st.success("Enviado")
 
 # Actualizar parámetros
@@ -493,15 +498,15 @@ while True:
             highest = precio
 
         # =============================================================
-        # GESTIÓN DE POSICIÓN ABIERTA (VENTA TOTAL AL 0.02%)
+        # GESTIÓN DE POSICIÓN ABIERTA (VENTA TOTAL AL 0.03%)
         # =============================================================
         if pos > 0 and entry > 0:
             ganancia = (precio - entry) / entry * 100
 
-            # VENTA TOTAL AL 0.02% (Take Profit)
-            if ganancia >= 0.02:
+            # ===== VENTA TOTAL AL 0.03% (Take Profit) =====
+            if ganancia >= 0.03:
                 accion = "SELL"
-                razon = "Take Profit (0.02%)"
+                razon = "Take Profit (0.03%)"
                 st.session_state.sl_triggered[sym] = False
             else:
                 # Stop Loss y Trailing Stop
@@ -542,7 +547,7 @@ while True:
         if accion and accion != last_act:
             if accion == "BUY":
                 # =============================================================
-                # 3 COMPRAS DE $100 MXN (reducido de 5 a 3)
+                # 3 COMPRAS DE $100 MXN
                 # =============================================================
                 cantidad_compras = 3
                 monto_por_compra = 100.0
@@ -608,8 +613,3 @@ while True:
         save_data()
 
     time.sleep(30)
-
-# ==================== INICIALIZAR ESTADO ====================
-if "data_loaded" not in st.session_state:
-    restore_from_file()
-    st.session_state.data_loaded = True
