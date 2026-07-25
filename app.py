@@ -339,7 +339,7 @@ if st.sidebar.button("Reiniciar simulación"):
     save_data()
     st.rerun()
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("🧪 Bot activo - Take Profit 0.03%")
+    send_telegram("🧪 Bot activo - TP desde interfaz")
     st.success("Enviado")
 
 # Actualizar parámetros
@@ -498,15 +498,15 @@ while True:
             highest = precio
 
         # =============================================================
-        # GESTIÓN DE POSICIÓN ABIERTA (VENTA TOTAL AL 0.03%)
+        # GESTIÓN DE POSICIÓN ABIERTA (USA EL TAKE PROFIT DE LA INTERFAZ)
         # =============================================================
         if pos > 0 and entry > 0:
             ganancia = (precio - entry) / entry * 100
 
-            # ===== VENTA TOTAL AL 0.03% (Take Profit) =====
-            if ganancia >= 0.03:
+            # ===== VENTA TOTAL USANDO EL TAKE PROFIT DE LA INTERFAZ =====
+            if ganancia >= st.session_state.take_profit:
                 accion = "SELL"
-                razon = "Take Profit (0.03%)"
+                razon = f"Take Profit ({st.session_state.take_profit}%)"
                 st.session_state.sl_triggered[sym] = False
             else:
                 # Stop Loss y Trailing Stop
