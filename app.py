@@ -10,7 +10,6 @@ from collections import deque
 DATA_FILE = "data.json"
 
 def load_data():
-    """Carga los datos desde data.json. Si no existe, crea valores por defecto."""
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -20,7 +19,6 @@ def load_data():
     return None
 
 def save_data():
-    """Guarda todo el estado de la sesión en data.json."""
     data = {
         "balance": st.session_state.balance,
         "positions": st.session_state.positions,
@@ -45,13 +43,13 @@ def save_data():
         "expert_score": st.session_state.expert_score,
         "expert_comment": st.session_state.expert_comment,
         "sl_triggered": st.session_state.sl_triggered,
-        "sl_low_price": st.session_state.sl_low_price
+        "sl_low_price": st.session_state.sl_low_price,
+        "partial_sell_done": st.session_state.partial_sell_done
     }
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def init_new_user_state():
-    """Inicializa el estado por defecto (saldo $1,000, sin posiciones)."""
     st.session_state.balance = 1000.0
     st.session_state.positions = {"BTC": 0.0, "ETH": 0.0}
     st.session_state.trades = []
@@ -76,9 +74,9 @@ def init_new_user_state():
     st.session_state.expert_comment = ""
     st.session_state.sl_triggered = {"BTC": False, "ETH": False}
     st.session_state.sl_low_price = {"BTC": 0.0, "ETH": 0.0}
+    st.session_state.partial_sell_done = {"BTC": False, "ETH": False}
 
 def restore_from_file():
-    """Carga los datos desde data.json y restaura el estado."""
     data = load_data()
     if data is None:
         init_new_user_state()
@@ -111,6 +109,7 @@ def restore_from_file():
     st.session_state.expert_comment = data.get("expert_comment", "")
     st.session_state.sl_triggered = data.get("sl_triggered", {"BTC": False, "ETH": False})
     st.session_state.sl_low_price = data.get("sl_low_price", {"BTC": 0.0, "ETH": 0.0})
+    st.session_state.partial_sell_done = data.get("partial_sell_done", {"BTC": False, "ETH": False})
     
     ph = data.get("price_history", {"BTC": [], "ETH": []})
     st.session_state.price_history = {k: deque(v, maxlen=200) for k, v in ph.items()}
@@ -443,33 +442,58 @@ while True:
             st.session_state.highest_price[sym] = precio
             highest = precio
 
+        # =============================================================
+        # GESTIÓN DE POSICIÓN ABIERTA (CON VENTA PARCIAL AL 0.02%)
+        # =============================================================
         if pos > 0 and entry > 0:
             ganancia = (precio - entry) / entry * 100
 
-            if ganancia >= st.session_state.take_profit:
-                accion = "SELL"
-                razon = f"Take Profit ({st.session_state.take_profit}%)"
-                st.session_state.sl_triggered[sym] = False
-            else:
-                if st.session_state.sl_triggered.get(sym, False):
-                    low = st.session_state.sl_low_price.get(sym, precio)
-                    rebound_pct = 0.5
-                    if precio >= low * (1 + rebound_pct/100):
-                        accion = "SELL"
-                        razon = f"Rebote SL (+{rebound_pct}% desde ${low:,.0f})"
-                        st.session_state.sl_triggered[sym] = False
+            # VENTA PARCIAL AL 0.02% (solo una vez)
+            if not st.session_state.partial_sell_done.get(sym, False):
+                if ganancia >= 0.02:
+                    qty_a_vender = pos * 0.5
+                    gross = qty_a_vender * precio
+                    com = gross * 0.001
+                    net = gross - com
+                    st.session_state.balance += net
+                    st.session_state.positions[sym] -= qty_a_vender
+                    st.session_state.partial_sell_done[sym] = True
+                    st.session_state.daily_trades += 1
+                    msg = (f"🔸 VENTA PARCIAL {sym} (50%)\n"
+                           f"Cantidad: {qty_a_vender:.6f}\n"
+                           f"Precio: ${precio:,.0f}\n"
+                           f"Neto: ${net:.2f}\n"
+                           f"Razón: 0.02% de ganancia")
+                    send_telegram(msg)
+                    st.session_state.trades.append((datetime.now(), msg))
+                    save_data()
+
+            # REGLAS NORMALES (solo si queda posición)
+            if st.session_state.positions[sym] > 0:
+                if ganancia >= st.session_state.take_profit:
+                    accion = "SELL"
+                    razon = f"Take Profit ({st.session_state.take_profit}%)"
+                    st.session_state.sl_triggered[sym] = False
                 else:
-                    if ganancia <= -st.session_state.stop_loss:
-                        st.session_state.sl_triggered[sym] = True
-                        st.session_state.sl_low_price[sym] = precio
-                        send_telegram(f"⚠️ {sym} tocó SL ({st.session_state.stop_loss}%) - esperando rebote 0.5%")
+                    if st.session_state.sl_triggered.get(sym, False):
+                        low = st.session_state.sl_low_price.get(sym, precio)
+                        rebound_pct = 0.5
+                        if precio >= low * (1 + rebound_pct/100):
+                            accion = "SELL"
+                            razon = f"Rebote SL (+{rebound_pct}% desde ${low:,.0f})"
+                            st.session_state.sl_triggered[sym] = False
                     else:
-                        if highest > entry:
-                            caida = (precio - highest) / highest * 100
-                            if caida <= -st.session_state.trailing:
-                                accion = "SELL"
-                                razon = f"Trailing Stop ({st.session_state.trailing}%)"
-                                st.session_state.sl_triggered[sym] = False
+                        if ganancia <= -st.session_state.stop_loss:
+                            st.session_state.sl_triggered[sym] = True
+                            st.session_state.sl_low_price[sym] = precio
+                            send_telegram(f"⚠️ {sym} tocó SL ({st.session_state.stop_loss}%) - esperando rebote 0.5%")
+                        else:
+                            if highest > entry:
+                                caida = (precio - highest) / highest * 100
+                                if caida <= -st.session_state.trailing:
+                                    accion = "SELL"
+                                    razon = f"Trailing Stop ({st.session_state.trailing}%)"
+                                    st.session_state.sl_triggered[sym] = False
 
         if accion is None:
             if senal == "BUY" and pos == 0:
@@ -483,48 +507,30 @@ while True:
         last_act = st.session_state.last_action.get(sym)
         if accion and accion != last_act and st.session_state.daily_trades < 12:
             if accion == "BUY":
-                # =========================================================
-                # NUEVA LÓGICA: 5 COMPRAS DE $100 MXN CADA UNA
-                # =========================================================
-                cantidad_compras = 5      # NÚMERO DE COMPRAS
-                monto_por_compra = 100.0  # MONTO POR COMPRA
-                monto_total = cantidad_compras * monto_por_compra
+                # =============================================================
+                # 5 COMPRAS DE $100 MXN
+                # =============================================================
+                cantidad_compras = 5
+                monto_por_compra = 100.0
                 
-                # Verificar si hay suficiente saldo para al menos 1 compra
                 if st.session_state.balance >= monto_por_compra:
                     compras_ejecutadas = 0
-                    
-                    # Si el saldo no alcanza para las 5 compras, ajustar automáticamente
-                    if st.session_state.balance < monto_total:
+                    if st.session_state.balance < cantidad_compras * monto_por_compra:
                         cantidad_compras = int(st.session_state.balance // monto_por_compra)
                         if cantidad_compras == 0:
-                            st.warning("Saldo insuficiente, necesitas al menos $100 MXN")
+                            st.warning("Saldo insuficiente para $100 MXN")
                     
-                    # Bucle para ejecutar las compras una por una
                     for i in range(cantidad_compras):
                         if st.session_state.balance >= monto_por_compra:
-                            # Comisión simulada (0.1%)
                             com = monto_por_compra * 0.001
                             qty = (monto_por_compra - com) / precio
-                            
-                            # Restar saldo
                             st.session_state.balance -= monto_por_compra
-                            
-                            # ACUMULAR posición (NO sobrescribir)
                             st.session_state.positions[sym] += qty
-                            
-                            # Guardar precio de entrada SOLO si es la primera compra
                             if st.session_state.entry_price[sym] == 0:
                                 st.session_state.entry_price[sym] = precio
-                            
-                            # Actualizar precio máximo para el trailing stop
                             st.session_state.highest_price[sym] = precio
-                            
-                            # Aumentar contador de operaciones del día
                             st.session_state.daily_trades += 1
                             compras_ejecutadas += 1
-                            
-                            # Mensaje para Telegram e historial
                             msg = (f"🟢 COMPRA {sym} #{i+1}\n"
                                    f"Monto: ${monto_por_compra:.0f}\n"
                                    f"Cantidad: {qty:.6f}\n"
@@ -535,20 +541,16 @@ while True:
                         else:
                             break
                     
-                    # Guardar en el archivo local
                     if compras_ejecutadas > 0:
                         save_data()
                         st.session_state.last_action[sym] = accion
-                        st.success(f"✅ {compras_ejecutadas} compras ejecutadas de {sym} por ${monto_por_compra:.0f} c/u")
+                        st.success(f"✅ {compras_ejecutadas} compras de {sym} por ${monto_por_compra:.0f} c/u")
                     else:
-                        st.warning("Saldo insuficiente para la compra mínima de $100")
+                        st.warning("Saldo insuficiente")
                 else:
                     st.warning("Saldo insuficiente para la compra mínima de $100")
-            
+
             elif accion == "SELL" and pos > 0:
-                # =========================================================
-                # CÓDIGO DE VENTA (NO se modifica)
-                # =========================================================
                 qty = pos
                 gross = qty * precio
                 com = gross * 0.001
@@ -556,6 +558,8 @@ while True:
                 st.session_state.balance += net
                 st.session_state.positions[sym] = 0
                 st.session_state.daily_trades += 1
+                st.session_state.partial_sell_done[sym] = False
+                st.session_state.entry_price[sym] = 0
                 msg = (f"🔴 VENTA {sym}\n"
                        f"Cantidad: {qty:.6f}\n"
                        f"Precio: ${precio:,.0f}\n"
