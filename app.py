@@ -339,7 +339,7 @@ if st.sidebar.button("Reiniciar simulación"):
     save_data()
     st.rerun()
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("🧪 Bot activo - Venta total al 0.01%")
+    send_telegram("🧪 Bot activo - Sin límite diario")
     st.success("Enviado")
 
 # Actualizar parámetros
@@ -540,7 +540,11 @@ while True:
                     razon = razon_extra
 
         last_act = st.session_state.last_action.get(sym)
-        if accion and accion != last_act and st.session_state.daily_trades < 12:
+        
+        # =============================================================
+        # SIN LÍMITE DIARIO (eliminado st.session_state.daily_trades < 12)
+        # =============================================================
+        if accion and accion != last_act:
             if accion == "BUY":
                 cantidad_compras = 5
                 monto_por_compra = 100.0
