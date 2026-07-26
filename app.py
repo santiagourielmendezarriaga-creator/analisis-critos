@@ -254,11 +254,19 @@ st.title("⚡ Bot de Trading - Scalping Extremo (Compra/Venta al 0.02%)")
 
 # Sidebar - Parámetros principales
 st.sidebar.header("⚙️ Configuración Principal")
-umbral_caida = st.sidebar.number_input("Caída para comprar (%)", min_value=0.01, max_value=1.0, value=float(st.session_state.umbral_caida), step=0.01)
-take_profit = st.sidebar.number_input("Take Profit sin indicadores (%)", min_value=0.01, max_value=1.0, value=float(st.session_state.take_profit), step=0.01)
+
+# Ajustar el valor para que no supere el máximo
+valor_umbral = min(50.0, float(st.session_state.umbral_caida))
+umbral_caida = st.sidebar.number_input("Caída para comprar (%)", min_value=0.01, max_value=50.0, step=0.01, value=valor_umbral)
+
+valor_tp = min(50.0, float(st.session_state.take_profit))
+take_profit = st.sidebar.number_input("Take Profit sin indicadores (%)", min_value=0.01, max_value=50.0, step=0.01, value=valor_tp)
+
 stop_loss = st.sidebar.number_input("Stop Loss (%)", min_value=0.5, max_value=20.0, value=float(st.session_state.stop_loss), step=0.5)
 trailing = st.sidebar.number_input("Trailing Stop (%)", min_value=0.2, max_value=5.0, value=float(st.session_state.trailing), step=0.1)
-umbral_indicadores = st.sidebar.number_input("Activar indicadores a partir de (%)", min_value=1.0, max_value=100.0, value=float(st.session_state.umbral_indicadores), step=0.5)
+
+valor_umbral_ind = min(100.0, float(st.session_state.umbral_indicadores))
+umbral_indicadores = st.sidebar.number_input("Activar indicadores a partir de (%)", min_value=1.0, max_value=100.0, value=valor_umbral_ind, step=0.5)
 
 # Sidebar - Parámetros de indicadores (no se usarán)
 st.sidebar.header("🧠 Indicadores (no se activan con TP tan bajo)")
