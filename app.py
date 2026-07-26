@@ -158,7 +158,7 @@ def get_fear_greed():
         pass
     return 50, "Neutral"
 
-# ==================== INDICADORES (se activan solo si ganancia > 11%) ====================
+# ==================== INDICADORES ====================
 def compute_ema(prices, period):
     if len(prices) < period:
         return None
@@ -206,7 +206,6 @@ def get_enhanced_signal(prices, rsi_os, rsi_ob, ema_fast, ema_slow, fng_value, e
     else:
         signal_rsi = "HOLD"
     
-    # Votación ponderada
     buy_votes = 0
     sell_votes = 0
     if signal_change == "BUY": buy_votes += 35
@@ -243,7 +242,14 @@ if "data_loaded" not in st.session_state:
     restore_from_file()
     st.session_state.data_loaded = True
     # ==================== INTERFAZ PRINCIPAL ====================
-st.set_page_config(page_title="Bot de Trading - Híbrido (Precio + Indicadores)", layout="wide")
+st.set_page_config(page_title="Bot de Trading - Híbrido", layout="wide")
+
+# =====================================================
+# FORZAR INICIALIZACIÓN DEL ESTADO (SI NO EXISTE)
+# =====================================================
+if "umbral_caida" not in st.session_state:
+    init_new_user_state()
+
 st.title("📊 Bot de Trading - Híbrido (Precio hasta 10%, Indicadores > 11%)")
 
 # Sidebar - Parámetros principales
@@ -254,7 +260,7 @@ stop_loss = st.sidebar.number_input("Stop Loss (%)", min_value=1.0, max_value=20
 trailing = st.sidebar.number_input("Trailing Stop (%)", min_value=0.2, max_value=5.0, value=float(st.session_state.trailing), step=0.1)
 umbral_indicadores = st.sidebar.number_input("Activar indicadores a partir de (%)", min_value=1.0, max_value=30.0, value=float(st.session_state.umbral_indicadores), step=0.5)
 
-# Sidebar - Parámetros de indicadores (se activan solo cuando ganancia > umbral)
+# Sidebar - Parámetros de indicadores
 st.sidebar.header("🧠 Indicadores (se activan automáticamente)")
 expert_score = st.sidebar.slider("Puntaje de tendencia", 0, 100, st.session_state.expert_score, 5)
 rsi_os = st.sidebar.number_input("RSI sobreventa", min_value=20, max_value=40, value=int(st.session_state.rsi_os), step=1)
@@ -314,7 +320,6 @@ while True:
     st.session_state.cycle += 1
     fng_value, fng_label = get_fear_greed()
     
-    # Calcular caída y ganancia
     caida_btc = (st.session_state.ref_price["BTC"] - btc) / st.session_state.ref_price["BTC"] * 100
     caida_eth = (st.session_state.ref_price["ETH"] - eth) / st.session_state.ref_price["ETH"] * 100
 
@@ -355,51 +360,37 @@ while True:
         st.session_state.daily_trades = 0
         st.session_state.last_day = hoy
 
-    # =============================================================
-    # EVALUACIÓN DE COMPRA Y VENTA (LÓGICA HÍBRIDA)
-    # =============================================================
     for sym, precio in [("BTC", btc), ("ETH", eth)]:
         pos = st.session_state.positions.get(sym, 0)
         entry = st.session_state.entry_price.get(sym, 0)
         ref = st.session_state.ref_price.get(sym, 0)
         
-        # Calcular caída y ganancia
         caida_actual = (ref - precio) / ref * 100 if ref != 0 else 0
         ganancia = (precio - entry) / entry * 100 if entry != 0 else 0
         
         razon = ""
         accion = None
         
-        # Verificar si se deben activar indicadores (si ganancia > umbral)
         if pos > 0 and entry > 0:
             if ganancia >= st.session_state.umbral_indicadores:
                 st.session_state.indicadores_activados[sym] = True
             else:
                 st.session_state.indicadores_activados[sym] = False
 
-        # ===== GESTIÓN DE POSICIÓN ABIERTA =====
         if pos > 0 and entry > 0:
-            
-            # ===== MODO SIN INDICADORES (ganancia < 11%) =====
             if ganancia < st.session_state.umbral_indicadores:
-                # Take Profit rápido al 10%
                 if ganancia >= st.session_state.take_profit:
                     accion = "SELL"
                     razon = f"Take Profit ({st.session_state.take_profit}%)"
-                # Stop Loss
                 elif ganancia <= -st.session_state.stop_loss:
                     accion = "SELL"
                     razon = f"Stop Loss ({st.session_state.stop_loss}%)"
-                # Trailing Stop
                 else:
                     highest = st.session_state.highest_price.get(sym, 0)
                     if highest > entry and (highest - precio) / highest * 100 >= st.session_state.trailing:
                         accion = "SELL"
                         razon = f"Trailing Stop ({st.session_state.trailing}%)"
-            
-            # ===== MODO CON INDICADORES (ganancia >= 11%) =====
             else:
-                # Obtener señal de indicadores
                 hist = list(st.session_state.price_history[sym])
                 if len(hist) >= max(st.session_state.ema_slow, 15):
                     senal_indicadores, rsi_val = get_enhanced_signal(
@@ -410,26 +401,21 @@ while True:
                 else:
                     senal_indicadores = "HOLD"
                 
-                # Si los indicadores dicen VENTA, vender
                 if senal_indicadores == "SELL":
                     accion = "SELL"
                     razon = f"Indicadores VENTA (RSI:{rsi_val:.0f})"
-                # Si los indicadores dicen HOLD, mantener
                 else:
-                    # Aplicar trailing stop por seguridad
                     highest = st.session_state.highest_price.get(sym, 0)
                     if highest > entry and (highest - precio) / highest * 100 >= st.session_state.trailing:
                         accion = "SELL"
                         razon = f"Trailing Stop ({st.session_state.trailing}%)"
 
-        # ===== COMPRA POR CAÍDA =====
         if accion is None:
             if caida_actual >= st.session_state.umbral_caida and pos == 0:
                 accion = "BUY"
                 razon = f"Caída del {caida_actual:.2f}%"
-                st.session_state.indicadores_activados[sym] = False  # Resetear al comprar
+                st.session_state.indicadores_activados[sym] = False
 
-        # ===== EJECUCIÓN DE LA ORDEN =====
         last_act = st.session_state.last_action.get(sym)
         if accion and accion != last_act:
             if accion == "BUY":
@@ -480,7 +466,6 @@ while True:
     if st.session_state.cycle % 10 == 0:
         save_data()
 
-    # Mostrar estado de indicadores en la interfaz
     estado_placeholder.info(f"🔹 Indicadores activos: BTC={st.session_state.indicadores_activados['BTC']} | ETH={st.session_state.indicadores_activados['ETH']}")
 
     time.sleep(30)
