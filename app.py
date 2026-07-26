@@ -63,13 +63,13 @@ def init_new_user_state():
     st.session_state.highest_price = {"BTC": 0.0, "ETH": 0.0}
     st.session_state.cycle = 0
     st.session_state.price_history = {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)}
-    st.session_state.umbral = 0.25
+    st.session_state.umbral = 0.05  # REDUCIDO para más entrada
     st.session_state.rsi_os = 30
     st.session_state.rsi_ob = 80
     st.session_state.ema_fast = 5
     st.session_state.ema_slow = 12
     st.session_state.stop_loss = 2.0
-    st.session_state.take_profit = 2.5
+    st.session_state.take_profit = 0.2  # REDUCIDO para más ventas
     st.session_state.trailing = 1.0
     st.session_state.expert_score = 30
     st.session_state.expert_comment = ""
@@ -98,13 +98,13 @@ def restore_from_file():
     st.session_state.entry_price = data.get("entry_price", {"BTC": 0.0, "ETH": 0.0})
     st.session_state.highest_price = data.get("highest_price", {"BTC": 0.0, "ETH": 0.0})
     st.session_state.cycle = data.get("cycle", 0)
-    st.session_state.umbral = data.get("umbral", 0.25)
+    st.session_state.umbral = data.get("umbral", 0.05)
     st.session_state.rsi_os = data.get("rsi_os", 30)
     st.session_state.rsi_ob = data.get("rsi_ob", 80)
     st.session_state.ema_fast = data.get("ema_fast", 5)
     st.session_state.ema_slow = data.get("ema_slow", 12)
     st.session_state.stop_loss = data.get("stop_loss", 2.0)
-    st.session_state.take_profit = data.get("take_profit", 2.5)
+    st.session_state.take_profit = data.get("take_profit", 0.2)
     st.session_state.trailing = data.get("trailing", 1.0)
     st.session_state.expert_score = data.get("expert_score", 30)
     st.session_state.expert_comment = data.get("expert_comment", "")
@@ -221,19 +221,19 @@ def calcular_atr(prices, periodo=14):
             atr = (atr * (periodo - 1) + rango) / periodo
     return atr
 
-def umbral_dinamico(prices, umbral_base=0.25):
+def umbral_dinamico(prices, umbral_base=0.05):
     if len(prices) < 15:
-        return max(0.1, umbral_base)
+        return max(0.01, umbral_base)
     atr = calcular_atr(prices)
     if atr is None or prices[-1] == 0:
-        return max(0.1, umbral_base)
+        return max(0.01, umbral_base)
     volatilidad_pct = (atr / prices[-1]) * 100
     if volatilidad_pct > 1.5:
-        return max(0.1, min(0.6, umbral_base * 1.6))
+        return max(0.01, min(0.3, umbral_base * 1.6))
     elif volatilidad_pct < 0.5:
-        return max(0.1, max(0.15, umbral_base * 0.7))
+        return max(0.01, max(0.02, umbral_base * 0.7))
     else:
-        return max(0.1, umbral_base)
+        return max(0.01, umbral_base)
 
 def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow, fng_value):
     if len(prices) < max(ema_slow, 15):
@@ -283,15 +283,10 @@ def get_enhanced_signal(prices, threshold, rsi_os, rsi_ob, ema_fast, ema_slow, f
     else:
         return "HOLD", rsi
 
+# ==================== CONFIRMACIÓN DE VELA DESACTIVADA (MÁS VENTAS) ====================
 def confirmacion_vela(historial, senal_esperada):
-    if len(historial) < 2:
-        return True
-    prev = historial[-2]
-    curr = historial[-1]
-    if senal_esperada == "BUY":
-        return curr > prev
-    elif senal_esperada == "SELL":
-        return curr < prev
+    # CONFIRMACIÓN DE VELA DESACTIVADA: SIEMPRE DEVUELVE TRUE
+    # Esto permite que el bot venda inmediatamente al alcanzar el TP
     return True
 
 # ==================== INICIALIZAR ESTADO ====================
@@ -299,26 +294,26 @@ if "data_loaded" not in st.session_state:
     restore_from_file()
     st.session_state.data_loaded = True
     # ==================== INTERFAZ PRINCIPAL ====================
-st.set_page_config(page_title="Bot de Trading - Simulador", layout="wide")
-st.title("📊 Simulador de Trading (RSI, EMA, Fear & Greed)")
+st.set_page_config(page_title="Bot de Trading - Scalping", layout="wide")
+st.title("📊 Bot de Trading - Scalping (Múltiples Ventas)")
 
 # Asegurar que external_trend exista
 if "external_trend" not in st.session_state:
     st.session_state.external_trend = {"BTC": "NEUTRAL", "ETH": "NEUTRAL"}
 
 # Sidebar
-st.sidebar.header("⚙️ Configuración General")
-valor_umbral = max(0.1, float(st.session_state.umbral))
-umbral_base = st.sidebar.number_input("Umbral base (%)", min_value=0.1, max_value=2.0, step=0.05, value=valor_umbral)
+st.sidebar.header("⚙️ Configuración General (Scalping)")
+valor_umbral = max(0.01, float(st.session_state.umbral))
+umbral_base = st.sidebar.number_input("Umbral base (%)", min_value=0.01, max_value=1.0, step=0.01, value=valor_umbral)
 rsi_os = st.sidebar.number_input("RSI sobreventa", min_value=20, max_value=40, value=int(st.session_state.rsi_os), step=1)
 rsi_ob = st.sidebar.number_input("RSI sobrecompra", min_value=70, max_value=90, value=int(st.session_state.rsi_ob), step=1)
 ema_fast = st.sidebar.number_input("EMA rápida (periodos)", min_value=3, max_value=20, value=int(st.session_state.ema_fast), step=1)
 ema_slow = st.sidebar.number_input("EMA lenta (periodos)", min_value=10, max_value=50, value=int(st.session_state.ema_slow), step=1)
 
-st.sidebar.header("🛡️ Gestión de Riesgo")
-stop_loss = st.sidebar.number_input("Stop Loss fijo (%)", min_value=0.5, max_value=10.0, value=float(st.session_state.stop_loss), step=0.5)
-take_profit = st.sidebar.number_input("Take Profit fijo (%)", min_value=0.5, max_value=20.0, value=float(st.session_state.take_profit), step=0.5)
-trailing = st.sidebar.number_input("Trailing Stop (%)", min_value=0.2, max_value=5.0, value=float(st.session_state.trailing), step=0.1)
+st.sidebar.header("🛡️ Gestión de Riesgo (Scalping)")
+stop_loss = st.sidebar.number_input("Stop Loss fijo (%)", min_value=0.5, max_value=5.0, value=float(st.session_state.stop_loss), step=0.5)
+take_profit = st.sidebar.number_input("Take Profit fijo (%)", min_value=0.1, max_value=5.0, value=float(st.session_state.take_profit), step=0.05)
+trailing = st.sidebar.number_input("Trailing Stop (%)", min_value=0.2, max_value=3.0, value=float(st.session_state.trailing), step=0.1)
 
 st.sidebar.header("🧠 Análisis de Expertos")
 expert_score = st.sidebar.slider("Puntaje de tendencia (0=Muy Bajista, 100=Muy Alcista)", 0, 100, st.session_state.expert_score, 5)
@@ -339,11 +334,11 @@ if st.sidebar.button("Reiniciar simulación"):
     save_data()
     st.rerun()
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("🧪 Bot activo - TP desde interfaz")
+    send_telegram("🧪 Bot activo - Modo Scalping")
     st.success("Enviado")
 
 # Actualizar parámetros
-st.session_state.umbral = max(0.1, umbral_base)
+st.session_state.umbral = max(0.01, umbral_base)
 st.session_state.rsi_os = rsi_os
 st.session_state.rsi_ob = rsi_ob
 st.session_state.ema_fast = ema_fast
@@ -391,7 +386,7 @@ while True:
         st.session_state.external_trend["ETH"] = get_external_trend("ETH", "1h")
         st.caption(f"Tendencia externa: BTC={st.session_state.external_trend['BTC']} | ETH={st.session_state.external_trend['ETH']}")
 
-    tabla_placeholder.subheader("📊 Señales en Vivo")
+    tabla_placeholder.subheader("📊 Señales en Vivo - Scalping")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
         "Precio MXN": [f"${btc:,.0f}", f"${eth:,.0f}"],
@@ -498,12 +493,12 @@ while True:
             highest = precio
 
         # =============================================================
-        # GESTIÓN DE POSICIÓN ABIERTA (USA EL TAKE PROFIT DE LA INTERFAZ)
+        # GESTIÓN DE POSICIÓN ABIERTA (TP BAJO PARA MÁS VENTAS)
         # =============================================================
         if pos > 0 and entry > 0:
             ganancia = (precio - entry) / entry * 100
 
-            # ===== VENTA TOTAL USANDO EL TAKE PROFIT DE LA INTERFAZ =====
+            # ===== VENTA POR TAKE PROFIT (BAJO) =====
             if ganancia >= st.session_state.take_profit:
                 accion = "SELL"
                 razon = f"Take Profit ({st.session_state.take_profit}%)"
@@ -542,14 +537,14 @@ while True:
         last_act = st.session_state.last_action.get(sym)
         
         # =============================================================
-        # SIN LÍMITE DIARIO (eliminado st.session_state.daily_trades < 12)
+        # SIN LÍMITE DIARIO
         # =============================================================
         if accion and accion != last_act:
             if accion == "BUY":
                 # =============================================================
-                # 3 COMPRAS DE $100 MXN
+                # 5 COMPRAS DE $100 MXN (MÁS OPERACIONES)
                 # =============================================================
-                cantidad_compras = 3
+                cantidad_compras = 5
                 monto_por_compra = 100.0
                 
                 if st.session_state.balance >= monto_por_compra:
