@@ -158,7 +158,7 @@ def get_fear_greed():
         pass
     return 50, "Neutral"
 
-# ==================== INDICADORES (no se usarán porque el TP es 0.02%) ====================
+# ==================== INDICADORES (no se usarán) ====================
 def compute_ema(prices, period):
     if len(prices) < period:
         return None
@@ -242,7 +242,7 @@ if "data_loaded" not in st.session_state:
     restore_from_file()
     st.session_state.data_loaded = True
     # ==================== INTERFAZ PRINCIPAL ====================
-st.set_page_config(page_title="Bot de Trading - Scalping Extremo (0.02%)", layout="wide")
+st.set_page_config(page_title="Bot de Trading - Scalping Extremo ($500 por compra)", layout="wide")
 
 # =====================================================
 # FORZAR INICIALIZACIÓN DEL ESTADO
@@ -250,12 +250,11 @@ st.set_page_config(page_title="Bot de Trading - Scalping Extremo (0.02%)", layou
 if "umbral_caida" not in st.session_state:
     init_new_user_state()
 
-st.title("⚡ Bot de Trading - Scalping Extremo (Compra/Venta al 0.02%)")
+st.title("⚡ Bot de Trading - Scalping Extremo (Compra $500 en BTC y $500 en ETH)")
 
 # Sidebar - Parámetros principales
 st.sidebar.header("⚙️ Configuración Principal")
 
-# Ajustar el valor para que no supere el máximo
 valor_umbral = min(50.0, float(st.session_state.umbral_caida))
 umbral_caida = st.sidebar.number_input("Caída para comprar (%)", min_value=0.01, max_value=50.0, step=0.01, value=valor_umbral)
 
@@ -286,7 +285,7 @@ if st.sidebar.button("Reiniciar simulación"):
     save_data()
     st.rerun()
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("⚡ Bot Scalping Extremo (0.02%) activo")
+    send_telegram("⚡ Bot Scalping Extremo - $500 por compra activo")
     st.success("Enviado")
 
 # Actualizar parámetros
@@ -337,8 +336,8 @@ while True:
         "Precio MXN": [f"${btc:,.0f}", f"${eth:,.0f}"],
         "Caída desde inicio": [f"{caida_btc:+.4f}%", f"{caida_eth:+.4f}%"],
         "¿Comprar?": [
-            "✅ COMPRAR" if caida_btc >= st.session_state.umbral_caida and st.session_state.positions["BTC"] == 0 else "❌ Esperar",
-            "✅ COMPRAR" if caida_eth >= st.session_state.umbral_caida and st.session_state.positions["ETH"] == 0 else "❌ Esperar"
+            "✅ COMPRAR $500" if caida_btc >= st.session_state.umbral_caida and st.session_state.positions["BTC"] == 0 else "❌ Esperar",
+            "✅ COMPRAR $500" if caida_eth >= st.session_state.umbral_caida and st.session_state.positions["ETH"] == 0 else "❌ Esperar"
         ]
     })
     info_placeholder.caption(f"Ciclo: {st.session_state.cycle} | Caída para comprar: {st.session_state.umbral_caida}% | TP: {st.session_state.take_profit}% | SL: {st.session_state.stop_loss}% | Trailing: {st.session_state.trailing}% | Fear & Greed: {fng_value}/100 ({fng_label})")
@@ -379,7 +378,7 @@ while True:
         razon = ""
         accion = None
         
-        # Activar indicadores solo si la ganancia supera el umbral (nunca ocurrirá con TP 0.02%)
+        # Activar indicadores solo si la ganancia supera el umbral
         if pos > 0 and entry > 0:
             if ganancia >= st.session_state.umbral_indicadores:
                 st.session_state.indicadores_activados[sym] = True
@@ -388,8 +387,6 @@ while True:
 
         # ===== GESTIÓN DE POSICIÓN ABIERTA =====
         if pos > 0 and entry > 0:
-            
-            # ===== MODO SIN INDICADORES (siempre) =====
             if ganancia >= st.session_state.take_profit:
                 accion = "SELL"
                 razon = f"Take Profit ({st.session_state.take_profit}%)"
@@ -413,11 +410,14 @@ while True:
         last_act = st.session_state.last_action.get(sym)
         if accion and accion != last_act:
             if accion == "BUY":
-                amount = st.session_state.balance * 0.20
-                amount = max(100.0, min(500.0, amount))
+                # =============================================================
+                # COMPRA FIJA DE $500 MXN
+                # =============================================================
+                amount = 500.0  # Monto fijo de $500 MXN
+                
                 if amount > st.session_state.balance:
-                    amount = st.session_state.balance
-                if amount >= 100.0:
+                    st.warning(f"⚠️ Saldo insuficiente ($500) para comprar {sym}")
+                else:
                     com = amount * 0.001
                     qty = (amount - com) / precio
                     st.session_state.balance -= amount
