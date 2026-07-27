@@ -64,14 +64,11 @@ def init_new_user_state():
     st.session_state.cycle = 0
     st.session_state.price_history = {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)}
     
-    # ===== PARÁMETROS PARA SCALPING EXTREMO =====
-    st.session_state.umbral_caida = 0.02      # Compra con caída mínima
-    st.session_state.stop_loss = 5.0          # Stop Loss (por seguridad)
-    st.session_state.take_profit = 0.02       # Vende con subida mínima
-    st.session_state.trailing = 1.0           # Trailing Stop
-    st.session_state.umbral_indicadores = 50.0 # Nunca se activarán (porque nunca llegará a 50%)
-    
-    # Parámetros de indicadores (no se usarán)
+    st.session_state.umbral_caida = 0.02
+    st.session_state.stop_loss = 5.0
+    st.session_state.take_profit = 0.02
+    st.session_state.trailing = 1.0
+    st.session_state.umbral_indicadores = 50.0
     st.session_state.expert_score = 30
     st.session_state.rsi_os = 30
     st.session_state.rsi_ob = 80
@@ -158,7 +155,7 @@ def get_fear_greed():
         pass
     return 50, "Neutral"
 
-# ==================== INDICADORES (no se usarán) ====================
+# ==================== INDICADORES (no se usan) ====================
 def compute_ema(prices, period):
     if len(prices) < period:
         return None
@@ -242,19 +239,15 @@ if "data_loaded" not in st.session_state:
     restore_from_file()
     st.session_state.data_loaded = True
     # ==================== INTERFAZ PRINCIPAL ====================
-st.set_page_config(page_title="Bot de Trading - Scalping Extremo ($500 por compra)", layout="wide")
+st.set_page_config(page_title="Bot de Trading - Scalping Extremo (Señales Telegram)", layout="wide")
 
-# =====================================================
-# FORZAR INICIALIZACIÓN DEL ESTADO
-# =====================================================
 if "umbral_caida" not in st.session_state:
     init_new_user_state()
 
-st.title("⚡ Bot de Trading - Scalping Extremo (Compra $500 en BTC y $500 en ETH)")
+st.title("📡 Bot de Trading - Scalping Extremo (Señales por Telegram)")
 
 # Sidebar - Parámetros principales
 st.sidebar.header("⚙️ Configuración Principal")
-
 valor_umbral = min(50.0, float(st.session_state.umbral_caida))
 umbral_caida = st.sidebar.number_input("Caída para comprar (%)", min_value=0.01, max_value=50.0, step=0.01, value=valor_umbral)
 
@@ -267,7 +260,7 @@ trailing = st.sidebar.number_input("Trailing Stop (%)", min_value=0.2, max_value
 valor_umbral_ind = min(100.0, float(st.session_state.umbral_indicadores))
 umbral_indicadores = st.sidebar.number_input("Activar indicadores a partir de (%)", min_value=1.0, max_value=100.0, value=valor_umbral_ind, step=0.5)
 
-# Sidebar - Parámetros de indicadores (no se usarán)
+# Sidebar - Parámetros de indicadores
 st.sidebar.header("🧠 Indicadores (no se activan con TP tan bajo)")
 expert_score = st.sidebar.slider("Puntaje de tendencia", 0, 100, st.session_state.expert_score, 5)
 rsi_os = st.sidebar.number_input("RSI sobreventa", min_value=20, max_value=40, value=int(st.session_state.rsi_os), step=1)
@@ -285,7 +278,7 @@ if st.sidebar.button("Reiniciar simulación"):
     save_data()
     st.rerun()
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("⚡ Bot Scalping Extremo - $500 por compra activo")
+    send_telegram("📡 Bot de señales activo (modo scalping)")
     st.success("Enviado")
 
 # Actualizar parámetros
@@ -305,6 +298,19 @@ tabla_placeholder = st.empty()
 info_placeholder = st.empty()
 historial_placeholder = st.empty()
 estado_placeholder = st.empty()
+
+# ==================== FUNCIÓN PARA ENVIAR SEÑALES ====================
+def send_signal_telegram(sym, tipo, precio, razon, ejecutado):
+    try:
+        estado = "✅ EJECUTADA" if ejecutado else "⚠️ NO EJECUTADA"
+        msg = (f"📢 SEÑAL {estado} - {tipo} {sym}\n"
+               f"Precio: ${precio:,.0f}\n"
+               f"Razón: {razon}\n"
+               f"Saldo disponible: ${st.session_state.balance:.2f}\n"
+               f"Posición {sym}: {st.session_state.positions[sym]:.6f}")
+        send_telegram(msg)
+    except:
+        pass
 
 # ==================== BUCLE PRINCIPAL ====================
 while True:
@@ -406,18 +412,13 @@ while True:
                 razon = f"Caída del {caida_actual:.4f}%"
                 st.session_state.indicadores_activados[sym] = False
 
-        # ===== EJECUCIÓN =====
+        # ===== EJECUCIÓN Y NOTIFICACIÓN =====
         last_act = st.session_state.last_action.get(sym)
         if accion and accion != last_act:
+            ejecutado = False
             if accion == "BUY":
-                # =============================================================
-                # COMPRA FIJA DE $500 MXN
-                # =============================================================
-                amount = 500.0  # Monto fijo de $500 MXN
-                
-                if amount > st.session_state.balance:
-                    st.warning(f"⚠️ Saldo insuficiente ($500) para comprar {sym}")
-                else:
+                amount = 500.0
+                if amount <= st.session_state.balance:
                     com = amount * 0.001
                     qty = (amount - com) / precio
                     st.session_state.balance -= amount
@@ -426,17 +427,11 @@ while True:
                     st.session_state.highest_price[sym] = precio
                     st.session_state.daily_trades += 1
                     st.session_state.indicadores_activados[sym] = False
-                    msg = (f"🟢 COMPRA {sym}\n"
-                           f"Monto: ${amount:.0f}\n"
-                           f"Cantidad: {qty:.6f}\n"
-                           f"Precio: ${precio:,.0f}\n"
-                           f"Caída: {caida_actual:.4f}%\n"
-                           f"Saldo: ${st.session_state.balance:.2f}")
-                    send_telegram(msg)
-                    st.session_state.trades.append((datetime.now(), msg))
-                    save_data()
+                    ejecutado = True
                     st.session_state.last_action[sym] = accion
-
+                    save_data()
+                else:
+                    ejecutado = False
             elif accion == "SELL" and pos > 0:
                 qty = pos
                 gross = qty * precio
@@ -447,15 +442,12 @@ while True:
                 st.session_state.entry_price[sym] = 0
                 st.session_state.daily_trades += 1
                 st.session_state.indicadores_activados[sym] = False
-                msg = (f"🔴 VENTA {sym}\n"
-                       f"Cantidad: {qty:.6f}\n"
-                       f"Precio: ${precio:,.0f}\n"
-                       f"Neto: ${net:.2f}\n"
-                       f"Motivo: {razon}")
-                send_telegram(msg)
-                st.session_state.trades.append((datetime.now(), msg))
-                save_data()
+                ejecutado = True
                 st.session_state.last_action[sym] = accion
+                save_data()
+            
+            # Enviar señal por Telegram (siempre, incluso si no se ejecutó)
+            send_signal_telegram(sym, accion, precio, razon, ejecutado)
 
     if st.session_state.cycle % 10 == 0:
         save_data()
