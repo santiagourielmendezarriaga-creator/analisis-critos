@@ -47,7 +47,6 @@ def save_data():
         "sl_low_price": st.session_state.sl_low_price,
         "indicadores_activados": st.session_state.indicadores_activados,
         "modo_solo_senales": st.session_state.modo_solo_senales,
-        # NUEVAS VARIABLES PARA EL "PENSAMIENTO" DEL BOT
         "rendimiento": st.session_state.rendimiento,
         "confianza": st.session_state.confianza,
         "tendencia": st.session_state.tendencia,
@@ -71,11 +70,11 @@ def init_new_user_state():
     st.session_state.cycle = 0
     st.session_state.price_history = {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)}
     
-    # Parámetros base
-    st.session_state.umbral_caida = 0.01
-    st.session_state.stop_loss = 3.0
-    st.session_state.take_profit = 0.05
-    st.session_state.trailing = 1.0
+    # ===== PARÁMETROS ACELERADOS PARA APRENDIZAJE RÁPIDO =====
+    st.session_state.umbral_caida = 0.005      # Mitad del original (0.01%)
+    st.session_state.stop_loss = 1.5           # Stop Loss más ajustado
+    st.session_state.take_profit = 0.02        # TP más bajo
+    st.session_state.trailing = 0.5            # Trailing más sensible
     st.session_state.umbral_indicadores_activacion = 2.0
     
     st.session_state.expert_score = 30
@@ -88,7 +87,6 @@ def init_new_user_state():
     st.session_state.indicadores_activados = {"BTC": False, "ETH": False}
     st.session_state.modo_solo_senales = False
     
-    # ===== NUEVAS VARIABLES PARA EL CRITERIO PROPIO =====
     st.session_state.rendimiento = {
         "BTC": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []},
         "ETH": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []}
@@ -96,7 +94,7 @@ def init_new_user_state():
     st.session_state.confianza = {"BTC": 50, "ETH": 50}
     st.session_state.tendencia = {"BTC": "NEUTRAL", "ETH": "NEUTRAL"}
     st.session_state.historial_operaciones = []
-    st.session_state.modo_aprendizaje = True  # Activado por defecto
+    st.session_state.modo_aprendizaje = True
 
 def restore_from_file():
     data = load_data()
@@ -119,10 +117,10 @@ def restore_from_file():
     st.session_state.entry_price = data.get("entry_price", {"BTC": 0.0, "ETH": 0.0})
     st.session_state.highest_price = data.get("highest_price", {"BTC": 0.0, "ETH": 0.0})
     st.session_state.cycle = data.get("cycle", 0)
-    st.session_state.umbral_caida = data.get("umbral_caida", 0.01)
-    st.session_state.stop_loss = data.get("stop_loss", 3.0)
-    st.session_state.take_profit = data.get("take_profit", 0.05)
-    st.session_state.trailing = data.get("trailing", 1.0)
+    st.session_state.umbral_caida = data.get("umbral_caida", 0.005)
+    st.session_state.stop_loss = data.get("stop_loss", 1.5)
+    st.session_state.take_profit = data.get("take_profit", 0.02)
+    st.session_state.trailing = data.get("trailing", 0.5)
     st.session_state.umbral_indicadores_activacion = data.get("umbral_indicadores_activacion", 2.0)
     st.session_state.expert_score = data.get("expert_score", 30)
     st.session_state.rsi_os = data.get("rsi_os", 30)
@@ -134,7 +132,6 @@ def restore_from_file():
     st.session_state.indicadores_activados = data.get("indicadores_activados", {"BTC": False, "ETH": False})
     st.session_state.modo_solo_senales = data.get("modo_solo_senales", False)
     
-    # Cargar nuevas variables
     st.session_state.rendimiento = data.get("rendimiento", {"BTC": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []}, "ETH": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []}})
     st.session_state.confianza = data.get("confianza", {"BTC": 50, "ETH": 50})
     st.session_state.tendencia = data.get("tendencia", {"BTC": "NEUTRAL", "ETH": "NEUTRAL"})
@@ -144,24 +141,18 @@ def restore_from_file():
     ph = data.get("price_history", {"BTC": [], "ETH": []})
     st.session_state.price_history = {k: deque(v, maxlen=200) for k, v in ph.items()}
 
-# ==================== FUNCIONES DE "PENSAMIENTO" DEL BOT ====================
-
+# ==================== FUNCIONES DE APRENDIZAJE ====================
 def analizar_tendencia(historial, periodo=20):
-    """Analiza si el mercado está en tendencia alcista, bajista o lateral"""
     if len(historial) < periodo:
         return "NEUTRAL"
-    
     datos = list(historial)[-periodo:]
     inicio = datos[0]
     final = datos[-1]
     cambio = (final - inicio) / inicio * 100
-    
-    # Calcular volatilidad
     volatilidad = 0
     for i in range(1, len(datos)):
         volatilidad += abs((datos[i] - datos[i-1]) / datos[i-1] * 100)
     volatilidad = volatilidad / len(datos)
-    
     if cambio > 1.5 and volatilidad < 2:
         return "ALCISTA"
     elif cambio < -1.5 and volatilidad < 2:
@@ -172,65 +163,39 @@ def analizar_tendencia(historial, periodo=20):
         return "LATERAL"
 
 def ajustar_confianza(sym, resultado, monto):
-    """Ajusta el nivel de confianza basado en el resultado de la operación"""
     confianza_actual = st.session_state.confianza[sym]
-    
-    if resultado > 0:  # Ganancia
+    if resultado > 0:
         confianza_actual = min(100, confianza_actual + 3)
-    else:  # Pérdida
+    else:
         confianza_actual = max(0, confianza_actual - 5)
-    
     st.session_state.confianza[sym] = confianza_actual
     return confianza_actual
 
 def evaluar_rendimiento(sym):
-    """Evalúa el rendimiento de las últimas 10 operaciones y devuelve recomendaciones"""
     rend = st.session_state.rendimiento[sym]
     total = rend["total"]
-    
     if total < 5:
         return {"accion": "MANTENER", "mensaje": "Pocas operaciones para evaluar"}
-    
     ganadas = rend["ganadas"]
     ratio = ganadas / total
-    
     if ratio > 0.6:
-        return {
-            "accion": "AUMENTAR_RIESGO",
-            "mensaje": f"Rendimiento excelente ({ratio*100:.0f}% ganadas)",
-            "sugerencia": "Subir TP y umbral"
-        }
+        return {"accion": "AUMENTAR_RIESGO", "mensaje": f"Rendimiento excelente ({ratio*100:.0f}% ganadas)", "sugerencia": "Subir TP y umbral"}
     elif ratio < 0.4:
-        return {
-            "accion": "REDUCIR_RIESGO",
-            "mensaje": f"Rendimiento bajo ({ratio*100:.0f}% ganadas)",
-            "sugerencia": "Bajar TP y umbral"
-        }
+        return {"accion": "REDUCIR_RIESGO", "mensaje": f"Rendimiento bajo ({ratio*100:.0f}% ganadas)", "sugerencia": "Bajar TP y umbral"}
     else:
-        return {
-            "accion": "MANTENER",
-            "mensaje": f"Rendimiento estable ({ratio*100:.0f}% ganadas)",
-            "sugerencia": "Mantener parámetros"
-        }
+        return {"accion": "MANTENER", "mensaje": f"Rendimiento estable ({ratio*100:.0f}% ganadas)", "sugerencia": "Mantener parámetros"}
 
 def obtener_senal_con_criterio(sym, precio, senal_base, razon_base, confianza):
-    """Aplica el criterio propio del bot: si confianza baja, ignora señales marginales"""
     if not st.session_state.modo_aprendizaje:
         return senal_base, razon_base
-    
     if confianza < 30:
-        # Si la confianza es muy baja, solo opera si la señal es muy fuerte
         if senal_base == "BUY" and "Caída" in razon_base:
-            # Si es compra por caída y confianza baja, esperar
             return "HOLD", f"Confianza baja ({confianza}%), esperando confirmación"
         elif senal_base == "SELL" and "Take Profit" in razon_base:
             return "SELL", f"Venta por TP (confianza baja {confianza}%)"
-    
     elif confianza > 70:
-        # Si la confianza es alta, opera con más agresividad
         if senal_base == "BUY" and "Caída" in razon_base:
             return "BUY", f"Compra por caída (confianza alta {confianza}%)"
-    
     return senal_base, razon_base
 
 # ==================== TELEGRAM ====================
@@ -305,7 +270,6 @@ def get_enhanced_signal(prices, rsi_os, rsi_ob, ema_fast, ema_slow, fng_value, e
         signal_change = "BUY"
     else:
         signal_change = "SELL"
-    
     ema_f = compute_ema(prices, ema_fast)
     ema_s = compute_ema(prices, ema_slow)
     if ema_f is None or ema_s is None:
@@ -319,7 +283,6 @@ def get_enhanced_signal(prices, rsi_os, rsi_ob, ema_fast, ema_slow, fng_value, e
         signal_rsi = "SELL"
     else:
         signal_rsi = "HOLD"
-    
     buy_votes = 0
     sell_votes = 0
     if signal_change == "BUY": buy_votes += 35
@@ -332,7 +295,6 @@ def get_enhanced_signal(prices, rsi_os, rsi_ob, ema_fast, ema_slow, fng_value, e
     elif fng_value >= 80: sell_votes += 15
     if expert_score >= 60: buy_votes += 20
     elif expert_score <= 40: sell_votes += 20
-    
     if buy_votes > sell_votes:
         return "BUY", rsi
     elif sell_votes > buy_votes:
@@ -356,17 +318,16 @@ if "data_loaded" not in st.session_state:
     restore_from_file()
     st.session_state.data_loaded = True
     # ==================== INTERFAZ PRINCIPAL ====================
-st.set_page_config(page_title="Bot Inteligente (Criterio Propio)", layout="wide")
+st.set_page_config(page_title="Bot Inteligente - Aprendizaje Rápido", layout="wide")
 
 if "umbral_caida" not in st.session_state:
     init_new_user_state()
 
-st.title("🧠 Bot con Criterio Propio (Aprendizaje Adaptativo)")
+st.title("🧠 Bot con Aprendizaje Rápido (Parámetros Acelerados)")
 
-# Sidebar - Parámetros principales
 st.sidebar.header("⚙️ Configuración Principal")
 valor_umbral = min(50.0, float(st.session_state.umbral_caida))
-umbral_caida = st.sidebar.number_input("Caída para comprar (scalping) (%)", min_value=0.01, max_value=50.0, step=0.01, value=valor_umbral)
+umbral_caida = st.sidebar.number_input("Caída para comprar (scalping) (%)", min_value=0.001, max_value=50.0, step=0.001, value=valor_umbral)
 
 valor_tp = min(50.0, float(st.session_state.take_profit))
 take_profit = st.sidebar.number_input("Take Profit scalping (%)", min_value=0.01, max_value=50.0, step=0.01, value=valor_tp)
@@ -377,12 +338,10 @@ trailing = st.sidebar.number_input("Trailing Stop (%)", min_value=0.2, max_value
 valor_umbral_ind_activ = min(20.0, float(st.session_state.umbral_indicadores_activacion))
 umbral_indicadores_activacion = st.sidebar.number_input("Activar indicadores a partir de ±(%)", min_value=0.5, max_value=20.0, step=0.1, value=valor_umbral_ind_activ)
 
-# Modo de aprendizaje
 st.sidebar.header("🧠 Modo Aprendizaje")
-modo_aprendizaje = st.sidebar.checkbox("✅ Modo aprendizaje activado (el bot ajusta parámetros)", value=st.session_state.modo_aprendizaje)
+modo_aprendizaje = st.sidebar.checkbox("✅ Modo aprendizaje activado", value=st.session_state.modo_aprendizaje)
 st.session_state.modo_aprendizaje = modo_aprendizaje
 
-# Sidebar - Parámetros de indicadores
 st.sidebar.header("🧠 Indicadores")
 expert_score = st.sidebar.slider("Puntaje de tendencia", 0, 100, st.session_state.expert_score, 5)
 rsi_os = st.sidebar.number_input("RSI sobreventa", min_value=20, max_value=40, value=int(st.session_state.rsi_os), step=1)
@@ -390,7 +349,6 @@ rsi_ob = st.sidebar.number_input("RSI sobrecompra", min_value=70, max_value=90, 
 ema_fast = st.sidebar.number_input("EMA rápida (periodos)", min_value=3, max_value=20, value=int(st.session_state.ema_fast), step=1)
 ema_slow = st.sidebar.number_input("EMA lenta (periodos)", min_value=10, max_value=50, value=int(st.session_state.ema_slow), step=1)
 
-# Modo solo señales
 st.sidebar.header("📡 Modo de operación")
 modo_solo_senales = st.sidebar.checkbox("🔇 Modo solo señales (no ejecutar órdenes)", value=st.session_state.modo_solo_senales)
 st.session_state.modo_solo_senales = modo_solo_senales
@@ -405,10 +363,9 @@ if st.sidebar.button("Reiniciar simulación"):
     save_data()
     st.rerun()
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("🧠 Bot con criterio propio activo")
+    send_telegram("🧠 Bot con aprendizaje rápido activo")
     st.success("Enviado")
 
-# Actualizar parámetros
 st.session_state.umbral_caida = umbral_caida
 st.session_state.take_profit = take_profit
 st.session_state.stop_loss = stop_loss
@@ -420,13 +377,11 @@ st.session_state.rsi_ob = rsi_ob
 st.session_state.ema_fast = ema_fast
 st.session_state.ema_slow = ema_slow
 
-# Contenedores dinámicos
 tabla_placeholder = st.empty()
 info_placeholder = st.empty()
 historial_placeholder = st.empty()
 estado_placeholder = st.empty()
 
-# ==================== FUNCIÓN PARA ENVIAR SEÑALES ====================
 def send_signal_telegram(sym, tipo, precio, razon, ejecutado=False, monto=0, cantidad=0, modo="scalping", confianza=50):
     try:
         estado = "✅ EJECUTADA" if ejecutado else "⚠️ NO EJECUTADA"
@@ -453,7 +408,6 @@ def send_signal_telegram(sym, tipo, precio, razon, ejecutado=False, monto=0, can
     except:
         pass
 
-# ==================== BUCLE PRINCIPAL ====================
 while True:
     btc = get_bitso_price("btc_mxn")
     eth = get_bitso_price("eth_mxn")
@@ -480,11 +434,9 @@ while True:
     cambio_btc = (btc - st.session_state.ref_price["BTC"]) / st.session_state.ref_price["BTC"] * 100
     cambio_eth = (eth - st.session_state.ref_price["ETH"]) / st.session_state.ref_price["ETH"] * 100
 
-    # ===== ANÁLISIS DE TENDENCIA =====
     st.session_state.tendencia["BTC"] = analizar_tendencia(st.session_state.price_history["BTC"])
     st.session_state.tendencia["ETH"] = analizar_tendencia(st.session_state.price_history["ETH"])
 
-    # ===== ACTIVAR INDICADORES =====
     if abs(cambio_btc) >= st.session_state.umbral_indicadores_activacion:
         st.session_state.indicadores_activados["BTC"] = True
     else:
@@ -495,7 +447,7 @@ while True:
     else:
         st.session_state.indicadores_activados["ETH"] = False
 
-    tabla_placeholder.subheader("📊 Señales - Bot con Criterio Propio")
+    tabla_placeholder.subheader("📊 Señales - Aprendizaje Rápido")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
         "Precio MXN": [f"${btc:,.0f}", f"${eth:,.0f}"],
@@ -534,8 +486,8 @@ while True:
         st.session_state.daily_trades = 0
         st.session_state.last_day = hoy
 
-    # ===== EVALUACIÓN DE RENDIMIENTO (cada 10 ciclos) =====
-    if st.session_state.cycle % 10 == 0 and st.session_state.modo_aprendizaje:
+    # ===== EVALUACIÓN DE RENDIMIENTO (CADA 5 CICLOS - ACELERADO) =====
+    if st.session_state.cycle % 5 == 0 and st.session_state.modo_aprendizaje:  # <--- CAMBIADO DE 10 A 5
         for sym in ["BTC", "ETH"]:
             eval_rend = evaluar_rendimiento(sym)
             if eval_rend["accion"] == "AUMENTAR_RIESGO":
@@ -543,8 +495,8 @@ while True:
                 st.session_state.take_profit = min(0.10, st.session_state.take_profit * 1.1)
                 st.session_state.confianza[sym] = min(100, st.session_state.confianza[sym] + 5)
             elif eval_rend["accion"] == "REDUCIR_RIESGO":
-                st.session_state.umbral_caida = max(0.005, st.session_state.umbral_caida * 0.8)
-                st.session_state.take_profit = max(0.02, st.session_state.take_profit * 0.9)
+                st.session_state.umbral_caida = max(0.001, st.session_state.umbral_caida * 0.8)
+                st.session_state.take_profit = max(0.01, st.session_state.take_profit * 0.9)
                 st.session_state.confianza[sym] = max(0, st.session_state.confianza[sym] - 5)
 
     for sym, precio in [("BTC", btc), ("ETH", eth)]:
@@ -554,14 +506,12 @@ while True:
         
         caida_actual = (ref - precio) / ref * 100 if ref != 0 else 0
         ganancia = (precio - entry) / entry * 100 if entry != 0 else 0
-        cambio_actual = (precio - ref) / ref * 100 if ref != 0 else 0
         confianza = st.session_state.confianza.get(sym, 50)
         
         razon = ""
         accion = None
         modo_actual = "Indicadores" if st.session_state.indicadores_activados[sym] else "Scalping"
 
-        # ===== SI INDICADORES ACTIVADOS =====
         if st.session_state.indicadores_activados[sym]:
             hist = list(st.session_state.price_history[sym])
             if len(hist) >= max(st.session_state.ema_slow, 15):
@@ -594,7 +544,6 @@ while True:
                             accion = "SELL"
                             razon = f"Trailing Stop ({st.session_state.trailing}%)"
 
-        # ===== SI NO INDICADORES (SCALPING) =====
         else:
             if pos > 0 and entry > 0:
                 if ganancia >= st.session_state.take_profit:
@@ -611,14 +560,12 @@ while True:
             
             if accion is None and pos == 0:
                 if caida_actual >= st.session_state.umbral_caida:
-                    # Aplicar criterio de confianza
                     if confianza >= 30 or st.session_state.modo_aprendizaje == False:
                         accion = "BUY"
                         razon = f"Caída del {caida_actual:.4f}%"
                     else:
                         razon = f"Caída del {caida_actual:.4f}% (ignorada: confianza baja {confianza}%)"
 
-        # ===== APLICAR CRITERIO PROPIO =====
         if accion:
             accion_con_criterio, razon_con_criterio = obtener_senal_con_criterio(
                 sym, precio, accion, razon, confianza
@@ -627,7 +574,6 @@ while True:
                 accion = accion_con_criterio
                 razon = razon_con_criterio
 
-        # ===== EJECUCIÓN =====
         last_act = st.session_state.last_action.get(sym)
         if accion and accion != last_act:
             ejecutado = False
@@ -690,8 +636,7 @@ while True:
                     ejecutado = True
                     st.session_state.last_action[sym] = accion
                     
-                    # Registrar resultado de la operación para el aprendizaje
-                    resultado_operacion = net - monto_por_compra * compras_ejecutadas if 'compras_ejecutadas' in locals() else 0
+                    resultado_operacion = net - (monto_por_compra * compras_ejecutadas if 'compras_ejecutadas' in locals() and compras_ejecutadas > 0 else 0)
                     if resultado_operacion > 0:
                         st.session_state.rendimiento[sym]["ganadas"] += 1
                     else:
@@ -701,8 +646,7 @@ while True:
                     if len(st.session_state.rendimiento[sym]["ultimas_10"]) > 10:
                         st.session_state.rendimiento[sym]["ultimas_10"].pop(0)
                     
-                    # Ajustar confianza
-                    ajustar_confianza(sym, resultado_operacion, monto_por_compra * compras_ejecutadas)
+                    ajustar_confianza(sym, resultado_operacion, monto_por_compra * compras_ejecutadas if 'compras_ejecutadas' in locals() and compras_ejecutadas > 0 else 0)
                     
                     msg = (f"🔴 VENTA {sym}\n"
                            f"Modo: {modo_actual}\n"
