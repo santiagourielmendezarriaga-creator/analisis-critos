@@ -65,14 +65,13 @@ def init_new_user_state():
     st.session_state.cycle = 0
     st.session_state.price_history = {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)}
     
-    # ===== PARÁMETROS MODIFICADOS: umbral 0.01% y TP 0.05% =====
-    st.session_state.umbral_caida = 0.01          # <--- Cambiado de 0.02 a 0.01
-    st.session_state.stop_loss = 5.0
-    st.session_state.take_profit = 0.05           # <--- Cambiado de 0.02 a 0.05
+    # ===== PARÁMETROS ACTUALIZADOS =====
+    st.session_state.umbral_caida = 0.01          
+    st.session_state.stop_loss = 3.0              # <--- CAMBIADO de 5.0 a 3.0
+    st.session_state.take_profit = 0.05           
     st.session_state.trailing = 1.0
     st.session_state.umbral_indicadores_activacion = 2.0
     
-    # Parámetros de indicadores (se activan cuando cambio >= 2%)
     st.session_state.expert_score = 30
     st.session_state.rsi_os = 30
     st.session_state.rsi_ob = 80
@@ -104,9 +103,8 @@ def restore_from_file():
     st.session_state.entry_price = data.get("entry_price", {"BTC": 0.0, "ETH": 0.0})
     st.session_state.highest_price = data.get("highest_price", {"BTC": 0.0, "ETH": 0.0})
     st.session_state.cycle = data.get("cycle", 0)
-    # Valores por defecto actualizados
     st.session_state.umbral_caida = data.get("umbral_caida", 0.01)
-    st.session_state.stop_loss = data.get("stop_loss", 5.0)
+    st.session_state.stop_loss = data.get("stop_loss", 3.0)  # <--- CAMBIADO a 3.0
     st.session_state.take_profit = data.get("take_profit", 0.05)
     st.session_state.trailing = data.get("trailing", 1.0)
     st.session_state.umbral_indicadores_activacion = data.get("umbral_indicadores_activacion", 2.0)
@@ -246,12 +244,12 @@ if "data_loaded" not in st.session_state:
     restore_from_file()
     st.session_state.data_loaded = True
     # ==================== INTERFAZ PRINCIPAL ====================
-st.set_page_config(page_title="Bot Híbrido (Umbral 0.01%, TP 0.05%)", layout="wide")
+st.set_page_config(page_title="Bot Híbrido (SL 3%)", layout="wide")
 
 if "umbral_caida" not in st.session_state:
     init_new_user_state()
 
-st.title("📊 Bot Híbrido: Scalping (<2%) → Indicadores (≥2%)")
+st.title("📊 Bot Híbrido: Scalping → Indicadores (SL 3%)")
 
 # Sidebar - Parámetros principales
 st.sidebar.header("⚙️ Configuración Principal")
@@ -261,7 +259,7 @@ umbral_caida = st.sidebar.number_input("Caída para comprar (scalping) (%)", min
 valor_tp = min(50.0, float(st.session_state.take_profit))
 take_profit = st.sidebar.number_input("Take Profit scalping (%)", min_value=0.01, max_value=50.0, step=0.01, value=valor_tp)
 
-stop_loss = st.sidebar.number_input("Stop Loss (%)", min_value=0.5, max_value=20.0, value=float(st.session_state.stop_loss), step=0.5)
+stop_loss = st.sidebar.number_input("Stop Loss (%)", min_value=0.5, max_value=20.0, value=float(st.session_state.stop_loss), step=0.5)  # <-- Valor predeterminado 3.0
 trailing = st.sidebar.number_input("Trailing Stop (%)", min_value=0.2, max_value=5.0, value=float(st.session_state.trailing), step=0.1)
 
 valor_umbral_ind_activ = min(20.0, float(st.session_state.umbral_indicadores_activacion))
@@ -290,7 +288,7 @@ if st.sidebar.button("Reiniciar simulación"):
     save_data()
     st.rerun()
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("📡 Bot híbrido activo (umbral 0.01%, TP 0.05%)")
+    send_telegram("📡 Bot híbrido activo (SL 3%)")
     st.success("Enviado")
 
 # Actualizar parámetros
@@ -374,7 +372,7 @@ while True:
     else:
         st.session_state.indicadores_activados["ETH"] = False
 
-    tabla_placeholder.subheader("📊 Señales - Modo Híbrido")
+    tabla_placeholder.subheader("📊 Señales - Modo Híbrido (SL 3%)")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
         "Precio MXN": [f"${btc:,.0f}", f"${eth:,.0f}"],
