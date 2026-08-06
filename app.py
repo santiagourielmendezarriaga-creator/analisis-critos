@@ -156,6 +156,7 @@ def restore_from_file():
 try:
     ETHERSCAN_API_KEY = st.secrets["G1WH2NDN3YBMAW8FQ3ICK5E3XKY5A3X8UZ"]
     print("✅ ETHERSCAN_API_KEY cargada correctamente desde st.secrets")
+    
 # ==================== FUNCIONES DE APRENDIZAJE ====================
 def analizar_tendencia(historial, periodo=20):
     if len(historial) < periodo:
