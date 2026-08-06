@@ -217,16 +217,15 @@ def obtener_senal_con_criterio(sym, precio, senal_base, razon_base, confianza):
             return "BUY", f"Compra por caída (confianza alta {confianza}%)"
     return senal_base, razon_base
 
-# ==================== DATOS ON-CHAIN CON API ACTIVA Y CACHÉ ====================
+# ==================== DATOS ON-CHAIN CON CACHÉ DE 10 SEGUNDOS ====================
 def get_onchain_volume(symbol="BTC"):
     now = time.time()
     cache = st.session_state.onchain_cache.get(symbol, {"valor": None, "timestamp": 0})
     
-    # Si el caché es reciente, devolver valor guardado
+    # Caché de 10 segundos (más frecuencia)
     if cache["valor"] is not None and (now - cache["timestamp"]) < 10:
         return cache["valor"]
     
-    # Si no hay caché o está expirado, intentar obtener datos reales
     if symbol == "BTC":
         try:
             url = "https://blockchain.info/charts/transaction-volume?timespan=1day&format=json"
@@ -237,18 +236,15 @@ def get_onchain_volume(symbol="BTC"):
                 st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
                 return volume
             else:
-                # Fallo silencioso: usar valor estimado
                 volume = 0.35
                 st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
                 return volume
-        except Exception:
-            # Error silencioso: usar placeholder
+        except:
             volume = 0.35
             st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
             return volume
     
     elif symbol == "ETH":
-        # Si no hay API Key, usar placeholder sin mostrar error
         if not ETHERSCAN_API_KEY:
             volume = 1.0
             st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
@@ -279,7 +275,7 @@ def get_onchain_volume(symbol="BTC"):
                 volume = 1.0
                 st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
                 return volume
-        except Exception:
+        except:
             volume = 1.0
             st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
             return volume
@@ -410,12 +406,12 @@ if "data_loaded" not in st.session_state:
     restore_from_file()
     st.session_state.data_loaded = True
     # ==================== INTERFAZ PRINCIPAL ====================
-st.set_page_config(page_title="Bot Inteligente + On-Chain (API Activa)", layout="wide")
+st.set_page_config(page_title="Bot Inteligente + On-Chain (Caché 10s)", layout="wide")
 
 if "umbral_caida" not in st.session_state:
     init_new_user_state()
 
-st.title("🧠 Bot Inteligente + Datos On-Chain (API Activa)")
+st.title("🧠 Bot Inteligente + Datos On-Chain (Caché 10s)")
 
 st.sidebar.header("⚙️ Configuración Principal")
 valor_umbral = min(50.0, float(st.session_state.umbral_caida))
@@ -455,7 +451,7 @@ if st.sidebar.button("Reiniciar simulación"):
     save_data()
     st.rerun()
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("🧠 Bot con API activa")
+    send_telegram("🧠 Bot con caché 10s activo")
     st.success("Enviado")
 
 st.session_state.umbral_caida = umbral_caida
@@ -542,11 +538,11 @@ while True:
     else:
         st.session_state.indicadores_activados["ETH"] = False
 
-    # Obtener on-chain (con API activa)
+    # Obtener on-chain (con caché de 10s)
     onchain_vol_btc = get_onchain_volume("BTC")
     onchain_vol_eth = get_onchain_volume("ETH")
 
-    tabla_placeholder.subheader("📊 Señales + Datos On-Chain (API Activa)")
+    tabla_placeholder.subheader("📊 Señales + Datos On-Chain (Caché 10s)")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
         "Precio MXN": [f"${btc:,.0f}", f"${eth:,.0f}"],
