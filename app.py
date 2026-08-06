@@ -154,7 +154,7 @@ def restore_from_file():
 
 # ==================== API KEY DE ETHERSCAN (desde st.secrets) ====================
 try:
-    ETHERSCAN_API_KEY = st.secrets["VQUESG2J7Z3A11WJYQ86NKI6U5SM4GEAXZ"]
+    ETHERSCAN_API_KEY = st.secrets["G1WH2NDN3YBMAW8FQ3ICK5E3XKY5A3X8UZ"]
     print("✅ ETHERSCAN_API_KEY cargada correctamente desde st.secrets")
 except:
     ETHERSCAN_API_KEY = None
@@ -217,7 +217,7 @@ def obtener_senal_con_criterio(sym, precio, senal_base, razon_base, confianza):
             return "BUY", f"Compra por caída (confianza alta {confianza}%)"
     return senal_base, razon_base
 
-# ==================== DATOS ON-CHAIN CON CACHÉ (1 MINUTO) Y ETH REAL ====================
+# ==================== DATOS ON-CHAIN CON CACHÉ Y DEPURACIÓN ====================
 def get_onchain_volume(symbol="BTC"):
     now = time.time()
     cache = st.session_state.onchain_cache.get(symbol, {"valor": None, "timestamp": 0})
@@ -233,18 +233,19 @@ def get_onchain_volume(symbol="BTC"):
                 data = response.json()
                 volume = data['values'][-1]['y'] / 1e6
                 st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
+                st.caption(f"🔹 BTC volumen actualizado: {volume:.2f}M")
                 return volume
             else:
+                st.warning(f"⚠️ Error al obtener BTC: código {response.status_code}")
                 return cache["valor"] if cache["valor"] is not None else None
         
         elif symbol == "ETH":
             if ETHERSCAN_API_KEY is None:
-                # Placeholder si no hay API Key
+                st.warning("⚠️ ETHERSCAN_API_KEY no configurada en st.secrets. Usando placeholder.")
                 volume = 1.0
                 st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
                 return volume
             
-            # Obtener transacciones diarias desde Etherscan
             url = f"https://api.etherscan.io/api?module=stats&action=ethdailytx&apikey={ETHERSCAN_API_KEY}"
             response = requests.get(url, timeout=10)
             if response.status_code == 200:
@@ -254,20 +255,24 @@ def get_onchain_volume(symbol="BTC"):
                     if result and len(result) > 0:
                         last_day = result[-1]
                         transactions = int(last_day.get("transactionCount", 0))
-                        volume = transactions / 1_000_000  # en millones de transacciones
+                        volume = transactions / 1_000_000
                         st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
+                        st.caption(f"🔹 ETH volumen actualizado: {volume:.2f}M transacciones")
                         return volume
                     else:
+                        st.warning("⚠️ Etherscan devolvió resultado vacío")
                         return cache["valor"] if cache["valor"] is not None else None
                 else:
+                    st.warning(f"⚠️ Etherscan error: {data.get('message', 'desconocido')}")
                     return cache["valor"] if cache["valor"] is not None else None
             else:
+                st.warning(f"⚠️ Error al consultar Etherscan: código {response.status_code}")
                 return cache["valor"] if cache["valor"] is not None else None
         
         else:
             return None
     except Exception as e:
-        print(f"Error obteniendo volumen on-chain: {e}")
+        st.error(f"❌ Error obteniendo volumen on-chain: {e}")
         return cache["valor"] if cache["valor"] is not None else None
 
 # ==================== TELEGRAM ====================
@@ -525,9 +530,10 @@ while True:
     else:
         st.session_state.indicadores_activados["ETH"] = False
 
+    # Consultar on-chain cada 3 ciclos (más rápido para depuración)
     onchain_vol_btc = None
     onchain_vol_eth = None
-    if st.session_state.cycle % 5 == 0:
+    if st.session_state.cycle % 3 == 0:
         onchain_vol_btc = get_onchain_volume("BTC")
         onchain_vol_eth = get_onchain_volume("ETH")
 
