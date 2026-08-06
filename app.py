@@ -152,6 +152,15 @@ def restore_from_file():
     ph = data.get("price_history", {"BTC": [], "ETH": []})
     st.session_state.price_history = {k: deque(v, maxlen=200) for k, v in ph.items()}
 
+# ==================== API KEY DE ETHERSCAN (desde st.secrets) ====================
+try:
+    ETHERSCAN_API_KEY = st.secrets["VQUESG2J7Z3A11WJYQ86NKI6U5SM4GEAXZ"]
+    print("✅ ETHERSCAN_API_KEY cargada correctamente desde st.secrets")
+except:
+    ETHERSCAN_API_KEY = None
+    print("⚠️ No se encontró ETHERSCAN_API_KEY en st.secrets. ETH on-chain usará placeholder.")
+
+# ==================== FUNCIONES DE APRENDIZAJE ====================
 def analizar_tendencia(historial, periodo=20):
     if len(historial) < periodo:
         return "NEUTRAL"
@@ -208,11 +217,14 @@ def obtener_senal_con_criterio(sym, precio, senal_base, razon_base, confianza):
             return "BUY", f"Compra por caída (confianza alta {confianza}%)"
     return senal_base, razon_base
 
+# ==================== DATOS ON-CHAIN CON CACHÉ (1 MINUTO) Y ETH REAL ====================
 def get_onchain_volume(symbol="BTC"):
     now = time.time()
     cache = st.session_state.onchain_cache.get(symbol, {"valor": None, "timestamp": 0})
+    
     if cache["valor"] is not None and (now - cache["timestamp"]) < 60:
         return cache["valor"]
+    
     try:
         if symbol == "BTC":
             url = "https://blockchain.info/charts/transaction-volume?timespan=1day&format=json"
@@ -222,16 +234,43 @@ def get_onchain_volume(symbol="BTC"):
                 volume = data['values'][-1]['y'] / 1e6
                 st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
                 return volume
+            else:
+                return cache["valor"] if cache["valor"] is not None else None
+        
         elif symbol == "ETH":
-            volume = 1.0
-            st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
-            return volume
+            if ETHERSCAN_API_KEY is None:
+                # Placeholder si no hay API Key
+                volume = 1.0
+                st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
+                return volume
+            
+            # Obtener transacciones diarias desde Etherscan
+            url = f"https://api.etherscan.io/api?module=stats&action=ethdailytx&apikey={ETHERSCAN_API_KEY}"
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if data["status"] == "1":
+                    result = data["result"]
+                    if result and len(result) > 0:
+                        last_day = result[-1]
+                        transactions = int(last_day.get("transactionCount", 0))
+                        volume = transactions / 1_000_000  # en millones de transacciones
+                        st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
+                        return volume
+                    else:
+                        return cache["valor"] if cache["valor"] is not None else None
+                else:
+                    return cache["valor"] if cache["valor"] is not None else None
+            else:
+                return cache["valor"] if cache["valor"] is not None else None
+        
         else:
             return None
     except Exception as e:
         print(f"Error obteniendo volumen on-chain: {e}")
         return cache["valor"] if cache["valor"] is not None else None
 
+# ==================== TELEGRAM ====================
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
 TELEGRAM_CHAT_ID = "5835990242"
 
@@ -242,6 +281,7 @@ def send_telegram(msg):
     except:
         pass
 
+# ==================== BITSO API ====================
 def get_bitso_price(book="btc_mxn"):
     try:
         url = f"https://api.bitso.com/api/v3/ticker/?book={book}"
@@ -269,6 +309,7 @@ def get_fear_greed():
         pass
     return 50, "Neutral"
 
+# ==================== INDICADORES ====================
 def compute_ema(prices, period):
     if len(prices) < period:
         return None
@@ -347,15 +388,17 @@ def confirmacion_vela(historial, senal_esperada):
         return curr < prev
     return True
 
+# ==================== INICIALIZAR ESTADO ====================
 if "data_loaded" not in st.session_state:
     restore_from_file()
     st.session_state.data_loaded = True
-    st.set_page_config(page_title="Bot Inteligente + On-Chain", layout="wide")
+    # ==================== INTERFAZ PRINCIPAL ====================
+st.set_page_config(page_title="Bot Inteligente + On-Chain (ETH Real)", layout="wide")
 
 if "umbral_caida" not in st.session_state:
     init_new_user_state()
 
-st.title("🧠 Bot Inteligente + Datos On-Chain (Volumen de Red)")
+st.title("🧠 Bot Inteligente + Datos On-Chain (BTC y ETH Reales)")
 
 st.sidebar.header("⚙️ Configuración Principal")
 valor_umbral = min(50.0, float(st.session_state.umbral_caida))
@@ -395,7 +438,7 @@ if st.sidebar.button("Reiniciar simulación"):
     save_data()
     st.rerun()
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("🧠 Bot con On-Chain activo")
+    send_telegram("🧠 Bot con On-Chain (ETH real) activo")
     st.success("Enviado")
 
 st.session_state.umbral_caida = umbral_caida
@@ -442,6 +485,7 @@ def send_signal_telegram(sym, tipo, precio, razon, ejecutado=False, monto=0, can
     except:
         pass
 
+# ==================== BUCLE PRINCIPAL ====================
 while True:
     btc = get_bitso_price("btc_mxn")
     eth = get_bitso_price("eth_mxn")
@@ -487,7 +531,7 @@ while True:
         onchain_vol_btc = get_onchain_volume("BTC")
         onchain_vol_eth = get_onchain_volume("ETH")
 
-    tabla_placeholder.subheader("📊 Señales + Datos On-Chain")
+    tabla_placeholder.subheader("📊 Señales + Datos On-Chain (ETH Real)")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
         "Precio MXN": [f"${btc:,.0f}", f"${eth:,.0f}"],
@@ -720,8 +764,6 @@ while True:
     if st.session_state.cycle % 10 == 0:
         save_data()
 
-    # ===== AQUÍ ESTÁ LA LÍNEA CORREGIDA =====
-    # Reemplaza cualquier versión incompleta con esta:
     estado_placeholder.info(f"🔹 Indicadores: BTC={st.session_state.indicadores_activados['BTC']} | ETH={st.session_state.indicadores_activados['ETH']} | Tendencia: BTC={st.session_state.tendencia['BTC']} | ETH={st.session_state.tendencia['ETH']}")
     if st.session_state.modo_solo_senales:
         estado_placeholder.info(f"🔇 Modo solo señales ACTIVADO - No se ejecutan órdenes")
