@@ -156,10 +156,6 @@ def restore_from_file():
 try:
     ETHERSCAN_API_KEY = st.secrets["G1WH2NDN3YBMAW8FQ3ICK5E3XKY5A3X8UZ"]
     print("✅ ETHERSCAN_API_KEY cargada correctamente desde st.secrets")
-except:
-    ETHERSCAN_API_KEY = None
-    print("⚠️ No se encontró ETHERSCAN_API_KEY en st.secrets. ETH on-chain usará placeholder.")
-
 # ==================== FUNCIONES DE APRENDIZAJE ====================
 def analizar_tendencia(historial, periodo=20):
     if len(historial) < periodo:
