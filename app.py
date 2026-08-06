@@ -71,7 +71,6 @@ def init_new_user_state():
     st.session_state.cycle = 0
     st.session_state.price_history = {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)}
     
-    # Parámetros acelerados (aprendizaje rápido)
     st.session_state.umbral_caida = 0.005
     st.session_state.stop_loss = 1.5
     st.session_state.take_profit = 0.02
@@ -96,8 +95,6 @@ def init_new_user_state():
     st.session_state.tendencia = {"BTC": "NEUTRAL", "ETH": "NEUTRAL"}
     st.session_state.historial_operaciones = []
     st.session_state.modo_aprendizaje = True
-    
-    # Caché para datos on-chain
     st.session_state.onchain_cache = {
         "BTC": {"valor": None, "timestamp": 0},
         "ETH": {"valor": None, "timestamp": 0}
@@ -155,7 +152,6 @@ def restore_from_file():
     ph = data.get("price_history", {"BTC": [], "ETH": []})
     st.session_state.price_history = {k: deque(v, maxlen=200) for k, v in ph.items()}
 
-# ==================== FUNCIONES DE APRENDIZAJE ====================
 def analizar_tendencia(historial, periodo=20):
     if len(historial) < periodo:
         return "NEUTRAL"
@@ -212,26 +208,21 @@ def obtener_senal_con_criterio(sym, precio, senal_base, razon_base, confianza):
             return "BUY", f"Compra por caída (confianza alta {confianza}%)"
     return senal_base, razon_base
 
-# ==================== DATOS ON-CHAIN CON CACHÉ (1 MINUTO) ====================
 def get_onchain_volume(symbol="BTC"):
     now = time.time()
     cache = st.session_state.onchain_cache.get(symbol, {"valor": None, "timestamp": 0})
-    
-    # Si el caché tiene menos de 60 segundos, devolver valor guardado
     if cache["valor"] is not None and (now - cache["timestamp"]) < 60:
         return cache["valor"]
-    
     try:
         if symbol == "BTC":
             url = "https://blockchain.info/charts/transaction-volume?timespan=1day&format=json"
             response = requests.get(url, timeout=10)
             if response.status_code == 200:
                 data = response.json()
-                volume = data['values'][-1]['y'] / 1e6  # en millones de BTC
+                volume = data['values'][-1]['y'] / 1e6
                 st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
                 return volume
         elif symbol == "ETH":
-            # Placeholder: en producción usar Etherscan o DefiLlama
             volume = 1.0
             st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
             return volume
@@ -241,7 +232,6 @@ def get_onchain_volume(symbol="BTC"):
         print(f"Error obteniendo volumen on-chain: {e}")
         return cache["valor"] if cache["valor"] is not None else None
 
-# ==================== TELEGRAM ====================
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
 TELEGRAM_CHAT_ID = "5835990242"
 
@@ -252,7 +242,6 @@ def send_telegram(msg):
     except:
         pass
 
-# ==================== BITSO API ====================
 def get_bitso_price(book="btc_mxn"):
     try:
         url = f"https://api.bitso.com/api/v3/ticker/?book={book}"
@@ -280,7 +269,6 @@ def get_fear_greed():
         pass
     return 50, "Neutral"
 
-# ==================== INDICADORES ====================
 def compute_ema(prices, period):
     if len(prices) < period:
         return None
@@ -359,12 +347,10 @@ def confirmacion_vela(historial, senal_esperada):
         return curr < prev
     return True
 
-# ==================== INICIALIZAR ESTADO ====================
 if "data_loaded" not in st.session_state:
     restore_from_file()
     st.session_state.data_loaded = True
-    # ==================== INTERFAZ PRINCIPAL ====================
-st.set_page_config(page_title="Bot Inteligente + On-Chain", layout="wide")
+    st.set_page_config(page_title="Bot Inteligente + On-Chain", layout="wide")
 
 if "umbral_caida" not in st.session_state:
     init_new_user_state()
@@ -412,7 +398,6 @@ if st.sidebar.button("📢 Prueba Telegram"):
     send_telegram("🧠 Bot con On-Chain activo")
     st.success("Enviado")
 
-# Actualizar parámetros
 st.session_state.umbral_caida = umbral_caida
 st.session_state.take_profit = take_profit
 st.session_state.stop_loss = stop_loss
@@ -457,7 +442,6 @@ def send_signal_telegram(sym, tipo, precio, razon, ejecutado=False, monto=0, can
     except:
         pass
 
-# ==================== BUCLE PRINCIPAL ====================
 while True:
     btc = get_bitso_price("btc_mxn")
     eth = get_bitso_price("eth_mxn")
@@ -484,11 +468,9 @@ while True:
     cambio_btc = (btc - st.session_state.ref_price["BTC"]) / st.session_state.ref_price["BTC"] * 100
     cambio_eth = (eth - st.session_state.ref_price["ETH"]) / st.session_state.ref_price["ETH"] * 100
 
-    # Tendencias
     st.session_state.tendencia["BTC"] = analizar_tendencia(st.session_state.price_history["BTC"])
     st.session_state.tendencia["ETH"] = analizar_tendencia(st.session_state.price_history["ETH"])
 
-    # Activar indicadores según umbral
     if abs(cambio_btc) >= st.session_state.umbral_indicadores_activacion:
         st.session_state.indicadores_activados["BTC"] = True
     else:
@@ -499,14 +481,12 @@ while True:
     else:
         st.session_state.indicadores_activados["ETH"] = False
 
-    # Obtener datos on-chain (cada 5 ciclos para no saturar)
     onchain_vol_btc = None
     onchain_vol_eth = None
     if st.session_state.cycle % 5 == 0:
         onchain_vol_btc = get_onchain_volume("BTC")
         onchain_vol_eth = get_onchain_volume("ETH")
 
-    # Mostrar tabla de señales
     tabla_placeholder.subheader("📊 Señales + Datos On-Chain")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
@@ -550,7 +530,6 @@ while True:
         st.session_state.daily_trades = 0
         st.session_state.last_day = hoy
 
-    # Evaluación de rendimiento cada 5 ciclos (acelerado)
     if st.session_state.cycle % 5 == 0 and st.session_state.modo_aprendizaje:
         for sym in ["BTC", "ETH"]:
             eval_rend = evaluar_rendimiento(sym)
@@ -576,14 +555,12 @@ while True:
         accion = None
         modo_actual = "Indicadores" if st.session_state.indicadores_activados[sym] else "Scalping"
 
-        # Obtener volumen on-chain actual (usa caché)
         volumen_onchain = None
         if sym == "BTC":
             volumen_onchain = get_onchain_volume("BTC")
         elif sym == "ETH":
             volumen_onchain = get_onchain_volume("ETH")
 
-        # Lógica de señales
         if st.session_state.indicadores_activados[sym]:
             hist = list(st.session_state.price_history[sym])
             if len(hist) >= max(st.session_state.ema_slow, 15):
@@ -616,7 +593,6 @@ while True:
                             accion = "SELL"
                             razon = f"Trailing Stop ({st.session_state.trailing}%)"
         else:
-            # Modo scalping
             if pos > 0 and entry > 0:
                 if ganancia >= st.session_state.take_profit:
                     accion = "SELL"
@@ -633,7 +609,6 @@ while True:
             if accion is None and pos == 0:
                 if caida_actual >= st.session_state.umbral_caida:
                     if confianza >= 30 or not st.session_state.modo_aprendizaje:
-                        # Integración on‑chain: comprar solo si volumen > umbral
                         if volumen_onchain is not None and volumen_onchain > 0.5:
                             accion = "BUY"
                             razon = f"Caída del {caida_actual:.4f}% (Volumen on-chain alto: {volumen_onchain:.2f}M)"
@@ -642,7 +617,6 @@ while True:
                     else:
                         razon = f"Caída del {caida_actual:.4f}% (ignorada: confianza baja {confianza}%)"
 
-        # Aplicar criterio propio
         if accion:
             accion_con_criterio, razon_con_criterio = obtener_senal_con_criterio(
                 sym, precio, accion, razon, confianza
@@ -651,7 +625,6 @@ while True:
                 accion = accion_con_criterio
                 razon = razon_con_criterio
 
-        # Ejecución
         last_act = st.session_state.last_action.get(sym)
         if accion and accion != last_act:
             ejecutado = False
@@ -747,6 +720,10 @@ while True:
     if st.session_state.cycle % 10 == 0:
         save_data()
 
-    # ===== LÍNEA CORREGIDA (sin errores de sintaxis) =====
+    # ===== AQUÍ ESTÁ LA LÍNEA CORREGIDA =====
+    # Reemplaza cualquier versión incompleta con esta:
     estado_placeholder.info(f"🔹 Indicadores: BTC={st.session_state.indicadores_activados['BTC']} | ETH={st.session_state.indicadores_activados['ETH']} | Tendencia: BTC={st.session_state.tendencia['BTC']} | ETH={st.session_state.tendencia['ETH']}")
-    if st.session_state.mod
+    if st.session_state.modo_solo_senales:
+        estado_placeholder.info(f"🔇 Modo solo señales ACTIVADO - No se ejecutan órdenes")
+
+    time.sleep(30)
