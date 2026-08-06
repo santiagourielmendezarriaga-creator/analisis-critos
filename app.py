@@ -156,9 +156,6 @@ def restore_from_file():
 try:
     ETHERSCAN_API_KEY = st.secrets["G1WH2NDN3YBMAW8FQ3ICK5E3XKY5A3X8UZ"]
     print("✅ ETHERSCAN_API_KEY cargada correctamente desde st.secrets")
-except:
-    ETHERSCAN_API_KEY = None
-    print("⚠️ No se encontró ETHERSCAN_API_KEY en st.secrets. ETH on-chain usará placeholder.")
 
 # ==================== FUNCIONES DE APRENDIZAJE ====================
 def analizar_tendencia(historial, periodo=20):
@@ -217,7 +214,7 @@ def obtener_senal_con_criterio(sym, precio, senal_base, razon_base, confianza):
             return "BUY", f"Compra por caída (confianza alta {confianza}%)"
     return senal_base, razon_base
 
-# ==================== DATOS ON-CHAIN CON CACHÉ Y DEPURACIÓN ====================
+# ==================== DATOS ON-CHAIN CON CACHÉ (VERSIÓN SEGURA) ====================
 def get_onchain_volume(symbol="BTC"):
     now = time.time()
     cache = st.session_state.onchain_cache.get(symbol, {"valor": None, "timestamp": 0})
@@ -240,12 +237,14 @@ def get_onchain_volume(symbol="BTC"):
                 return cache["valor"] if cache["valor"] is not None else None
         
         elif symbol == "ETH":
-            if ETHERSCAN_API_KEY is None:
-                st.warning("⚠️ ETHERSCAN_API_KEY no configurada en st.secrets. Usando placeholder.")
+            # Si no hay API Key, usar placeholder SIN llamar a Etherscan
+            if not ETHERSCAN_API_KEY:
+                st.warning("⚠️ ETHERSCAN_API_KEY no configurada. Usando placeholder para ETH.")
                 volume = 1.0
                 st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
                 return volume
             
+            # Si hay clave, intentar consultar
             url = f"https://api.etherscan.io/api?module=stats&action=ethdailytx&apikey={ETHERSCAN_API_KEY}"
             response = requests.get(url, timeout=10)
             if response.status_code == 200:
@@ -403,7 +402,7 @@ st.set_page_config(page_title="Bot Inteligente + On-Chain (ETH Real)", layout="w
 if "umbral_caida" not in st.session_state:
     init_new_user_state()
 
-st.title("🧠 Bot Inteligente + Datos On-Chain (BTC y ETH Reales)")
+st.title("🧠 Bot Inteligente + Datos On-Chain (BTC y ETH)")
 
 st.sidebar.header("⚙️ Configuración Principal")
 valor_umbral = min(50.0, float(st.session_state.umbral_caida))
@@ -443,7 +442,7 @@ if st.sidebar.button("Reiniciar simulación"):
     save_data()
     st.rerun()
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("🧠 Bot con On-Chain (ETH real) activo")
+    send_telegram("🧠 Bot con On-Chain activo")
     st.success("Enviado")
 
 st.session_state.umbral_caida = umbral_caida
@@ -530,14 +529,14 @@ while True:
     else:
         st.session_state.indicadores_activados["ETH"] = False
 
-    # Consultar on-chain cada 3 ciclos (más rápido para depuración)
+    # Consultar on-chain cada 3 ciclos
     onchain_vol_btc = None
     onchain_vol_eth = None
     if st.session_state.cycle % 3 == 0:
         onchain_vol_btc = get_onchain_volume("BTC")
         onchain_vol_eth = get_onchain_volume("ETH")
 
-    tabla_placeholder.subheader("📊 Señales + Datos On-Chain (ETH Real)")
+    tabla_placeholder.subheader("📊 Señales + Datos On-Chain")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
         "Precio MXN": [f"${btc:,.0f}", f"${eth:,.0f}"],
