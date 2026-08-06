@@ -223,7 +223,7 @@ def get_onchain_volume(symbol="BTC"):
     cache = st.session_state.onchain_cache.get(symbol, {"valor": None, "timestamp": 0})
     
     # Si el caché es reciente, devolver valor guardado
-    if cache["valor"] is not None and (now - cache["timestamp"]) < 60:
+    if cache["valor"] is not None and (now - cache["timestamp"]) < 10:
         return cache["valor"]
     
     # Si no hay caché o está expirado, intentar obtener datos reales
