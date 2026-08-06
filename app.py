@@ -156,6 +156,9 @@ def restore_from_file():
 try:
     ETHERSCAN_API_KEY = st.secrets["G1WH2NDN3YBMAW8FQ3ICK5E3XKY5A3X8UZ"]
     print("✅ ETHERSCAN_API_KEY cargada correctamente desde st.secrets")
+except:
+    ETHERSCAN_API_KEY = None
+    print("⚠️ No se encontró ETHERSCAN_API_KEY en st.secrets. ETH on-chain usará placeholder.")
 
 # ==================== FUNCIONES DE APRENDIZAJE ====================
 def analizar_tendencia(historial, periodo=20):
@@ -214,7 +217,7 @@ def obtener_senal_con_criterio(sym, precio, senal_base, razon_base, confianza):
             return "BUY", f"Compra por caída (confianza alta {confianza}%)"
     return senal_base, razon_base
 
-# ==================== DATOS ON-CHAIN CON CACHÉ (VERSIÓN SEGURA) ====================
+# ==================== DATOS ON-CHAIN CON CACHÉ (VERSIÓN CORREGIDA) ====================
 def get_onchain_volume(symbol="BTC"):
     now = time.time()
     cache = st.session_state.onchain_cache.get(symbol, {"valor": None, "timestamp": 0})
@@ -222,8 +225,8 @@ def get_onchain_volume(symbol="BTC"):
     if cache["valor"] is not None and (now - cache["timestamp"]) < 60:
         return cache["valor"]
     
-    try:
-        if symbol == "BTC":
+    if symbol == "BTC":
+        try:
             url = "https://blockchain.info/charts/transaction-volume?timespan=1day&format=json"
             response = requests.get(url, timeout=10)
             if response.status_code == 200:
@@ -235,16 +238,19 @@ def get_onchain_volume(symbol="BTC"):
             else:
                 st.warning(f"⚠️ Error al obtener BTC: código {response.status_code}")
                 return cache["valor"] if cache["valor"] is not None else None
+        except Exception as e:
+            st.error(f"❌ Error en BTC: {e}")
+            return cache["valor"] if cache["valor"] is not None else None
+
+    elif symbol == "ETH":
+        # Si no hay API Key, usar placeholder sin llamar a Etherscan
+        if not ETHERSCAN_API_KEY:
+            st.warning("⚠️ ETHERSCAN_API_KEY no configurada. Usando placeholder para ETH.")
+            volume = 1.0
+            st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
+            return volume
         
-        elif symbol == "ETH":
-            # Si no hay API Key, usar placeholder SIN llamar a Etherscan
-            if not ETHERSCAN_API_KEY:
-                st.warning("⚠️ ETHERSCAN_API_KEY no configurada. Usando placeholder para ETH.")
-                volume = 1.0
-                st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
-                return volume
-            
-            # Si hay clave, intentar consultar
+        try:
             url = f"https://api.etherscan.io/api?module=stats&action=ethdailytx&apikey={ETHERSCAN_API_KEY}"
             response = requests.get(url, timeout=10)
             if response.status_code == 200:
@@ -267,12 +273,11 @@ def get_onchain_volume(symbol="BTC"):
             else:
                 st.warning(f"⚠️ Error al consultar Etherscan: código {response.status_code}")
                 return cache["valor"] if cache["valor"] is not None else None
-        
-        else:
-            return None
-    except Exception as e:
-        st.error(f"❌ Error obteniendo volumen on-chain: {e}")
-        return cache["valor"] if cache["valor"] is not None else None
+        except Exception as e:
+            st.error(f"❌ Error en ETH: {e}")
+            return cache["valor"] if cache["valor"] is not None else None
+    else:
+        return None
 
 # ==================== TELEGRAM ====================
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
@@ -397,7 +402,7 @@ if "data_loaded" not in st.session_state:
     restore_from_file()
     st.session_state.data_loaded = True
     # ==================== INTERFAZ PRINCIPAL ====================
-st.set_page_config(page_title="Bot Inteligente + On-Chain (ETH Real)", layout="wide")
+st.set_page_config(page_title="Bot Inteligente + On-Chain", layout="wide")
 
 if "umbral_caida" not in st.session_state:
     init_new_user_state()
