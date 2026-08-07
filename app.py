@@ -152,13 +152,8 @@ def restore_from_file():
     ph = data.get("price_history", {"BTC": [], "ETH": []})
     st.session_state.price_history = {k: deque(v, maxlen=200) for k, v in ph.items()}
 
-# ==================== API KEY DE ETHERSCAN (ACTIVA) ====================
-try:
-    ETHERSCAN_API_KEY = st.secrets["G1WH2NDN3YBMAW8FQ3ICK5E3XKY5A3X8UZ"]
-    print("✅ ETHERSCAN_API_KEY cargada correctamente desde st.secrets")
-except:
-    ETHERSCAN_API_KEY = None
-    print("⚠️ No se encontró ETHERSCAN_API_KEY en st.secrets. ETH on-chain usará placeholder.")
+# ==================== API DE ETHERSCAN (DESACTIVADA - USAMOS COINGECKO) ====================
+ETHERSCAN_API_KEY = None
 
 # ==================== FUNCIONES DE APRENDIZAJE ====================
 def analizar_tendencia(historial, periodo=20):
@@ -217,71 +212,59 @@ def obtener_senal_con_criterio(sym, precio, senal_base, razon_base, confianza):
             return "BUY", f"Compra por caída (confianza alta {confianza}%)"
     return senal_base, razon_base
 
-# ==================== DATOS ON-CHAIN CON CACHÉ DE 10 SEGUNDOS ====================
+# ==================== DATOS ON-CHAIN CON COINGECKO (CONFIABLE Y SIN API KEY) ====================
 def get_onchain_volume(symbol="BTC"):
     now = time.time()
     cache = st.session_state.onchain_cache.get(symbol, {"valor": None, "timestamp": 0})
     
-    # Caché de 10 segundos (más frecuencia)
-    if cache["valor"] is not None and (now - cache["timestamp"]) < 10:
+    # Caché de 60 segundos para no saturar CoinGecko
+    if cache["valor"] is not None and (now - cache["timestamp"]) < 60:
         return cache["valor"]
     
-    if symbol == "BTC":
-        try:
-            url = "https://blockchain.info/charts/transaction-volume?timespan=1day&format=json"
+    try:
+        if symbol == "BTC":
+            url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=1"
             response = requests.get(url, timeout=5)
             if response.status_code == 200:
                 data = response.json()
-                volume = data['values'][-1]['y'] / 1e6
-                st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
-                return volume
-            else:
-                volume = 0.35
-                st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
-                return volume
-        except:
-            volume = 0.35
-            st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
-            return volume
-    
-    elif symbol == "ETH":
-        if not ETHERSCAN_API_KEY:
-            volume = 1.0
-            st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
-            return volume
-        
-        try:
-            url = f"https://api.etherscan.io/api?module=stats&action=ethdailytx&apikey={ETHERSCAN_API_KEY}"
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("status") == "1":
-                    result = data.get("result", [])
-                    if result:
-                        last_day = result[-1]
-                        transactions = int(last_day.get("transactionCount", 0))
-                        volume = transactions / 1_000_000
-                        st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
-                        return volume
-                    else:
-                        volume = 1.0
-                        st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
-                        return volume
+                volumes = data.get("total_volumes", [])
+                if volumes:
+                    # Volumen en USD (último valor) en miles de millones
+                    volume_usd = volumes[-1][1] / 1e9
+                    st.session_state.onchain_cache[symbol] = {"valor": volume_usd, "timestamp": now}
+                    return volume_usd
                 else:
-                    volume = 1.0
+                    volume = 0.5
                     st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
                     return volume
             else:
-                volume = 1.0
+                volume = 0.5
                 st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
                 return volume
-        except:
-            volume = 1.0
-            st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
-            return volume
-    
-    else:
-        return None
+        elif symbol == "ETH":
+            url = "https://api.coingecko.com/api/v3/coins/ethereum/market_chart?vs_currency=usd&days=1"
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                volumes = data.get("total_volumes", [])
+                if volumes:
+                    volume_usd = volumes[-1][1] / 1e9
+                    st.session_state.onchain_cache[symbol] = {"valor": volume_usd, "timestamp": now}
+                    return volume_usd
+                else:
+                    volume = 0.5
+                    st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
+                    return volume
+            else:
+                volume = 0.5
+                st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
+                return volume
+        else:
+            return None
+    except:
+        volume = 0.5
+        st.session_state.onchain_cache[symbol] = {"valor": volume, "timestamp": now}
+        return volume
 
 # ==================== TELEGRAM ====================
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
@@ -406,12 +389,12 @@ if "data_loaded" not in st.session_state:
     restore_from_file()
     st.session_state.data_loaded = True
     # ==================== INTERFAZ PRINCIPAL ====================
-st.set_page_config(page_title="Bot Inteligente + On-Chain (Caché 10s)", layout="wide")
+st.set_page_config(page_title="Bot Inteligente + CoinGecko (Volumen Real)", layout="wide")
 
 if "umbral_caida" not in st.session_state:
     init_new_user_state()
 
-st.title("🧠 Bot Inteligente + Datos On-Chain (Caché 10s)")
+st.title("🧠 Bot Inteligente + Datos de Volumen (CoinGecko)")
 
 st.sidebar.header("⚙️ Configuración Principal")
 valor_umbral = min(50.0, float(st.session_state.umbral_caida))
@@ -451,7 +434,7 @@ if st.sidebar.button("Reiniciar simulación"):
     save_data()
     st.rerun()
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("🧠 Bot con caché 10s activo")
+    send_telegram("🧠 Bot con CoinGecko activo")
     st.success("Enviado")
 
 st.session_state.umbral_caida = umbral_caida
@@ -477,7 +460,7 @@ def send_signal_telegram(sym, tipo, precio, razon, ejecutado=False, monto=0, can
             msg = (f"📢 SEÑAL {estado} - {tipo} {sym}\n"
                    f"Modo: {modo}\n"
                    f"Confianza: {confianza}%\n"
-                   f"Volumen on-chain: {volumen_onchain:.2f}M {sym}\n"
+                   f"Volumen (CoinGecko): {volumen_onchain:.2f}B USD\n"
                    f"Monto: ${monto:.0f}\n"
                    f"Cantidad: {cantidad:.6f}\n"
                    f"Precio: ${precio:,.0f}\n"
@@ -487,7 +470,7 @@ def send_signal_telegram(sym, tipo, precio, razon, ejecutado=False, monto=0, can
             msg = (f"📢 SEÑAL {estado} - {tipo} {sym}\n"
                    f"Modo: {modo}\n"
                    f"Confianza: {confianza}%\n"
-                   f"Volumen on-chain: {volumen_onchain if volumen_onchain else 'N/A'}\n"
+                   f"Volumen (CoinGecko): {volumen_onchain:.2f}B USD\n"
                    f"Precio: ${precio:,.0f}\n"
                    f"Razón: {razon}\n"
                    f"Saldo: ${st.session_state.balance:.2f}\n"
@@ -538,20 +521,20 @@ while True:
     else:
         st.session_state.indicadores_activados["ETH"] = False
 
-    # Obtener on-chain (con caché de 10s)
+    # Obtener volumen de CoinGecko (con caché de 60s)
     onchain_vol_btc = get_onchain_volume("BTC")
     onchain_vol_eth = get_onchain_volume("ETH")
 
-    tabla_placeholder.subheader("📊 Señales + Datos On-Chain (Caché 10s)")
+    tabla_placeholder.subheader("📊 Señales + Volumen de Mercado (CoinGecko)")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
         "Precio MXN": [f"${btc:,.0f}", f"${eth:,.0f}"],
         "Cambio desde inicio": [f"{cambio_btc:+.2f}%", f"{cambio_eth:+.2f}%"],
         "Tendencia": [st.session_state.tendencia["BTC"], st.session_state.tendencia["ETH"]],
         "Confianza": [f"{st.session_state.confianza['BTC']}%", f"{st.session_state.confianza['ETH']}%"],
-        "Volumen On-Chain (24h)": [
-            f"{onchain_vol_btc:.2f}M" if onchain_vol_btc else "N/A",
-            f"{onchain_vol_eth:.2f}M" if onchain_vol_eth else "N/A"
+        "Volumen 24h (USD)": [
+            f"{onchain_vol_btc:.2f}B" if onchain_vol_btc else "N/A",
+            f"{onchain_vol_eth:.2f}B" if onchain_vol_eth else "N/A"
         ],
         "Modo": [
             "📉 Scalping" if not st.session_state.indicadores_activados["BTC"] else "🧠 Indicadores",
@@ -660,11 +643,12 @@ while True:
             if accion is None and pos == 0:
                 if caida_actual >= st.session_state.umbral_caida:
                     if confianza >= 30 or not st.session_state.modo_aprendizaje:
-                        if volumen_onchain is not None and volumen_onchain > 0.5:
+                        # 🔥 INTEGRACIÓN CON VOLUMEN: si el volumen es alto, la señal es más fuerte
+                        if volumen_onchain is not None and volumen_onchain > 2.0:  # >2B USD
                             accion = "BUY"
-                            razon = f"Caída del {caida_actual:.4f}% (Volumen on-chain alto: {volumen_onchain:.2f}M)"
+                            razon = f"Caída del {caida_actual:.4f}% (Volumen alto: {volumen_onchain:.2f}B USD)"
                         else:
-                            razon = f"Caída del {caida_actual:.4f}% (Volumen on-chain bajo {volumen_onchain})"
+                            razon = f"Caída del {caida_actual:.4f}% (Volumen bajo: {volumen_onchain:.2f}B USD)"
                     else:
                         razon = f"Caída del {caida_actual:.4f}% (ignorada: confianza baja {confianza}%)"
 
@@ -706,7 +690,7 @@ while True:
                                 msg = (f"🟢 COMPRA {sym} #{i+1}\n"
                                        f"Modo: {modo_actual}\n"
                                        f"Confianza: {confianza}%\n"
-                                       f"Volumen on-chain: {volumen_onchain:.2f}M {sym}\n"
+                                       f"Volumen (CoinGecko): {volumen_onchain:.2f}B USD\n"
                                        f"Monto: ${monto_por_compra:.0f}\n"
                                        f"Cantidad: {qty:.6f}\n"
                                        f"Precio: ${precio:,.0f}\n"
@@ -754,7 +738,7 @@ while True:
                     msg = (f"🔴 VENTA {sym}\n"
                            f"Modo: {modo_actual}\n"
                            f"Confianza: {confianza}%\n"
-                           f"Volumen on-chain: {volumen_onchain:.2f}M {sym}\n"
+                           f"Volumen (CoinGecko): {volumen_onchain:.2f}B USD\n"
                            f"Cantidad: {qty:.6f}\n"
                            f"Precio: ${precio:,.0f}\n"
                            f"Neto: ${net:.2f}\n"
