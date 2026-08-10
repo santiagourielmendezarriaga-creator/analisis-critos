@@ -65,6 +65,7 @@ def init_new_user_state():
     st.session_state.daily_trades = 0
     st.session_state.last_day = datetime.now().day
     st.session_state.ref_price = {"BTC": 0.0, "ETH": 0.0}
+    # ===== VARIABLES CORREGIDAS: LAST_PRICE INICIALIZADA =====
     st.session_state.last_price = {"BTC": 0.0, "ETH": 0.0}
     st.session_state.entry_price = {"BTC": 0.0, "ETH": 0.0}
     st.session_state.highest_price = {"BTC": 0.0, "ETH": 0.0}
@@ -117,6 +118,7 @@ def restore_from_file():
     st.session_state.daily_trades = data.get("daily_trades", 0)
     st.session_state.last_day = data.get("last_day", datetime.now().day)
     st.session_state.ref_price = data.get("ref_price", {"BTC": 0.0, "ETH": 0.0})
+    # ===== VARIABLES CORREGIDAS: LAST_PRICE CARGADA DESDE ARCHIVO =====
     st.session_state.last_price = data.get("last_price", {"BTC": 0.0, "ETH": 0.0})
     st.session_state.entry_price = data.get("entry_price", {"BTC": 0.0, "ETH": 0.0})
     st.session_state.highest_price = data.get("highest_price", {"BTC": 0.0, "ETH": 0.0})
@@ -212,12 +214,11 @@ def obtener_senal_con_criterio(sym, precio, senal_base, razon_base, confianza):
             return "BUY", f"Compra por caída (confianza alta {confianza}%)"
     return senal_base, razon_base
 
-# ==================== DATOS ON-CHAIN CON COINGECKO (CONFIABLE Y SIN API KEY) ====================
+# ==================== DATOS ON-CHAIN CON COINGECKO ====================
 def get_onchain_volume(symbol="BTC"):
     now = time.time()
     cache = st.session_state.onchain_cache.get(symbol, {"valor": None, "timestamp": 0})
     
-    # Caché de 60 segundos para no saturar CoinGecko
     if cache["valor"] is not None and (now - cache["timestamp"]) < 60:
         return cache["valor"]
     
@@ -229,7 +230,6 @@ def get_onchain_volume(symbol="BTC"):
                 data = response.json()
                 volumes = data.get("total_volumes", [])
                 if volumes:
-                    # Volumen en USD (último valor) en miles de millones
                     volume_usd = volumes[-1][1] / 1e9
                     st.session_state.onchain_cache[symbol] = {"valor": volume_usd, "timestamp": now}
                     return volume_usd
@@ -389,8 +389,19 @@ if "data_loaded" not in st.session_state:
     restore_from_file()
     st.session_state.data_loaded = True
     # ==================== INTERFAZ PRINCIPAL ====================
-st.set_page_config(page_title="Bot Inteligente + CoinGecko (Volumen Real)", layout="wide")
+st.set_page_config(page_title="Bot Inteligente + Datos de Volumen (CoinGecko)", layout="wide")
 
+# =====================================================
+# FORZAR INICIALIZACIÓN DE VARIABLES DE ESTADO (CORRECCIÓN DE ERRORES)
+# =====================================================
+if "last_price" not in st.session_state:
+    st.session_state.last_price = {"BTC": 0.0, "ETH": 0.0}
+if "ref_price" not in st.session_state:
+    st.session_state.ref_price = {"BTC": 0.0, "ETH": 0.0}
+if "entry_price" not in st.session_state:
+    st.session_state.entry_price = {"BTC": 0.0, "ETH": 0.0}
+if "highest_price" not in st.session_state:
+    st.session_state.highest_price = {"BTC": 0.0, "ETH": 0.0}
 if "umbral_caida" not in st.session_state:
     init_new_user_state()
 
@@ -521,7 +532,7 @@ while True:
     else:
         st.session_state.indicadores_activados["ETH"] = False
 
-    # Obtener volumen de CoinGecko (con caché de 60s)
+    # Obtener volumen de CoinGecko
     onchain_vol_btc = get_onchain_volume("BTC")
     onchain_vol_eth = get_onchain_volume("ETH")
 
@@ -643,8 +654,7 @@ while True:
             if accion is None and pos == 0:
                 if caida_actual >= st.session_state.umbral_caida:
                     if confianza >= 30 or not st.session_state.modo_aprendizaje:
-                        # 🔥 INTEGRACIÓN CON VOLUMEN: si el volumen es alto, la señal es más fuerte
-                        if volumen_onchain is not None and volumen_onchain > 2.0:  # >2B USD
+                        if volumen_onchain is not None and volumen_onchain > 2.0:
                             accion = "BUY"
                             razon = f"Caída del {caida_actual:.4f}% (Volumen alto: {volumen_onchain:.2f}B USD)"
                         else:
