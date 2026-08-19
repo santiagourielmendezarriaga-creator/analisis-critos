@@ -4,7 +4,6 @@ import time
 import json
 import os
 import statistics
-import shutil
 from datetime import datetime, timedelta
 from collections import deque
 import yfinance as yf
@@ -20,7 +19,7 @@ def load_data():
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 # Verificar que los datos tengan las claves mínimas
-                if "balance" in data and "positions" in data:
+                if "balance" in data and "positions" in data and "cycle" in data:
                     return data
                 else:
                     # Si el archivo está corrupto, intentar restaurar desde backup
@@ -42,9 +41,6 @@ def load_data():
 
 def save_data():
     """Guarda datos con respaldo automático."""
-    if not st.session_state.user_id:
-        return
-    
     try:
         data = {
             "balance": st.session_state.balance,
@@ -163,6 +159,7 @@ def restore_from_file():
         st.session_state.last_price = data.get("last_price", {"BTC": 0.0, "ETH": 0.0})
         st.session_state.entry_price = data.get("entry_price", {"BTC": 0.0, "ETH": 0.0})
         st.session_state.highest_price = data.get("highest_price", {"BTC": 0.0, "ETH": 0.0})
+        # ===== CICLO CORREGIDO: SE LEE DESDE EL ARCHIVO =====
         st.session_state.cycle = data.get("cycle", 0)
         st.session_state.umbral_caida = data.get("umbral_caida", 0.005)
         st.session_state.stop_loss = data.get("stop_loss", 1.5)
@@ -617,7 +614,7 @@ def send_signal_telegram(sym, tipo, precio, razon, ejecutado=False, monto=0, can
         send_telegram(msg)
     except:
         pass
-        # ==================== BUCLE PRINCIPAL CON MANEJO DE ERRORES ====================
+        # ==================== BUCLE PRINCIPAL CON GUARDADO CADA 3 CICLOS ====================
 while True:
     try:
         # Verificar que las variables de estado existan antes de usarlas
@@ -648,7 +645,16 @@ while True:
             st.session_state.ref_price["BTC"] = btc
             st.session_state.ref_price["ETH"] = eth
 
+        # ===== CICLO INCREMENTADO =====
         st.session_state.cycle += 1
+        
+        # ===== GUARDAR CADA 3 CICLOS (para no perder el progreso) =====
+        if st.session_state.cycle % 3 == 0:
+            try:
+                save_data()
+            except Exception as e:
+                print(f"Error guardando datos: {e}")
+
         fng_value, fng_label = get_fear_greed()
         
         caida_btc = (st.session_state.ref_price["BTC"] - btc) / st.session_state.ref_price["BTC"] * 100
@@ -950,7 +956,8 @@ while True:
             except Exception as e:
                 print(f"Error en operación de {sym}: {e}")
 
-        if st.session_state.cycle % 10 == 0:
+        # ===== GUARDAR AL FINAL DEL CICLO (si no se guardó en el ciclo actual) =====
+        if st.session_state.cycle % 3 == 0:
             try:
                 save_data()
             except:
@@ -961,7 +968,6 @@ while True:
             estado_placeholder.info(f"🔇 Modo solo señales ACTIVADO - No se ejecutan órdenes")
 
     except Exception as e:
-        # Manejo de errores: si algo falla, esperar y reiniciar el ciclo
         print(f"Error en el bucle principal: {e}")
         time.sleep(10)
         continue
