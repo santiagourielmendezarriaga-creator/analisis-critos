@@ -291,8 +291,7 @@ def obtener_senal_con_criterio(sym, precio, senal_base, razon_base, confianza):
         if senal_base == "BUY" and "Caída" in razon_base:
             return "BUY", f"Compra por caída (confianza alta {confianza}%)"
     return senal_base, razon_base
-
-# ==================== DATOS HISTÓRICOS DE 30 DÍAS ====================
+    # ==================== DATOS HISTÓRICOS DE 30 DÍAS ====================
 def get_historical_trend(symbol="BTC", days=30):
     try:
         if symbol == "BTC":
@@ -580,7 +579,6 @@ tabla_placeholder = st.empty()
 info_placeholder = st.empty()
 historial_placeholder = st.empty()
 estado_placeholder = st.empty()
-
 # ===== FUNCIÓN PARA ENVIAR SEÑALES POR TELEGRAM =====
 def send_signal_telegram(sym, tipo, precio, razon, ejecutado=False, monto=0, cantidad=0, modo="scalping", confianza=50, volumen_onchain=None, cambio_30d=None, tendencia_30d=None):
     try:
@@ -601,9 +599,13 @@ def send_signal_telegram(sym, tipo, precio, razon, ejecutado=False, monto=0, can
         send_telegram(msg)
     except:
         pass
-        # ==================== LÓGICA DE VOTACIÓN Y SEÑALES ====================
-def procesar_senal(sym, precio, btc, eth, fng_value, onchain_vol_btc, onchain_vol_eth, trend_btc, trend_eth):
-    """Procesa la señal para una moneda y devuelve (accion, razon, modo_actual, factor_30d, volumen_onchain, cambio_30d, tendencia_30d)."""
+
+# ==================== LÓGICA DE VOTACIÓN Y PROCESAMIENTO DE SEÑALES ====================
+def procesar_senal(sym, precio, fng_value, onchain_vol_btc, onchain_vol_eth, trend_btc, trend_eth):
+    """
+    Procesa la señal para una moneda.
+    Retorna: (accion, razon, modo_actual, factor_30d, volumen_onchain, cambio_30d, tendencia_30d)
+    """
     pos = st.session_state.positions.get(sym, 0)
     entry = st.session_state.entry_price.get(sym, 0)
     ref = st.session_state.ref_price.get(sym, 0)
@@ -611,6 +613,8 @@ def procesar_senal(sym, precio, btc, eth, fng_value, onchain_vol_btc, onchain_vo
     caida_actual = (ref - precio) / ref * 100 if ref != 0 else 0
     ganancia = (precio - entry) / entry * 100 if entry != 0 else 0
     confianza = st.session_state.confianza.get(sym, 50)
+    
+    # Obtener datos de tendencia 30d
     trend_data = st.session_state.historical_trend.get(sym, {})
     cambio_30d = trend_data.get("cambio_porcentual", 0)
     tendencia_30d = trend_data.get("tendencia", "N/A")
@@ -619,8 +623,13 @@ def procesar_senal(sym, precio, btc, eth, fng_value, onchain_vol_btc, onchain_vo
     accion = None
     modo_actual = "Indicadores" if st.session_state.indicadores_activados.get(sym, False) else "Scalping"
     
-    volumen_onchain = get_onchain_volume(sym)
+    # Volumen on-chain
+    if sym == "BTC":
+        volumen_onchain = onchain_vol_btc
+    else:
+        volumen_onchain = onchain_vol_eth
     
+    # Factor de tendencia 30d
     factor_30d = 0
     if tendencia_30d == "ALCISTA":
         factor_30d = 15
@@ -629,6 +638,7 @@ def procesar_senal(sym, precio, btc, eth, fng_value, onchain_vol_btc, onchain_vo
     if abs(cambio_30d) > 20:
         factor_30d = factor_30d * 1.5
     
+    # Modo indicadores activado
     if st.session_state.indicadores_activados.get(sym, False):
         hist = list(st.session_state.price_history.get(sym, []))
         if len(hist) >= max(st.session_state.ema_slow, 15):
@@ -641,6 +651,7 @@ def procesar_senal(sym, precio, btc, eth, fng_value, onchain_vol_btc, onchain_vo
             senal_indicadores = "HOLD"
             rsi_val = 50
         
+        # Votación con indicadores
         buy_votes = 0
         sell_votes = 0
         if senal_indicadores == "BUY":
@@ -657,6 +668,7 @@ def procesar_senal(sym, precio, btc, eth, fng_value, onchain_vol_btc, onchain_vo
             accion = "SELL"
             razon = f"Indicadores VENTA (RSI:{rsi_val:.0f}) + factor 30d {factor_30d}"
         else:
+            # Gestión de posición en modo indicadores
             if pos > 0 and entry > 0:
                 if ganancia >= st.session_state.take_profit:
                     accion = "SELL"
@@ -670,7 +682,7 @@ def procesar_senal(sym, precio, btc, eth, fng_value, onchain_vol_btc, onchain_vo
                         accion = "SELL"
                         razon = f"Trailing Stop ({st.session_state.trailing}%)"
     else:
-        # Modo scalping
+        # Modo Scalping
         if pos > 0 and entry > 0:
             if ganancia >= st.session_state.take_profit:
                 accion = "SELL"
@@ -684,6 +696,7 @@ def procesar_senal(sym, precio, btc, eth, fng_value, onchain_vol_btc, onchain_vo
                     accion = "SELL"
                     razon = f"Trailing Stop ({st.session_state.trailing}%)"
         
+        # Compra por caída
         if accion is None and pos == 0:
             if caida_actual >= st.session_state.umbral_caida:
                 if confianza >= 30 or not st.session_state.modo_aprendizaje:
@@ -695,6 +708,7 @@ def procesar_senal(sym, precio, btc, eth, fng_value, onchain_vol_btc, onchain_vo
                 else:
                     razon = f"Caída del {caida_actual:.4f}% (ignorada: confianza baja {confianza}%)"
     
+    # Aplicar criterio de confianza
     if accion:
         accion_con_criterio, razon_con_criterio = obtener_senal_con_criterio(
             sym, precio, accion, razon, confianza
@@ -704,7 +718,7 @@ def procesar_senal(sym, precio, btc, eth, fng_value, onchain_vol_btc, onchain_vo
             razon = razon_con_criterio
     
     return accion, razon, modo_actual, factor_30d, volumen_onchain, cambio_30d, tendencia_30d
-    # ==================== BUCLE PRINCIPAL CON GUARDADO CADA 3 CICLOS ====================
+    # ==================== BUCLE PRINCIPAL ====================
 while True:
     try:
         # Verificar variables esenciales
@@ -833,7 +847,7 @@ while True:
             st.session_state.daily_trades = 0
             st.session_state.last_day = hoy
 
-        # Evaluar rendimiento solo si aprendizaje activado (pero está desactivado por defecto)
+        # Evaluar rendimiento solo si aprendizaje activado (está desactivado por defecto)
         if st.session_state.cycle % 5 == 0 and st.session_state.modo_aprendizaje:
             for sym in ["BTC", "ETH"]:
                 try:
@@ -853,7 +867,7 @@ while True:
         for sym, precio in [("BTC", btc), ("ETH", eth)]:
             try:
                 accion, razon, modo_actual, factor_30d, volumen_onchain, cambio_30d, tendencia_30d = procesar_senal(
-                    sym, precio, btc, eth, fng_value, onchain_vol_btc, onchain_vol_eth, trend_btc, trend_eth
+                    sym, precio, fng_value, onchain_vol_btc, onchain_vol_eth, trend_btc, trend_eth
                 )
                 
                 last_act = st.session_state.last_action.get(sym)
@@ -908,7 +922,7 @@ while True:
                             else:
                                 st.warning(f"⚠️ Saldo insuficiente para la compra mínima de $100 en {sym}")
                                 
-                        elif accion == "SELL" and pos > 0:
+                        elif accion == "SELL" and st.session_state.positions[sym] > 0:
                             qty = st.session_state.positions[sym]
                             gross = qty * precio
                             com = gross * 0.001
@@ -954,7 +968,7 @@ while True:
             except Exception as e:
                 print(f"Error en operación de {sym}: {e}")
 
-        # Guardar al final del ciclo (si no se guardó en el ciclo actual)
+        # Guardar al final del ciclo
         if st.session_state.cycle % 3 == 0:
             try:
                 save_data()
