@@ -96,7 +96,7 @@ def init_new_user_state():
     st.session_state.cycle = 0
     st.session_state.price_history = {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)}
     
-    # ===== PARÁMETROS OPTIMIZADOS =====
+    # ===== PARÁMETROS OPTIMIZADOS PARA MÁS OPERACIONES =====
     st.session_state.umbral_caida = 0.005          # Caída mínima para comprar
     st.session_state.stop_loss = 1.5               # Stop Loss fijo
     st.session_state.take_profit = 0.02            # Take Profit rápido
@@ -120,7 +120,7 @@ def init_new_user_state():
     st.session_state.confianza = {"BTC": 50, "ETH": 50}
     st.session_state.tendencia = {"BTC": "NEUTRAL", "ETH": "NEUTRAL"}
     st.session_state.historial_operaciones = []
-    st.session_state.modo_aprendizaje = False      # Desactivado
+    st.session_state.modo_aprendizaje = False      # Desactivado para que no suba los umbrales
     st.session_state.onchain_cache = {
         "BTC": {"valor": None, "timestamp": 0},
         "ETH": {"valor": None, "timestamp": 0}
@@ -129,9 +129,6 @@ def init_new_user_state():
         "BTC": {},
         "ETH": {}
     }
-    # Para ejecución automática
-    st.session_state.automatic_trading = True      # Activado por defecto
-    st.session_state.confianza_umbral = 80         # 80% mínimo para ejecutar automático
 
 def restore_from_file():
     """Restaura el estado desde el archivo."""
@@ -190,8 +187,6 @@ def restore_from_file():
             "BTC": {},
             "ETH": {}
         })
-        st.session_state.automatic_trading = data.get("automatic_trading", True)
-        st.session_state.confianza_umbral = data.get("confianza_umbral", 80)
         
         ph = data.get("price_history", {"BTC": [], "ETH": []})
         st.session_state.price_history = {k: deque(v, maxlen=200) for k, v in ph.items()}
@@ -529,7 +524,7 @@ if "data_loaded" not in st.session_state:
     restore_from_file()
     st.session_state.data_loaded = True
 
-st.title("🧠 Scalping Extremo + Tendencia 30d")
+st.title("🧠 Scalping Extremo + Volumen + Tendencia 30d")
 
 # ===== SIDEBAR =====
 st.sidebar.header("⚙️ Configuración Principal")
@@ -554,13 +549,6 @@ st.sidebar.header("📡 Modo de operación")
 modo_solo_senales = st.sidebar.checkbox("🔇 Modo solo señales (no ejecutar órdenes)", value=st.session_state.modo_solo_senales)
 st.session_state.modo_solo_senales = modo_solo_senales
 
-# ===== CONFIGURACIÓN DE EJECUCIÓN AUTOMÁTICA =====
-st.sidebar.header("🤖 Ejecución Automática")
-automatic_trading = st.sidebar.checkbox("✅ Activar trading automático", value=st.session_state.automatic_trading)
-st.session_state.automatic_trading = automatic_trading
-confianza_umbral = st.sidebar.slider("Umbral de confianza para ejecutar (%)", 50, 95, st.session_state.confianza_umbral, 5)
-st.session_state.confianza_umbral = confianza_umbral
-
 st.sidebar.subheader("💰 Cartera")
 saldo_placeholder = st.sidebar.empty()
 total_placeholder = st.sidebar.empty()
@@ -578,6 +566,7 @@ if st.sidebar.button("📢 Prueba Telegram"):
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🎮 Control Manual**")
 
+# Botón Vender TODO
 if st.sidebar.button("💸 Vender TODO (forzar venta)"):
     try:
         btc_price = get_bitso_price("btc_mxn")
@@ -628,6 +617,7 @@ if st.sidebar.button("💸 Vender TODO (forzar venta)"):
     except Exception as e:
         st.sidebar.error(f"❌ Error: {e}")
 
+# Botón Comprar BTC
 if st.sidebar.button("🟢 Comprar BTC AHORA"):
     try:
         if st.session_state.positions.get("BTC", 0) > 0:
@@ -640,11 +630,12 @@ if st.sidebar.button("🟢 Comprar BTC AHORA"):
                 cantidad_compras = 4
                 monto_por_compra = 100.0
                 compras_ejecutadas = 0
+                monto_total = cantidad_compras * monto_por_compra
                 
                 if st.session_state.balance < monto_por_compra:
                     st.sidebar.warning("⚠️ Saldo insuficiente.")
                 else:
-                    if st.session_state.balance < cantidad_compras * monto_por_compra:
+                    if st.session_state.balance < monto_total:
                         cantidad_compras = int(st.session_state.balance // monto_por_compra)
                         if cantidad_compras == 0:
                             st.sidebar.warning("⚠️ Saldo insuficiente.")
@@ -666,7 +657,7 @@ if st.sidebar.button("🟢 Comprar BTC AHORA"):
                     if compras_ejecutadas > 0:
                         st.session_state.last_action["BTC"] = "BUY"
                         save_data()
-                        msg = f"🟢 COMPRA BTC | {compras_ejecutadas} compras de ${monto_por_compra:.0f} | Precio: ${precio:,.0f}"
+                        msg = f"🟢 COMPRA FORZADA BTC | {compras_ejecutadas} compras de ${monto_por_compra:.0f} | Precio: ${precio:,.0f} | Saldo: ${st.session_state.balance:.2f}"
                         send_telegram(msg)
                         st.session_state.trades.append((datetime.now(), msg))
                         st.sidebar.success(f"✅ {compras_ejecutadas} compras de BTC ejecutadas.")
@@ -676,6 +667,7 @@ if st.sidebar.button("🟢 Comprar BTC AHORA"):
     except Exception as e:
         st.sidebar.error(f"❌ Error: {e}")
 
+# Botón Comprar ETH
 if st.sidebar.button("🟢 Comprar ETH AHORA"):
     try:
         if st.session_state.positions.get("ETH", 0) > 0:
@@ -688,11 +680,12 @@ if st.sidebar.button("🟢 Comprar ETH AHORA"):
                 cantidad_compras = 4
                 monto_por_compra = 100.0
                 compras_ejecutadas = 0
+                monto_total = cantidad_compras * monto_por_compra
                 
                 if st.session_state.balance < monto_por_compra:
                     st.sidebar.warning("⚠️ Saldo insuficiente.")
                 else:
-                    if st.session_state.balance < cantidad_compras * monto_por_compra:
+                    if st.session_state.balance < monto_total:
                         cantidad_compras = int(st.session_state.balance // monto_por_compra)
                         if cantidad_compras == 0:
                             st.sidebar.warning("⚠️ Saldo insuficiente.")
@@ -714,7 +707,7 @@ if st.sidebar.button("🟢 Comprar ETH AHORA"):
                     if compras_ejecutadas > 0:
                         st.session_state.last_action["ETH"] = "BUY"
                         save_data()
-                        msg = f"🟢 COMPRA ETH | {compras_ejecutadas} compras de ${monto_por_compra:.0f} | Precio: ${precio:,.0f}"
+                        msg = f"🟢 COMPRA FORZADA ETH | {compras_ejecutadas} compras de ${monto_por_compra:.0f} | Precio: ${precio:,.0f} | Saldo: ${st.session_state.balance:.2f}"
                         send_telegram(msg)
                         st.session_state.trades.append((datetime.now(), msg))
                         st.sidebar.success(f"✅ {compras_ejecutadas} compras de ETH ejecutadas.")
@@ -762,6 +755,7 @@ def send_signal_telegram(sym, tipo, precio, razon, ejecutado=False, monto=0, can
     except:
         pass
 
+# ==================== SEÑALES POR TELEGRAM CON BOTONES ====================
 def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_onchain, cambio_30d, tendencia_30d):
     """Envía una señal con botones de acción por Telegram."""
     try:
@@ -773,6 +767,7 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
                       f"Cambio 30d: {cambio_30d:+.2f}%\n"
                       f"Tendencia 30d: {tendencia_30d}\n\n"
                       f"⚠️ **Para ejecutar esta orden**, ve a la sección '📡 Ejecutar Señales Manuales' en la app.")
+        
         send_telegram(msg_simple)
         return True
     except Exception as e:
@@ -789,38 +784,42 @@ def analisis_avanzado(sym, precio, fng_value):
     entry = st.session_state.entry_price.get(sym, 0)
     ref = st.session_state.ref_price.get(sym, 0)
     
+    # Obtener datos de tendencia 30d
     trend_data = st.session_state.historical_trend.get(sym, {})
     cambio_30d = trend_data.get("cambio_porcentual", 0)
     tendencia_30d = trend_data.get("tendencia", "NEUTRAL")
     
+    # Obtener volumen on-chain
     if sym == "BTC":
         volumen_onchain = get_onchain_volume("BTC")
     else:
         volumen_onchain = get_onchain_volume("ETH")
     
+    # ===== INDICADORES TÉCNICOS =====
     hist = list(st.session_state.price_history.get(sym, []))
     if len(hist) < 30:
         return "HOLD", 0, "Datos insuficientes", {}
     
-    # 1. RSI
+    # 1. RSI (momento)
     rsi = compute_rsi(hist, 14)
     rsi_ponderado = 0
     if rsi <= 30:
-        rsi_ponderado = 20
+        rsi_ponderado = 20  # Sobreventa → comprar
     elif rsi >= 70:
-        rsi_ponderado = -20
+        rsi_ponderado = -20  # Sobrecompra → vender
     else:
-        rsi_ponderado = (50 - rsi) * 0.5
+        rsi_ponderado = (50 - rsi) * 0.5  # Neutro
     
-    # 2. EMAs
+    # 2. EMAs (tendencia)
     ema_f = compute_ema(hist, st.session_state.ema_fast)
     ema_s = compute_ema(hist, st.session_state.ema_slow)
     ema_ponderado = 0
     if ema_f is not None and ema_s is not None:
         if ema_f > ema_s:
-            ema_ponderado = 15
+            ema_ponderado = 15  # Alcista
         elif ema_f < ema_s:
-            ema_ponderado = -15
+            ema_ponderado = -15  # Bajista
+        # Pendiente de EMA rápida
         if len(hist) > 10:
             ema_prev = compute_ema(hist[:-1], st.session_state.ema_fast)
             if ema_prev is not None and ema_f > ema_prev * 1.001:
@@ -828,7 +827,7 @@ def analisis_avanzado(sym, precio, fng_value):
             elif ema_prev is not None and ema_f < ema_prev * 0.999:
                 ema_ponderado -= 5
     
-    # 3. Bandas de Bollinger
+    # 3. Bandas de Bollinger (sobrecompra/sobreventa extrema)
     bb_ponderado = 0
     if len(hist) >= 20:
         sma_20 = sum(hist[-20:]) / 20
@@ -836,17 +835,18 @@ def analisis_avanzado(sym, precio, fng_value):
         banda_superior = sma_20 + 2 * std_20
         banda_inferior = sma_20 - 2 * std_20
         if precio > banda_superior:
-            bb_ponderado = -15
+            bb_ponderado = -15  # Sobrecompra extrema
         elif precio < banda_inferior:
-            bb_ponderado = 15
+            bb_ponderado = 15   # Sobrevendido extremo
     
-    # 4. MACD
+    # 4. MACD (momento)
     macd_ponderado = 0
     if len(hist) >= 26:
         ema_12 = compute_ema(hist, 12)
         ema_26 = compute_ema(hist, 26)
         if ema_12 is not None and ema_26 is not None:
             macd = ema_12 - ema_26
+            # Señal (EMA 9 del MACD)
             if len(hist) >= 35:
                 macd_hist = []
                 for i in range(26, len(hist)):
@@ -861,15 +861,15 @@ def analisis_avanzado(sym, precio, fng_value):
                     elif macd < signal:
                         macd_ponderado = -10
     
-    # 5. Volumen
+    # 5. Volumen on-chain (confirmación)
     volumen_ponderado = 0
     if volumen_onchain is not None:
-        if volumen_onchain > 2.0:
+        if volumen_onchain > 2.0:  # Alto volumen
             volumen_ponderado = 10
-        elif volumen_onchain < 0.5:
+        elif volumen_onchain < 0.5:  # Bajo volumen
             volumen_ponderado = -5
     
-    # 6. Tendencia 30d
+    # 6. Tendencia de 30 días (contexto macro)
     tendencia_ponderado = 0
     if tendencia_30d == "ALCISTA":
         tendencia_ponderado = 15
@@ -878,12 +878,12 @@ def analisis_avanzado(sym, precio, fng_value):
     if abs(cambio_30d) > 20:
         tendencia_ponderado = tendencia_ponderado * 1.5
     
-    # 7. Fear & Greed
+    # 7. Fear & Greed (sentimiento)
     fng_ponderado = 0
     if fng_value <= 20:
-        fng_ponderado = 10
+        fng_ponderado = 10  # Miedo extremo → comprar
     elif fng_value >= 80:
-        fng_ponderado = -10
+        fng_ponderado = -10  # Codicia extrema → vender
     else:
         fng_ponderado = (50 - fng_value) * 0.2
     
@@ -894,14 +894,16 @@ def analisis_avanzado(sym, precio, fng_value):
         if atr is not None and precio > 0:
             volatilidad_pct = (atr / precio) * 100
             if volatilidad_pct > 3:
-                atr_ponderado = -5
+                atr_ponderado = -5  # Alta volatilidad → cautela
             elif volatilidad_pct < 1:
-                atr_ponderado = 5
+                atr_ponderado = 5   # Baja volatilidad → oportunidad
     
+    # ===== PUNTUACIÓN TOTAL =====
     puntuacion = (rsi_ponderado + ema_ponderado + bb_ponderado + 
                   macd_ponderado + volumen_ponderado + tendencia_ponderado + 
                   fng_ponderado + atr_ponderado)
     
+    # ===== DECISIÓN FINAL =====
     confianza = abs(puntuacion)
     if confianza < 20:
         accion = "HOLD"
@@ -913,6 +915,7 @@ def analisis_avanzado(sym, precio, fng_value):
         accion = "SELL"
         razon = f"Señal de venta (puntuación {puntuacion:.1f})"
     
+    # ===== DETALLES PARA DEPURACIÓN =====
     detalles = {
         "rsi": rsi,
         "ema_ponderado": ema_ponderado,
@@ -945,17 +948,17 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("**📡 Ejecutar Señales Manuales**")
 
 def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
-    """Ejecuta compra con lógica profesional."""
-    # Filtro de volumen
+    """Ejecuta compra con lógica profesional (tamaño ajustado, orden limitada)."""
+    # 1. Filtro de volumen
     if sym == "BTC":
         volumen = get_onchain_volume("BTC")
     else:
         volumen = get_onchain_volume("ETH")
-    if volumen is not None and volumen < 0.3:
-        st.sidebar.warning(f"⚠️ Volumen bajo ({volumen:.2f}B), no se recomienda.")
+    if volumen is not None and volumen < 0.5:
+        st.sidebar.warning(f"⚠️ Volumen bajo ({volumen:.2f}B), operación no recomendada.")
         return
     
-    # Tamaño según confianza
+    # 2. Ajuste de tamaño según confianza
     if confianza >= 70:
         monto_por_compra = 100.0
         cantidad_compras = 4
@@ -966,18 +969,23 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
         monto_por_compra = 50.0
         cantidad_compras = 2
     else:
-        st.sidebar.warning(f"⚠️ Confianza baja ({confianza:.1f}%), no recomendado.")
+        st.sidebar.warning(f"⚠️ Confianza baja ({confianza:.1f}%), no se recomienda operar.")
         return
     
-    # Precio limitado (0.5% descuento)
-    precio_objetivo = precio * 0.995
-    precio_ejecucion = precio_actual = precio
+    # 3. Precio limitado (0.5% por debajo para compras)
+    precio_objetivo = precio * 0.995  # 0.5% descuento
+    precio_actual = precio
     
+    # Verificar si el precio ya bajó al nivel
     if precio_actual <= precio_objetivo:
+        precio_ejecucion = precio_actual
         st.sidebar.info(f"✅ Precio alcanzó objetivo ({precio_objetivo:,.0f}). Ejecutando...")
     else:
-        st.sidebar.info(f"⏳ Esperando precio baje a {precio_objetivo:,.0f}")
+        st.sidebar.info(f"⏳ Esperando que el precio baje a {precio_objetivo:,.0f} (actual {precio_actual:,.0f})")
+        # En simulación, ejecutamos al precio actual pero mostramos la estrategia
+        precio_ejecucion = precio_actual
     
+    # Ejecutar compra
     if st.session_state.positions.get(sym, 0) > 0:
         st.sidebar.warning(f"⚠️ Ya tienes posición en {sym}.")
         return
@@ -1007,94 +1015,117 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
         if compras_ejecutadas > 0:
             st.session_state.last_action[sym] = "BUY"
             save_data()
-            msg = f"🟢 COMPRA PROFESIONAL {sym} | {compras_ejecutadas} x ${monto_por_compra:.0f} | Precio: ${precio_ejecucion:,.0f} | Confianza: {confianza:.1f}% | Tendencia: {tendencia_30d}"
+            msg = f"🟢 COMPRA PROFESIONAL {sym} | {compras_ejecutadas} compras de ${monto_por_compra:.0f} | Precio: ${precio_ejecucion:,.0f} | Confianza: {confianza:.1f}% | Tendencia: {tendencia_30d}"
             send_telegram(msg)
             st.session_state.trades.append((datetime.now(), msg))
-            st.sidebar.success(f"✅ {compras_ejecutadas} compras de {sym} ejecutadas.")
+            st.sidebar.success(f"✅ {compras_ejecutadas} compras de {sym} ejecutadas (precio objetivo {precio_objetivo:,.0f}).")
             st.rerun()
         else:
-            st.sidebar.warning("⚠️ No se pudo ejecutar.")
+            st.sidebar.warning("⚠️ No se pudo ejecutar la compra.")
     else:
         st.sidebar.warning("⚠️ Saldo insuficiente.")
 
+# Botón COMPRA BTC (profesional)
 if st.sidebar.button("📡 Ejecutar señal de COMPRA (BTC)"):
     btc_price = get_bitso_price("btc_mxn")
     if btc_price is not None:
         fng_value, _ = get_fear_greed()
         accion, confianza, razon, detalles = analisis_avanzado("BTC", btc_price, fng_value)
         tendencia_30d = st.session_state.historical_trend.get("BTC", {}).get("tendencia", "NEUTRAL")
+        
+        # Filtro profesional: solo comprar si la tendencia es alcista o neutral y confianza > 50
         if accion == "BUY" and confianza > 50:
             if tendencia_30d == "BAJISTA":
-                st.sidebar.warning(f"⚠️ Tendencia 30d BAJISTA, no comprar.")
+                st.sidebar.warning(f"⚠️ Tendencia 30d BAJISTA, no se recomienda comprar (confianza {confianza:.1f}%).")
             else:
                 ejecutar_compra_profesional("BTC", btc_price, confianza, razon, tendencia_30d)
         else:
-            st.sidebar.info(f"ℹ️ Señal no recomendada: {razon} ({confianza:.1f}%)")
+            st.sidebar.info(f"ℹ️ Señal no recomendada: {razon} (confianza {confianza:.1f}%)")
 
+# Botón COMPRA ETH (profesional)
 if st.sidebar.button("📡 Ejecutar señal de COMPRA (ETH)"):
     eth_price = get_bitso_price("eth_mxn")
     if eth_price is not None:
         fng_value, _ = get_fear_greed()
         accion, confianza, razon, detalles = analisis_avanzado("ETH", eth_price, fng_value)
         tendencia_30d = st.session_state.historical_trend.get("ETH", {}).get("tendencia", "NEUTRAL")
+        
         if accion == "BUY" and confianza > 50:
             if tendencia_30d == "BAJISTA":
-                st.sidebar.warning(f"⚠️ Tendencia 30d BAJISTA, no comprar.")
+                st.sidebar.warning(f"⚠️ Tendencia 30d BAJISTA, no se recomienda comprar (confianza {confianza:.1f}%).")
             else:
                 ejecutar_compra_profesional("ETH", eth_price, confianza, razon, tendencia_30d)
         else:
-            st.sidebar.info(f"ℹ️ Señal no recomendada: {razon} ({confianza:.1f}%)")
+            st.sidebar.info(f"ℹ️ Señal no recomendada: {razon} (confianza {confianza:.1f}%)")
 
-def ejecutar_venta_profesional(sym, precio, confianza, razon, tendencia_30d):
-    """Ejecuta venta con lógica profesional."""
-    if st.session_state.positions.get(sym, 0) > 0:
-        qty = st.session_state.positions[sym]
-        gross = qty * precio
-        com = gross * 0.001
-        net = gross - com
-        st.session_state.balance += net
-        st.session_state.positions[sym] = 0
-        st.session_state.entry_price[sym] = 0
-        st.session_state.highest_price[sym] = 0
-        st.session_state.daily_trades += 1
-        msg = f"🔴 VENTA PROFESIONAL {sym} | Cantidad: {qty:.6f} | Precio: ${precio:,.0f} | Neto: ${net:.2f} | Confianza: {confianza:.1f}% | Tendencia: {tendencia_30d}"
-        send_telegram(msg)
-        st.session_state.trades.append((datetime.now(), msg))
-        st.session_state.last_action[sym] = None
-        save_data()
-        st.sidebar.success(f"✅ Venta de {sym} ejecutada.")
-        st.rerun()
-    else:
-        st.sidebar.warning(f"⚠️ No hay posición en {sym} para vender.")
-
+# Botón VENTA BTC (profesional)
 if st.sidebar.button("📡 Ejecutar señal de VENTA (BTC)"):
     btc_price = get_bitso_price("btc_mxn")
     if btc_price is not None:
         fng_value, _ = get_fear_greed()
         accion, confianza, razon, detalles = analisis_avanzado("BTC", btc_price, fng_value)
         tendencia_30d = st.session_state.historical_trend.get("BTC", {}).get("tendencia", "NEUTRAL")
+        
         if accion == "SELL" and confianza > 50:
             if tendencia_30d == "ALCISTA":
-                st.sidebar.warning(f"⚠️ Tendencia 30d ALCISTA, no vender.")
+                st.sidebar.warning(f"⚠️ Tendencia 30d ALCISTA, no se recomienda vender (confianza {confianza:.1f}%).")
             else:
-                ejecutar_venta_profesional("BTC", btc_price, confianza, razon, tendencia_30d)
+                if st.session_state.positions.get("BTC", 0) > 0:
+                    qty = st.session_state.positions["BTC"]
+                    gross = qty * btc_price
+                    com = gross * 0.001
+                    net = gross - com
+                    st.session_state.balance += net
+                    st.session_state.positions["BTC"] = 0
+                    st.session_state.entry_price["BTC"] = 0
+                    st.session_state.highest_price["BTC"] = 0
+                    st.session_state.daily_trades += 1
+                    msg = f"🔴 VENTA PROFESIONAL BTC | Cantidad: {qty:.6f} | Precio: ${btc_price:,.0f} | Neto: ${net:.2f} | Confianza: {confianza:.1f}% | Tendencia: {tendencia_30d}"
+                    send_telegram(msg)
+                    st.session_state.trades.append((datetime.now(), msg))
+                    st.session_state.last_action["BTC"] = None
+                    save_data()
+                    st.sidebar.success(f"✅ Venta de BTC ejecutada.")
+                    st.rerun()
+                else:
+                    st.sidebar.warning("⚠️ No hay posición en BTC para vender.")
         else:
-            st.sidebar.info(f"ℹ️ Señal no recomendada: {razon} ({confianza:.1f}%)")
+            st.sidebar.info(f"ℹ️ Señal no recomendada: {razon} (confianza {confianza:.1f}%)")
 
+# Botón VENTA ETH (profesional)
 if st.sidebar.button("📡 Ejecutar señal de VENTA (ETH)"):
     eth_price = get_bitso_price("eth_mxn")
     if eth_price is not None:
         fng_value, _ = get_fear_greed()
         accion, confianza, razon, detalles = analisis_avanzado("ETH", eth_price, fng_value)
         tendencia_30d = st.session_state.historical_trend.get("ETH", {}).get("tendencia", "NEUTRAL")
+        
         if accion == "SELL" and confianza > 50:
             if tendencia_30d == "ALCISTA":
-                st.sidebar.warning(f"⚠️ Tendencia 30d ALCISTA, no vender.")
+                st.sidebar.warning(f"⚠️ Tendencia 30d ALCISTA, no se recomienda vender (confianza {confianza:.1f}%).")
             else:
-                ejecutar_venta_profesional("ETH", eth_price, confianza, razon, tendencia_30d)
+                if st.session_state.positions.get("ETH", 0) > 0:
+                    qty = st.session_state.positions["ETH"]
+                    gross = qty * eth_price
+                    com = gross * 0.001
+                    net = gross - com
+                    st.session_state.balance += net
+                    st.session_state.positions["ETH"] = 0
+                    st.session_state.entry_price["ETH"] = 0
+                    st.session_state.highest_price["ETH"] = 0
+                    st.session_state.daily_trades += 1
+                    msg = f"🔴 VENTA PROFESIONAL ETH | Cantidad: {qty:.6f} | Precio: ${eth_price:,.0f} | Neto: ${net:.2f} | Confianza: {confianza:.1f}% | Tendencia: {tendencia_30d}"
+                    send_telegram(msg)
+                    st.session_state.trades.append((datetime.now(), msg))
+                    st.session_state.last_action["ETH"] = None
+                    save_data()
+                    st.sidebar.success(f"✅ Venta de ETH ejecutada.")
+                    st.rerun()
+                else:
+                    st.sidebar.warning("⚠️ No hay posición en ETH para vender.")
         else:
-            st.sidebar.info(f"ℹ️ Señal no recomendada: {razon} ({confianza:.1f}%)")
-            # ==================== BUCLE PRINCIPAL CON EJECUCIÓN AUTOMÁTICA ====================
+            st.sidebar.info(f"ℹ️ Señal no recomendada: {razon} (confianza {confianza:.1f}%)")
+            # ==================== BUCLE PRINCIPAL CON SEÑALES AVANZADAS ====================
 while True:
     try:
         # Verificar variables esenciales
@@ -1195,7 +1226,7 @@ while True:
                 "📉 Scalping" if not st.session_state.indicadores_activados["ETH"] else "🧠 Indicadores"
             ]
         })
-        info_placeholder.caption(f"Ciclo: {st.session_state.cycle} | Caída scalping: {st.session_state.umbral_caida}% | TP: {st.session_state.take_profit}% | SL: {st.session_state.stop_loss}% | Trailing: {st.session_state.trailing}% | Fear & Greed: {fng_value}/100 ({fng_label}) | Aprendizaje: {'✅' if st.session_state.modo_aprendizaje else '❌'} | Trading automático: {'✅' if st.session_state.automatic_trading else '❌'}")
+        info_placeholder.caption(f"Ciclo: {st.session_state.cycle} | Caída scalping: {st.session_state.umbral_caida}% | TP: {st.session_state.take_profit}% | SL: {st.session_state.stop_loss}% | Trailing: {st.session_state.trailing}% | Fear & Greed: {fng_value}/100 ({fng_label}) | Aprendizaje: {'✅' if st.session_state.modo_aprendizaje else '❌'}")
 
         total_val = st.session_state.balance
         for s in ["BTC", "ETH"]:
@@ -1223,7 +1254,7 @@ while True:
             st.session_state.daily_trades = 0
             st.session_state.last_day = hoy
 
-        # Evaluar rendimiento solo si aprendizaje activado
+        # Evaluar rendimiento solo si aprendizaje activado (desactivado por defecto)
         if st.session_state.cycle % 5 == 0 and st.session_state.modo_aprendizaje:
             for sym in ["BTC", "ETH"]:
                 try:
@@ -1239,105 +1270,16 @@ while True:
                 except:
                     pass
 
-        # ===== EJECUCIÓN AUTOMÁTICA (SI ESTÁ ACTIVADA) =====
-        if st.session_state.automatic_trading:
-            for sym, precio in [("BTC", btc), ("ETH", eth)]:
-                try:
-                    # Obtener análisis avanzado
-                    accion, confianza, razon, detalles = analisis_avanzado(sym, precio, fng_value)
-                    tendencia_30d = st.session_state.historical_trend.get(sym, {}).get("tendencia", "NEUTRAL")
-                    
-                    # Filtros profesionales
-                    # 1. Volumen mínimo
-                    if sym == "BTC":
-                        volumen = onchain_vol_btc
-                    else:
-                        volumen = onchain_vol_eth
-                    if volumen is not None and volumen < 0.3:
-                        continue
-                    
-                    # 2. Tendencia (no operar contra la tendencia macro)
-                    if accion == "BUY" and tendencia_30d == "BAJISTA":
-                        continue
-                    if accion == "SELL" and tendencia_30d == "ALCISTA":
-                        continue
-                    
-                    # 3. Volatilidad (ATR)
-                    hist = list(st.session_state.price_history.get(sym, []))
-                    if len(hist) >= 14:
-                        atr = calcular_atr(hist, 14)
-                        if atr is not None and precio > 0:
-                            volatilidad_pct = (atr / precio) * 100
-                            if volatilidad_pct > 3:
-                                continue
-                    
-                    # 4. Confianza > umbral
-                    if confianza > st.session_state.confianza_umbral and accion != "HOLD":
-                        # Verificar si ya se ejecutó en los últimos 20 ciclos
-                        if not hasattr(st.session_state, f'ultima_ejecucion_auto_{sym}'):
-                            setattr(st.session_state, f'ultima_ejecucion_auto_{sym}', 0)
-                        
-                        if st.session_state.cycle - getattr(st.session_state, f'ultima_ejecucion_auto_{sym}', 0) > 20:
-                            if accion == "BUY" and st.session_state.positions.get(sym, 0) == 0:
-                                # Ejecutar compra automática
-                                monto_por_compra = 100.0
-                                cantidad_compras = 4
-                                compras_ejecutadas = 0
-                                
-                                if st.session_state.balance >= monto_por_compra:
-                                    if st.session_state.balance < cantidad_compras * monto_por_compra:
-                                        cantidad_compras = int(st.session_state.balance // monto_por_compra)
-                                        if cantidad_compras == 0:
-                                            continue
-                                    
-                                    for i in range(cantidad_compras):
-                                        if st.session_state.balance >= monto_por_compra:
-                                            com = monto_por_compra * 0.001
-                                            qty = (monto_por_compra - com) / precio
-                                            st.session_state.balance -= monto_por_compra
-                                            st.session_state.positions[sym] += qty
-                                            if st.session_state.entry_price[sym] == 0:
-                                                st.session_state.entry_price[sym] = precio
-                                            st.session_state.highest_price[sym] = precio
-                                            st.session_state.daily_trades += 1
-                                            compras_ejecutadas += 1
-                                        else:
-                                            break
-                                    
-                                    if compras_ejecutadas > 0:
-                                        st.session_state.last_action[sym] = "BUY"
-                                        msg = f"🟢 COMPRA AUTOMÁTICA {sym} | {compras_ejecutadas} x ${monto_por_compra:.0f} | Precio: ${precio:,.0f} | Confianza: {confianza:.1f}% | Tendencia: {tendencia_30d}"
-                                        send_telegram(msg)
-                                        st.session_state.trades.append((datetime.now(), msg))
-                                        setattr(st.session_state, f'ultima_ejecucion_auto_{sym}', st.session_state.cycle)
-                                        save_data()
-                            
-                            elif accion == "SELL" and st.session_state.positions.get(sym, 0) > 0:
-                                # Ejecutar venta automática
-                                qty = st.session_state.positions[sym]
-                                gross = qty * precio
-                                com = gross * 0.001
-                                net = gross - com
-                                st.session_state.balance += net
-                                st.session_state.positions[sym] = 0
-                                st.session_state.entry_price[sym] = 0
-                                st.session_state.highest_price[sym] = 0
-                                st.session_state.daily_trades += 1
-                                st.session_state.last_action[sym] = None
-                                msg = f"🔴 VENTA AUTOMÁTICA {sym} | Cantidad: {qty:.6f} | Precio: ${precio:,.0f} | Neto: ${net:.2f} | Confianza: {confianza:.1f}% | Tendencia: {tendencia_30d}"
-                                send_telegram(msg)
-                                st.session_state.trades.append((datetime.now(), msg))
-                                setattr(st.session_state, f'ultima_ejecucion_auto_{sym}', st.session_state.cycle)
-                                save_data()
-                except Exception as e:
-                    print(f"Error en ejecución automática de {sym}: {e}")
-
-        # ===== PROCESAMIENTO DE SEÑALES PARA TELEGRAM =====
+        # ===== PROCESAMIENTO DE SEÑALES AVANZADAS =====
         for sym, precio in [("BTC", btc), ("ETH", eth)]:
             try:
+                # Análisis avanzado
                 accion, confianza, razon, detalles = analisis_avanzado(sym, precio, fng_value)
+                
+                # Obtener tendencia 30d para el filtro profesional
                 tendencia_30d = st.session_state.historical_trend.get(sym, {}).get("tendencia", "NEUTRAL")
                 
+                # Definir umbral de confianza según tendencia
                 if tendencia_30d == "LATERAL":
                     umbral_confianza = 75
                 elif tendencia_30d in ["ALCISTA", "BAJISTA"]:
@@ -1345,6 +1287,7 @@ while True:
                 else:
                     umbral_confianza = 70
                 
+                # Si la confianza supera el umbral, enviar señal por Telegram
                 if confianza > umbral_confianza and accion != "HOLD":
                     if sym == "BTC":
                         volumen_onchain = onchain_vol_btc
@@ -1353,6 +1296,7 @@ while True:
                     
                     cambio_30d = st.session_state.historical_trend.get(sym, {}).get("cambio_porcentual", 0)
                     
+                    # Enviar señal (solo si no se envió en los últimos 10 ciclos)
                     if not hasattr(st.session_state, f'ultima_senal_{sym}'):
                         setattr(st.session_state, f'ultima_senal_{sym}', 0)
                     
@@ -1363,6 +1307,7 @@ while True:
                         )
                         setattr(st.session_state, f'ultima_senal_{sym}', st.session_state.cycle)
                 
+                # Guardar última señal para mostrar en interfaz
                 st.session_state.ultima_senal = {
                     "sym": sym,
                     "accion": accion,
@@ -1370,8 +1315,10 @@ while True:
                     "confianza": confianza,
                     "precio": precio,
                     "timestamp": datetime.now().strftime("%H:%M:%S"),
-                    "tendencia_30d": tendencia_30d
+                    "tendencia_30d": tendencia_30d,
+                    "umbral": umbral_confianza
                 }
+                
             except Exception as e:
                 print(f"Error en análisis avanzado de {sym}: {e}")
 
@@ -1382,9 +1329,9 @@ while True:
             except:
                 pass
 
-        estado_placeholder.info(f"🔹 Indicadores: BTC={st.session_state.indicadores_activados.get('BTC', False)} | ETH={st.session_state.indicadores_activados.get('ETH', False)} | Tendencia 30d: BTC={trend_btc.get('tendencia', 'N/A')} | ETH={trend_eth.get('tendencia', 'N/A')} | Auto: {'✅' if st.session_state.automatic_trading else '❌'}")
+        estado_placeholder.info(f"🔹 Indicadores: BTC={st.session_state.indicadores_activados.get('BTC', False)} | ETH={st.session_state.indicadores_activados.get('ETH', False)} | Tendencia 30d: BTC={trend_btc.get('tendencia', 'N/A')} | ETH={trend_eth.get('tendencia', 'N/A')}")
         if st.session_state.modo_solo_senales:
-            estado_placeholder.info(f"🔇 Modo solo señales ACTIVADO")
+            estado_placeholder.info(f"🔇 Modo solo señales ACTIVADO - No se ejecutan órdenes")
 
     except Exception as e:
         print(f"Error en el bucle principal: {e}")
@@ -1392,11 +1339,40 @@ while True:
         continue
 
     time.sleep(30)
-    # ===== VISUALIZACIÓN DE SEÑALES Y ESTADO =====
-# Esta parte se integra en el bucle principal, pero la separo para claridad
+    # ===== FILTROS PROFESIONALES ADICIONALES =====
+# Esta parte se integra en la PARTE 7, pero la separo para claridad
 
-# Mostrar última señal en la interfaz (se llama en cada ciclo)
-def mostrar_ultima_senal():
+# 1. Filtro de volatilidad extrema (ATR)
+def filtro_volatilidad(sym, precio):
+    hist = list(st.session_state.price_history.get(sym, []))
+    if len(hist) >= 14:
+        atr = calcular_atr(hist, 14)
+        if atr is not None and precio > 0:
+            volatilidad_pct = (atr / precio) * 100
+            if volatilidad_pct > 3:
+                return False, f"Volatilidad alta ({volatilidad_pct:.1f}%)"
+    return True, "OK"
+
+# 2. Filtro de volumen mínimo
+def filtro_volumen(sym):
+    if sym == "BTC":
+        volumen = get_onchain_volume("BTC")
+    else:
+        volumen = get_onchain_volume("ETH")
+    if volumen is not None and volumen < 0.3:
+        return False, f"Volumen bajo ({volumen:.2f}B USD)"
+    return True, "OK"
+
+# 3. Filtro de tendencia (no operar contra la tendencia macro)
+def filtro_tendencia(accion, tendencia_30d):
+    if accion == "BUY" and tendencia_30d == "BAJISTA":
+        return False, "Tendencia 30d BAJISTA (no comprar)"
+    if accion == "SELL" and tendencia_30d == "ALCISTA":
+        return False, "Tendencia 30d ALCISTA (no vender)"
+    return True, "OK"
+
+# 4. Mostrar resumen de señales en la interfaz
+def mostrar_resumen_senales():
     if hasattr(st.session_state, 'ultima_senal'):
         senal = st.session_state.ultima_senal
         st.sidebar.markdown("---")
@@ -1405,18 +1381,9 @@ def mostrar_ultima_senal():
         st.sidebar.write(f"Confianza: {senal['confianza']:.1f}%")
         st.sidebar.write(f"Razón: {senal['razon']}")
         st.sidebar.write(f"Tendencia 30d: {senal.get('tendencia_30d', 'N/A')}")
+        st.sidebar.write(f"Umbral: {senal.get('umbral', 70)}%")
         st.sidebar.write(f"Hora: {senal['timestamp']}")
 
-# Mostrar estado de ejecución automática
-def mostrar_estado_auto():
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("**🤖 Estado Auto**")
-    if st.session_state.automatic_tracking:
-        st.sidebar.write(f"Trading automático: ✅ Activo")
-        st.sidebar.write(f"Umbral confianza: {st.session_state.confianza_umbral}%")
-    else:
-        st.sidebar.write(f"Trading automático: ❌ Inactivo")
-
-# Llamar a las funciones en el bucle principal (PARTE 7, antes de time.sleep)
-mostrar_ultima_senal()
-mostrar_estado_auto()
+# Llamar a la función en el bucle principal (PARTE 7)
+# Agregar al final del bucle antes de time.sleep(30):
+# mostrar_resumen_senales()
