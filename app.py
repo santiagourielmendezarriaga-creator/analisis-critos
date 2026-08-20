@@ -562,7 +562,162 @@ if st.sidebar.button("📢 Prueba Telegram"):
     send_telegram("🧠 Bot Scalping Extremo activo")
     st.success("Enviado")
 
-# ===== ACTUALIZAR PARÁMETROS =====
+# ===== BOTONES DE CONTROL MANUAL =====
+st.sidebar.markdown("---")
+st.sidebar.markdown("**🎮 Control Manual**")
+
+# Botón Vender TODO
+if st.sidebar.button("💸 Vender TODO (forzar venta)"):
+    try:
+        btc_price = get_bitso_price("btc_mxn")
+        eth_price = get_bitso_price("eth_mxn")
+        
+        if btc_price is None or eth_price is None:
+            st.sidebar.error("❌ Error al obtener precios.")
+        else:
+            vendido = False
+            
+            if st.session_state.positions.get("BTC", 0) > 0:
+                qty = st.session_state.positions["BTC"]
+                gross = qty * btc_price
+                com = gross * 0.001
+                net = gross - com
+                st.session_state.balance += net
+                st.session_state.positions["BTC"] = 0
+                st.session_state.entry_price["BTC"] = 0
+                st.session_state.highest_price["BTC"] = 0
+                st.session_state.daily_trades += 1
+                msg = f"🔴 VENTA FORZADA BTC | Cantidad: {qty:.6f} | Precio: ${btc_price:,.0f} | Neto: ${net:.2f}"
+                send_telegram(msg)
+                st.session_state.trades.append((datetime.now(), msg))
+                vendido = True
+            
+            if st.session_state.positions.get("ETH", 0) > 0:
+                qty = st.session_state.positions["ETH"]
+                gross = qty * eth_price
+                com = gross * 0.001
+                net = gross - com
+                st.session_state.balance += net
+                st.session_state.positions["ETH"] = 0
+                st.session_state.entry_price["ETH"] = 0
+                st.session_state.highest_price["ETH"] = 0
+                st.session_state.daily_trades += 1
+                msg = f"🔴 VENTA FORZADA ETH | Cantidad: {qty:.6f} | Precio: ${eth_price:,.0f} | Neto: ${net:.2f}"
+                send_telegram(msg)
+                st.session_state.trades.append((datetime.now(), msg))
+                vendido = True
+            
+            if vendido:
+                st.session_state.last_action = {"BTC": None, "ETH": None}
+                save_data()
+                st.sidebar.success("✅ Posiciones vendidas correctamente.")
+                st.rerun()
+            else:
+                st.sidebar.info("ℹ️ No hay posiciones abiertas para vender.")
+    except Exception as e:
+        st.sidebar.error(f"❌ Error: {e}")
+
+# Botón Comprar BTC
+if st.sidebar.button("🟢 Comprar BTC AHORA"):
+    try:
+        if st.session_state.positions.get("BTC", 0) > 0:
+            st.sidebar.warning("⚠️ Ya tienes posición en BTC.")
+        else:
+            precio = get_bitso_price("btc_mxn")
+            if precio is None:
+                st.sidebar.error("❌ Error al obtener precio de BTC.")
+            else:
+                cantidad_compras = 4
+                monto_por_compra = 100.0
+                compras_ejecutadas = 0
+                monto_total = cantidad_compras * monto_por_compra
+                
+                if st.session_state.balance < monto_por_compra:
+                    st.sidebar.warning("⚠️ Saldo insuficiente.")
+                else:
+                    if st.session_state.balance < monto_total:
+                        cantidad_compras = int(st.session_state.balance // monto_por_compra)
+                        if cantidad_compras == 0:
+                            st.sidebar.warning("⚠️ Saldo insuficiente.")
+                    
+                    for i in range(cantidad_compras):
+                        if st.session_state.balance >= monto_por_compra:
+                            com = monto_por_compra * 0.001
+                            qty = (monto_por_compra - com) / precio
+                            st.session_state.balance -= monto_por_compra
+                            st.session_state.positions["BTC"] += qty
+                            if st.session_state.entry_price["BTC"] == 0:
+                                st.session_state.entry_price["BTC"] = precio
+                            st.session_state.highest_price["BTC"] = precio
+                            st.session_state.daily_trades += 1
+                            compras_ejecutadas += 1
+                        else:
+                            break
+                    
+                    if compras_ejecutadas > 0:
+                        st.session_state.last_action["BTC"] = "BUY"
+                        save_data()
+                        msg = f"🟢 COMPRA FORZADA BTC | {compras_ejecutadas} compras de ${monto_por_compra:.0f} | Precio: ${precio:,.0f} | Saldo: ${st.session_state.balance:.2f}"
+                        send_telegram(msg)
+                        st.session_state.trades.append((datetime.now(), msg))
+                        st.sidebar.success(f"✅ {compras_ejecutadas} compras de BTC ejecutadas.")
+                        st.rerun()
+                    else:
+                        st.sidebar.warning("⚠️ No se pudo comprar.")
+    except Exception as e:
+        st.sidebar.error(f"❌ Error: {e}")
+
+# Botón Comprar ETH
+if st.sidebar.button("🟢 Comprar ETH AHORA"):
+    try:
+        if st.session_state.positions.get("ETH", 0) > 0:
+            st.sidebar.warning("⚠️ Ya tienes posición en ETH.")
+        else:
+            precio = get_bitso_price("eth_mxn")
+            if precio is None:
+                st.sidebar.error("❌ Error al obtener precio de ETH.")
+            else:
+                cantidad_compras = 4
+                monto_por_compra = 100.0
+                compras_ejecutadas = 0
+                monto_total = cantidad_compras * monto_por_compra
+                
+                if st.session_state.balance < monto_por_compra:
+                    st.sidebar.warning("⚠️ Saldo insuficiente.")
+                else:
+                    if st.session_state.balance < monto_total:
+                        cantidad_compras = int(st.session_state.balance // monto_por_compra)
+                        if cantidad_compras == 0:
+                            st.sidebar.warning("⚠️ Saldo insuficiente.")
+                    
+                    for i in range(cantidad_compras):
+                        if st.session_state.balance >= monto_por_compra:
+                            com = monto_por_compra * 0.001
+                            qty = (monto_por_compra - com) / precio
+                            st.session_state.balance -= monto_por_compra
+                            st.session_state.positions["ETH"] += qty
+                            if st.session_state.entry_price["ETH"] == 0:
+                                st.session_state.entry_price["ETH"] = precio
+                            st.session_state.highest_price["ETH"] = precio
+                            st.session_state.daily_trades += 1
+                            compras_ejecutadas += 1
+                        else:
+                            break
+                    
+                    if compras_ejecutadas > 0:
+                        st.session_state.last_action["ETH"] = "BUY"
+                        save_data()
+                        msg = f"🟢 COMPRA FORZADA ETH | {compras_ejecutadas} compras de ${monto_por_compra:.0f} | Precio: ${precio:,.0f} | Saldo: ${st.session_state.balance:.2f}"
+                        send_telegram(msg)
+                        st.session_state.trades.append((datetime.now(), msg))
+                        st.sidebar.success(f"✅ {compras_ejecutadas} compras de ETH ejecutadas.")
+                        st.rerun()
+                    else:
+                        st.sidebar.warning("⚠️ No se pudo comprar.")
+    except Exception as e:
+        st.sidebar.error(f"❌ Error: {e}")
+
+# Actualizar parámetros
 st.session_state.umbral_caida = umbral_caida
 st.session_state.take_profit = take_profit
 st.session_state.stop_loss = stop_loss
