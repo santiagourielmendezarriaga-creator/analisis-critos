@@ -937,7 +937,7 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
         print(f"Error enviando señal: {e}")
         return False
 
-# ==================== FIN PARTE 8 ====================
+# ==================== FIN PARTE 8 ===================
 # ==================== PARTE 9: BUCLE DE ACTUALIZACIÓN (SIN while True) ====================
 def ejecutar_ciclo():
     """Función que ejecuta un ciclo de actualización de datos y señales."""
@@ -1119,7 +1119,7 @@ st.sidebar.markdown("**🔄 Actualización**")
 auto_refresh = st.sidebar.checkbox("Auto-refresh cada 30 segundos", value=False)
 if st.sidebar.button("🔄 Actualizar datos ahora"):
     ejecutar_ciclo()
-    st.experimental_rerun()
+    st.rerun()  # <--- CORREGIDO
 
 # Ejecutar un primer ciclo al cargar la app
 if "ciclo_inicial" not in st.session_state:
@@ -1130,6 +1130,6 @@ if "ciclo_inicial" not in st.session_state:
 if auto_refresh:
     time.sleep(30)
     ejecutar_ciclo()
-    st.experimental_rerun()
+    st.rerun()  # <--- CORREGIDO
 
 # ==================== FIN PARTE 9 ====================
