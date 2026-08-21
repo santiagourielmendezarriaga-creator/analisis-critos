@@ -535,7 +535,7 @@ def analisis_avanzado(sym, precio, fng_value):
     return accion, confianza, razon, detalles
 
 # ==================== FIN PARTE 6 ====================
-# ==================== PARTE 7: INTERFAZ DE USUARIO (CONFIGURACIÓN Y SIDEBAR) ====================
+# ===# ==================== PARTE 7: INTERFAZ DE USUARIO (CONFIGURACIÓN Y SIDEBAR) ====================
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
 # Inicializar todas las variables de estado
@@ -606,8 +606,8 @@ st.session_state.modo_aprendizaje = st.sidebar.checkbox("✅ Modo aprendizaje ac
 st.sidebar.header("🎯 Umbral de confianza")
 st.session_state.confianza_umbral = st.sidebar.slider(
     "Confianza mínima para ejecutar (%)",
-    min_value=50, max_value=95, value=st.session_state.confianza_umbral, step=5
-)
+    min_value=45, max_value=95, value=st.session_state.confianza_umbral, step=5
+)  # <--- CAMBIADO: min_value ahora es 45%
 
 st.sidebar.header("🧠 Indicadores")
 st.session_state.expert_score = st.sidebar.slider("Puntaje de tendencia", 0, 100, st.session_state.expert_score, 5)
@@ -911,6 +911,30 @@ if st.sidebar.button("📡 Ejecutar señal de VENTA (ETH)"):
         else:
             st.sidebar.info(f"ℹ️ Señal no recomendada: {razon} (confianza {confianza:.1f}%)")
 
+# ===== CONTENEDORES PRINCIPALES =====
+tabla_placeholder = st.empty()
+info_placeholder = st.empty()
+historial_placeholder = st.empty()
+estado_placeholder = st.empty()
+ultima_senal_placeholder = st.empty()
+
+# ===== FUNCIÓN PARA ENVIAR SEÑALES (con botones simulados) =====
+def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_onchain, cambio_30d, tendencia_30d):
+    try:
+        msg = (f"📢 **SEÑAL {tipo} - {sym}**\n"
+               f"Confianza: {confianza:.1f}%\n"
+               f"Precio: ${precio:,.0f}\n"
+               f"Razón: {razon}\n"
+               f"Volumen: {volumen_onchain:.2f}B USD\n"
+               f"Cambio 30d: {cambio_30d:+.2f}%\n"
+               f"Tendencia 30d: {tendencia_30d}\n\n"
+               f"⚠️ **Para ejecutar esta orden**, ve a la sección '📡 Ejecutar Señales Manuales' en la app.")
+        send_telegram(msg)
+        return True
+    except Exception as e:
+        print(f"Error enviando señal: {e}")
+        return False
+
 # ==================== FIN PARTE 7 ====================
 # ==================== PARTE 8: FUNCIONES AUXILIARES DE INTERFAZ Y PLACEHOLDERS ====================
 # Contenedores principales para mostrar datos dinámicos
@@ -929,13 +953,7 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
                f"Razón: {razon}\n"
                f"Volumen: {volumen_onchain:.2f}B USD\n"
                f"Cambio 30d: {cambio_30d:+.2f}%\n"
-               f"Tendencia 30d: {tendencia_30d}\n\n"
-               f"⚠️ **Para ejecutar esta orden**, ve a la sección '📡 Ejecutar Señales Manuales' en la app.")
-        send_telegram(msg)
-        return True
-    except Exception as e:
-        print(f"Error enviando señal: {e}")
-        return False
+               f"Tendencia 30d: {te
 
 # ==================== FIN PARTE 8 ===================
 # ==================== PARTE 9: BUCLE DE ACTUALIZACIÓN (CORREGIDA) ====================
