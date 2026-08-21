@@ -125,7 +125,7 @@ def init_new_user_state():
         "ETH": {"valor": None, "timestamp": 0}
     }
     st.session_state.historical_trend = {"BTC": {}, "ETH": {}}
-    st.session_state.confianza_umbral = 70  # NUEVO
+    st.session_state.confianza_umbral = 70
 
 def restore_from_file():
     data = load_data()
@@ -535,7 +535,7 @@ def analisis_avanzado(sym, precio, fng_value):
     return accion, confianza, razon, detalles
 
 # ==================== FIN PARTE 6 ====================
-# ===# ==================== PARTE 7: INTERFAZ DE USUARIO (CONFIGURACIÓN Y SIDEBAR) ====================
+# ==================== PARTE 7: INTERFAZ DE USUARIO (CONFIGURACIÓN Y SIDEBAR) ====================
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
 # Inicializar todas las variables de estado
@@ -578,7 +578,7 @@ required_vars = {
         "ETH": {"valor": None, "timestamp": 0}
     },
     "historical_trend": {"BTC": {}, "ETH": {}},
-    "confianza_umbral": 70  # <--- NUEVA VARIABLE
+    "confianza_umbral": 70  # Valor por defecto
 }
 
 for var_name, default_value in required_vars.items():
@@ -607,7 +607,7 @@ st.sidebar.header("🎯 Umbral de confianza")
 st.session_state.confianza_umbral = st.sidebar.slider(
     "Confianza mínima para ejecutar (%)",
     min_value=45, max_value=95, value=st.session_state.confianza_umbral, step=5
-)  # <--- CAMBIADO: min_value ahora es 45%
+)  # <--- CAMBIADO: min_value = 45%
 
 st.sidebar.header("🧠 Indicadores")
 st.session_state.expert_score = st.sidebar.slider("Puntaje de tendencia", 0, 100, st.session_state.expert_score, 5)
@@ -937,26 +937,11 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
 
 # ==================== FIN PARTE 7 ====================
 # ==================== PARTE 8: FUNCIONES AUXILIARES DE INTERFAZ Y PLACEHOLDERS ====================
-# Contenedores principales para mostrar datos dinámicos
-tabla_placeholder = st.empty()
-info_placeholder = st.empty()
-historial_placeholder = st.empty()
-estado_placeholder = st.empty()
-ultima_senal_placeholder = st.empty()
+# Los placeholders ya están definidos en la Parte 7 (tabla_placeholder, info_placeholder, etc.)
+# Esta parte queda como separador para claridad.
 
-def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_onchain, cambio_30d, tendencia_30d):
-    """Envía una señal con botones de acción por Telegram (simulado)."""
-    try:
-        msg = (f"📢 **SEÑAL {tipo} - {sym}**\n"
-               f"Confianza: {confianza:.1f}%\n"
-               f"Precio: ${precio:,.0f}\n"
-               f"Razón: {razon}\n"
-               f"Volumen: {volumen_onchain:.2f}B USD\n"
-               f"Cambio 30d: {cambio_30d:+.2f}%\n"
-               f"Tendencia 30d: {te
-
-# ==================== FIN PARTE 8 ===================
-# ==================== PARTE 9: BUCLE DE ACTUALIZACIÓN (CORREGIDA) ====================
+# ==================== FIN PARTE 8 ====================
+# ==================== PARTE 9: BUCLE DE ACTUALIZACIÓN (CORREGIDO) ====================
 def ejecutar_ciclo():
     """Función que ejecuta un ciclo de actualización de datos y señales."""
     btc = get_bitso_price("btc_mxn")
@@ -976,7 +961,6 @@ def ejecutar_ciclo():
 
     st.session_state.cycle += 1
     
-    # Guardar cada 3 ciclos
     if st.session_state.cycle % 3 == 0:
         save_data()
 
@@ -990,7 +974,6 @@ def ejecutar_ciclo():
     st.session_state.tendencia["BTC"] = analizar_tendencia(st.session_state.price_history["BTC"])
     st.session_state.tendencia["ETH"] = analizar_tendencia(st.session_state.price_history["ETH"])
 
-    # Actualizar tendencia 30d cada 60 ciclos
     if st.session_state.cycle % 60 == 0:
         for sym in ["BTC", "ETH"]:
             trend = get_historical_trend(sym, 30)
@@ -1030,7 +1013,16 @@ def ejecutar_ciclo():
             "📉 Scalping" if not st.session_state.indicadores_activados["ETH"] else "🧠 Indicadores"
         ]
     })
-    info_placeholder.caption(f"Ciclo: {st.session_state.cycle} | Caída scalping: {st.session_state.umbral_caida}% | TP: {st.session_state.take_profit}% | SL: {st.session_state.stop_loss}% | Trailing: {st.session_state.trailing}% | Fear & Greed: {fng_value}/100 ({fng_label}) | Aprendizaje: {'✅' if st.session_state.modo_aprendizaje else '❌'} | Umbral confianza: {st.session_state.confianza_umbral}%")
+
+    # Información de ciclo (f-string separada para evitar errores)
+    info_texto = (
+        f"Ciclo: {st.session_state.cycle} | Caída scalping: {st.session_state.umbral_caida}% | "
+        f"TP: {st.session_state.take_profit}% | SL: {st.session_state.stop_loss}% | "
+        f"Trailing: {st.session_state.trailing}% | Fear & Greed: {fng_value}/100 ({fng_label}) | "
+        f"Aprendizaje: {'✅' if st.session_state.modo_aprendizaje else '❌'} | "
+        f"Umbral confianza: {st.session_state.confianza_umbral}%"
+    )
+    info_placeholder.caption(info_texto)
 
     total_val = st.session_state.balance
     for s in ["BTC", "ETH"]:
@@ -1052,13 +1044,11 @@ def ejecutar_ciclo():
     else:
         historial_placeholder.text("Sin operaciones aún.")
 
-    # Reinicio diario
     hoy = datetime.now().day
     if hoy != st.session_state.last_day:
         st.session_state.daily_trades = 0
         st.session_state.last_day = hoy
 
-    # Evaluar rendimiento si aprendizaje activado
     if st.session_state.cycle % 5 == 0 and st.session_state.modo_aprendizaje:
         for sym in ["BTC", "ETH"]:
             eval_rend = evaluar_rendimiento(sym)
@@ -1071,12 +1061,9 @@ def ejecutar_ciclo():
                 st.session_state.take_profit = max(0.01, st.session_state.take_profit * 0.9)
                 st.session_state.confianza[sym] = max(0, st.session_state.confianza[sym] - 5)
 
-    # Procesar señales
     for sym, precio in [("BTC", btc), ("ETH", eth)]:
         accion, confianza, razon, detalles = analisis_avanzado(sym, precio, fng_value)
         tendencia_30d = st.session_state.historical_trend.get(sym, {}).get("tendencia", "NEUTRAL")
-        
-        # Usar el umbral configurable
         umbral_confianza = st.session_state.confianza_umbral
         
         if confianza > umbral_confianza and accion != "HOLD":
@@ -1086,7 +1073,6 @@ def ejecutar_ciclo():
                 volumen_onchain = onchain_vol_eth
             cambio_30d = st.session_state.historical_trend.get(sym, {}).get("cambio_porcentual", 0)
             
-            # Enviar señal si no se envió en los últimos 10 ciclos
             if not hasattr(st.session_state, f'ultima_senal_{sym}'):
                 setattr(st.session_state, f'ultima_senal_{sym}', 0)
             
@@ -1097,7 +1083,6 @@ def ejecutar_ciclo():
                 )
                 setattr(st.session_state, f'ultima_senal_{sym}', st.session_state.cycle)
         
-        # Guardar última señal para mostrar
         st.session_state.ultima_senal = {
             "sym": sym,
             "accion": accion,
@@ -1109,25 +1094,25 @@ def ejecutar_ciclo():
             "umbral": umbral_confianza
         }
 
-    # Mostrar última señal
     if hasattr(st.session_state, 'ultima_senal'):
         senal = st.session_state.ultima_senal
-        ultima_senal_placeholder.info(
+        ultima_texto = (
             f"📊 Última señal: {senal['sym']} → {senal['accion']} | "
             f"Confianza: {senal['confianza']:.1f}% | "
             f"Razón: {senal['razon']} | "
             f"Tendencia 30d: {senal.get('tendencia_30d', 'N/A')} | "
             f"Umbral: {senal.get('umbral', 70)}%"
         )
+        ultima_senal_placeholder.info(ultima_texto)
 
-    estado_placeholder.info(
+    estado_texto = (
         f"🔹 Indicadores: BTC={st.session_state.indicadores_activados.get('BTC', False)} | "
         f"ETH={st.session_state.indicadores_activados.get('ETH', False)} | "
         f"Tendencia 30d: BTC={trend_btc.get('tendencia', 'N/A')} | ETH={trend_eth.get('tendencia', 'N/A')} | "
         f"Modo: {'🔇 Solo señales' if st.session_state.modo_solo_senales else '✅ Ejecución automática'}"
     )
+    estado_placeholder.info(estado_texto)
 
-    # Guardar al final
     if st.session_state.cycle % 3 == 0:
         save_data()
 
@@ -1138,17 +1123,15 @@ auto_refresh = st.sidebar.checkbox("Auto-refresh cada 30 segundos", value=False)
 
 if st.sidebar.button("🔄 Actualizar datos ahora"):
     ejecutar_ciclo()
-    st.rerun()  # <--- AQUÍ ESTÁ EL CAMBIO
+    st.rerun()
 
-# Ejecutar un primer ciclo al cargar la app
 if "ciclo_inicial" not in st.session_state:
     ejecutar_ciclo()
     st.session_state.ciclo_inicial = True
 
-# Bucle de auto-refresh (controlado)
 if auto_refresh:
     time.sleep(30)
     ejecutar_ciclo()
-    st.rerun()  # <--- AQUÍ ESTÁ EL CAMBIO
+    st.rerun()
 
 # ==================== FIN PARTE 9 ====================
