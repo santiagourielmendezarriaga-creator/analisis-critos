@@ -941,7 +941,7 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
 # Esta parte queda como separador para claridad.
 
 # ==================== FIN PARTE 8 ====================
-# ==================== PARTE 9: BUCLE DE ACTUALIZACIÓN (CORREGIDO) ====================
+# ==================== PARTE 9: BUCLE DE ACTUALIZACIÓN (VERSIÓN FINAL) ====================
 def ejecutar_ciclo():
     """Función que ejecuta un ciclo de actualización de datos y señales."""
     btc = get_bitso_price("btc_mxn")
@@ -988,7 +988,7 @@ def ejecutar_ciclo():
     trend_btc = st.session_state.historical_trend.get("BTC", {})
     trend_eth = st.session_state.historical_trend.get("ETH", {})
 
-    # Mostrar tabla
+    # Mostrar tabla (sin f-strings complejas)
     tabla_placeholder.subheader("📊 Señales + Volumen + Tendencia 30d")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
@@ -1014,11 +1014,14 @@ def ejecutar_ciclo():
         ]
     })
 
-    # Información de ciclo (f-string separada para evitar errores)
+    # Información de ciclo (f-string simple)
     info_texto = (
-        f"Ciclo: {st.session_state.cycle} | Caída scalping: {st.session_state.umbral_caida}% | "
-        f"TP: {st.session_state.take_profit}% | SL: {st.session_state.stop_loss}% | "
-        f"Trailing: {st.session_state.trailing}% | Fear & Greed: {fng_value}/100 ({fng_label}) | "
+        f"Ciclo: {st.session_state.cycle} | "
+        f"Caída scalping: {st.session_state.umbral_caida}% | "
+        f"TP: {st.session_state.take_profit}% | "
+        f"SL: {st.session_state.stop_loss}% | "
+        f"Trailing: {st.session_state.trailing}% | "
+        f"Fear & Greed: {fng_value}/100 ({fng_label}) | "
         f"Aprendizaje: {'✅' if st.session_state.modo_aprendizaje else '❌'} | "
         f"Umbral confianza: {st.session_state.confianza_umbral}%"
     )
