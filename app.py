@@ -941,7 +941,7 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
 # Esta parte queda como separador para claridad.
 
 # ==================== FIN PARTE 8 ====================
-# ==================== PARTE 9: BUCLE DE ACTUALIZACIÓN CON EJECUCIÓN AUTOMÁTICA ====================
+# ==================== PARTE 9: BUCLE DE ACTUALIZACIÓN CON AUTO-REFRESH CORREGIDO ====================
 def ejecutar_ciclo():
     """Función que ejecuta un ciclo de actualización y ejecuta órdenes automáticas si corresponde."""
     btc = get_bitso_price("btc_mxn")
@@ -1071,7 +1071,7 @@ def ejecutar_ciclo():
             "sym": sym,
             "accion": accion,
             "razon": razon,
-            "confianza_senal": confianza_senal,  # Guardamos la confianza real
+            "confianza_senal": confianza_senal,
             "precio": precio,
             "timestamp": datetime.now().strftime("%H:%M:%S"),
             "tendencia_30d": tendencia_30d,
@@ -1081,17 +1081,13 @@ def ejecutar_ciclo():
         # Si la señal es fuerte y no estamos en modo solo señales, ejecutar orden
         if not st.session_state.modo_solo_senales:
             if accion == "BUY" and confianza_senal > umbral_confianza:
-                # Evitar comprar si ya tenemos posición
                 if st.session_state.positions.get(sym, 0) == 0:
-                    # Verificar tendencia (no comprar en bajista)
                     if tendencia_30d != "BAJISTA":
-                        # Verificar volumen
                         if sym == "BTC":
                             volumen = onchain_vol_btc
                         else:
                             volumen = onchain_vol_eth
                         if volumen is None or volumen >= 0.5:
-                            # Ejecutar compra profesional (similar a la función manual)
                             ejecutar_compra_profesional(sym, precio, confianza_senal, razon, tendencia_30d)
                         else:
                             st.sidebar.info(f"ℹ️ Volumen bajo ({volumen:.2f}B), no se ejecuta compra de {sym}")
@@ -1101,11 +1097,8 @@ def ejecutar_ciclo():
                     st.sidebar.info(f"ℹ️ Ya tienes posición en {sym}, no se compra más.")
             
             elif accion == "SELL" and confianza_senal > umbral_confianza:
-                # Solo vender si tenemos posición
                 if st.session_state.positions.get(sym, 0) > 0:
-                    # Verificar tendencia (no vender en alcista)
                     if tendencia_30d != "ALCISTA":
-                        # Ejecutar venta profesional
                         qty = st.session_state.positions[sym]
                         gross = qty * precio
                         com = gross * 0.001
@@ -1167,6 +1160,12 @@ def ejecutar_ciclo():
     if st.session_state.cycle % 3 == 0:
         save_data()
 
+# ===== INICIALIZACIÓN DE CICLO Y AUTO-REFRESH =====
+# Ejecutar un primer ciclo al cargar la app
+if "ciclo_inicial" not in st.session_state:
+    ejecutar_ciclo()
+    st.session_state.ciclo_inicial = True
+
 # ===== BOTÓN DE ACTUALIZACIÓN MANUAL Y AUTO-REFRESH =====
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🔄 Actualización**")
@@ -1176,13 +1175,16 @@ if st.sidebar.button("🔄 Actualizar datos ahora"):
     ejecutar_ciclo()
     st.rerun()
 
-if "ciclo_inicial" not in st.session_state:
-    ejecutar_ciclo()
-    st.session_state.ciclo_inicial = True
-
+# ===== LÓGICA DE AUTO-REFRESH CORREGIDA =====
 if auto_refresh:
-    time.sleep(30)
-    ejecutar_ciclo()
-    st.rerun()
+    # Inicializar timestamp de última actualización
+    if "last_refresh" not in st.session_state:
+        st.session_state.last_refresh = time.time()
+    
+    # Si han pasado 30 segundos desde la última actualización
+    if time.time() - st.session_state.last_refresh >= 30:
+        ejecutar_ciclo()
+        st.session_state.last_refresh = time.time()
+        st.rerun()
 
 # ==================== FIN PARTE 9 ====================
