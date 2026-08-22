@@ -941,9 +941,9 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
 # Esta parte queda como separador para claridad.
 
 # ==================== FIN PARTE 8 ====================
-# ==================== PARTE 9: BUCLE DE ACTUALIZACIÓN (VERSIÓN FINAL) ====================
+# ==================== PARTE 9: BUCLE DE ACTUALIZACIÓN CON EJECUCIÓN AUTOMÁTICA ====================
 def ejecutar_ciclo():
-    """Función que ejecuta un ciclo de actualización de datos y señales."""
+    """Función que ejecuta un ciclo de actualización y ejecuta órdenes automáticas si corresponde."""
     btc = get_bitso_price("btc_mxn")
     eth = get_bitso_price("eth_mxn")
     if btc is None or eth is None:
@@ -988,14 +988,14 @@ def ejecutar_ciclo():
     trend_btc = st.session_state.historical_trend.get("BTC", {})
     trend_eth = st.session_state.historical_trend.get("ETH", {})
 
-    # Mostrar tabla (sin f-strings complejas)
+    # Mostrar tabla
     tabla_placeholder.subheader("📊 Señales + Volumen + Tendencia 30d")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
         "Precio MXN": [f"${btc:,.0f}", f"${eth:,.0f}"],
         "Cambio desde inicio": [f"{cambio_btc:+.2f}%", f"{cambio_eth:+.2f}%"],
         "Tendencia (corta)": [st.session_state.tendencia["BTC"], st.session_state.tendencia["ETH"]],
-        "Confianza": [f"{st.session_state.confianza['BTC']}%", f"{st.session_state.confianza['ETH']}%"],
+        "Confianza general": [f"{st.session_state.confianza['BTC']}%", f"{st.session_state.confianza['ETH']}%"],
         "Volumen 24h (USD)": [
             f"{onchain_vol_btc:.2f}B" if onchain_vol_btc else "N/A",
             f"{onchain_vol_eth:.2f}B" if onchain_vol_eth else "N/A"
@@ -1014,14 +1014,10 @@ def ejecutar_ciclo():
         ]
     })
 
-    # Información de ciclo (f-string simple)
     info_texto = (
-        f"Ciclo: {st.session_state.cycle} | "
-        f"Caída scalping: {st.session_state.umbral_caida}% | "
-        f"TP: {st.session_state.take_profit}% | "
-        f"SL: {st.session_state.stop_loss}% | "
-        f"Trailing: {st.session_state.trailing}% | "
-        f"Fear & Greed: {fng_value}/100 ({fng_label}) | "
+        f"Ciclo: {st.session_state.cycle} | Caída scalping: {st.session_state.umbral_caida}% | "
+        f"TP: {st.session_state.take_profit}% | SL: {st.session_state.stop_loss}% | "
+        f"Trailing: {st.session_state.trailing}% | Fear & Greed: {fng_value}/100 ({fng_label}) | "
         f"Aprendizaje: {'✅' if st.session_state.modo_aprendizaje else '❌'} | "
         f"Umbral confianza: {st.session_state.confianza_umbral}%"
     )
@@ -1064,12 +1060,74 @@ def ejecutar_ciclo():
                 st.session_state.take_profit = max(0.01, st.session_state.take_profit * 0.9)
                 st.session_state.confianza[sym] = max(0, st.session_state.confianza[sym] - 5)
 
+    # ===== PROCESAR SEÑALES Y EJECUTAR ÓRDENES AUTOMÁTICAS =====
     for sym, precio in [("BTC", btc), ("ETH", eth)]:
-        accion, confianza, razon, detalles = analisis_avanzado(sym, precio, fng_value)
+        accion, confianza_senal, razon, detalles = analisis_avanzado(sym, precio, fng_value)
         tendencia_30d = st.session_state.historical_trend.get(sym, {}).get("tendencia", "NEUTRAL")
         umbral_confianza = st.session_state.confianza_umbral
         
-        if confianza > umbral_confianza and accion != "HOLD":
+        # Mostrar la confianza real de la señal en la última señal
+        st.session_state.ultima_senal = {
+            "sym": sym,
+            "accion": accion,
+            "razon": razon,
+            "confianza_senal": confianza_senal,  # Guardamos la confianza real
+            "precio": precio,
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+            "tendencia_30d": tendencia_30d,
+            "umbral": umbral_confianza
+        }
+        
+        # Si la señal es fuerte y no estamos en modo solo señales, ejecutar orden
+        if not st.session_state.modo_solo_senales:
+            if accion == "BUY" and confianza_senal > umbral_confianza:
+                # Evitar comprar si ya tenemos posición
+                if st.session_state.positions.get(sym, 0) == 0:
+                    # Verificar tendencia (no comprar en bajista)
+                    if tendencia_30d != "BAJISTA":
+                        # Verificar volumen
+                        if sym == "BTC":
+                            volumen = onchain_vol_btc
+                        else:
+                            volumen = onchain_vol_eth
+                        if volumen is None or volumen >= 0.5:
+                            # Ejecutar compra profesional (similar a la función manual)
+                            ejecutar_compra_profesional(sym, precio, confianza_senal, razon, tendencia_30d)
+                        else:
+                            st.sidebar.info(f"ℹ️ Volumen bajo ({volumen:.2f}B), no se ejecuta compra de {sym}")
+                    else:
+                        st.sidebar.info(f"ℹ️ Tendencia BAJISTA, no se ejecuta compra de {sym}")
+                else:
+                    st.sidebar.info(f"ℹ️ Ya tienes posición en {sym}, no se compra más.")
+            
+            elif accion == "SELL" and confianza_senal > umbral_confianza:
+                # Solo vender si tenemos posición
+                if st.session_state.positions.get(sym, 0) > 0:
+                    # Verificar tendencia (no vender en alcista)
+                    if tendencia_30d != "ALCISTA":
+                        # Ejecutar venta profesional
+                        qty = st.session_state.positions[sym]
+                        gross = qty * precio
+                        com = gross * 0.001
+                        net = gross - com
+                        st.session_state.balance += net
+                        st.session_state.positions[sym] = 0
+                        st.session_state.entry_price[sym] = 0
+                        st.session_state.highest_price[sym] = 0
+                        st.session_state.daily_trades += 1
+                        msg = f"🔴 VENTA AUTOMÁTICA {sym} | Cantidad: {qty:.6f} | Precio: ${precio:,.0f} | Neto: ${net:.2f} | Confianza: {confianza_senal:.1f}% | Tendencia: {tendencia_30d}"
+                        send_telegram(msg)
+                        st.session_state.trades.append((datetime.now(), msg))
+                        st.session_state.last_action[sym] = None
+                        save_data()
+                        st.sidebar.success(f"✅ Venta automática de {sym} ejecutada.")
+                    else:
+                        st.sidebar.info(f"ℹ️ Tendencia ALCISTA, no se ejecuta venta de {sym}")
+                else:
+                    st.sidebar.info(f"ℹ️ No hay posición en {sym} para vender.")
+        
+        # Enviar señal por Telegram siempre (incluso si no se ejecuta)
+        if confianza_senal > umbral_confianza and accion != "HOLD":
             if sym == "BTC":
                 volumen_onchain = onchain_vol_btc
             else:
@@ -1081,27 +1139,17 @@ def ejecutar_ciclo():
             
             if st.session_state.cycle - getattr(st.session_state, f'ultima_senal_{sym}', 0) > 10:
                 send_signal_telegram_buttons(
-                    sym, accion, precio, razon, confianza,
+                    sym, accion, precio, razon, confianza_senal,
                     volumen_onchain, cambio_30d, tendencia_30d
                 )
                 setattr(st.session_state, f'ultima_senal_{sym}', st.session_state.cycle)
-        
-        st.session_state.ultima_senal = {
-            "sym": sym,
-            "accion": accion,
-            "razon": razon,
-            "confianza": confianza,
-            "precio": precio,
-            "timestamp": datetime.now().strftime("%H:%M:%S"),
-            "tendencia_30d": tendencia_30d,
-            "umbral": umbral_confianza
-        }
 
+    # Mostrar última señal con confianza real
     if hasattr(st.session_state, 'ultima_senal'):
         senal = st.session_state.ultima_senal
         ultima_texto = (
             f"📊 Última señal: {senal['sym']} → {senal['accion']} | "
-            f"Confianza: {senal['confianza']:.1f}% | "
+            f"Confianza real: {senal.get('confianza_senal', 0):.1f}% | "
             f"Razón: {senal['razon']} | "
             f"Tendencia 30d: {senal.get('tendencia_30d', 'N/A')} | "
             f"Umbral: {senal.get('umbral', 70)}%"
