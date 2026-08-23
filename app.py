@@ -1016,7 +1016,7 @@ def ejecutar_ciclo():
         ]
     })
 
-    # --- Información de ciclo (sin tiempo_restante, porque no hace falta en bucle) ---
+    # --- Información de ciclo ---
     info_texto = (
         f"Ciclo: {st.session_state.cycle} | Caída scalping: {st.session_state.umbral_caida}% | "
         f"TP: {st.session_state.take_profit}% | SL: {st.session_state.stop_loss}% | "
@@ -1171,13 +1171,16 @@ ejecutar_ciclo()
 
 # ===== BUCLE INFINITO =====
 while True:
-    # Dormir el intervalo configurado
     time.sleep(st.session_state.intervalo_actualizacion)
-    # Ejecutar un ciclo
     ejecutar_ciclo()
 
 # ==================== FIN PARTE 9 ====================
-# =================== PARTE 10A: FUNCIONES DE BACKTESTING ====================
+# ==================== PARTE 10: FUNCIONES DE BACKTESTING ====================
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
+
 def obtener_datos_historicos(symbol, start_date, end_date, interval="1h"):
     """Descarga datos históricos de Yahoo Finance."""
     try:
@@ -1200,7 +1203,7 @@ def obtener_datos_historicos(symbol, start_date, end_date, interval="1h"):
 
 def analisis_avanzado_bt(sym, precio, fng_value, price_history, historical_trend, 
                          ema_fast, ema_slow, rsi_os, rsi_ob, umbral_caida, take_profit, stop_loss):
-    """Versión para backtest de analisis_avanzado, sin depender de st.session_state."""
+    """Versión para backtest de analisis_avanzado."""
     trend_data = historical_trend.get(sym, {})
     cambio_30d = trend_data.get("cambio_porcentual", 0)
     tendencia_30d = trend_data.get("tendencia", "NEUTRAL")
@@ -1504,7 +1507,7 @@ def ejecutar_backtest_completo(symbol, prices, config):
     
     return operations, saldo_final, max_drawdown, win_rate, profit_factor, equity_curve
 
-# ==================== FIN PARTE 10A ====================
+# ==================== FIN PARTE 10 ====================
 # ==================== PARTE 11: INTERFAZ DE BACKTESTING ====================
 def mostrar_resultados_backtest_completo(symbol, operations, saldo_final, max_drawdown, win_rate, profit_factor, equity_curve, prices):
     """Muestra los resultados del backtest en la interfaz con gráficos avanzados."""
@@ -1591,6 +1594,7 @@ def mostrar_resultados_backtest_completo(symbol, operations, saldo_final, max_dr
     
     st.plotly_chart(fig, use_container_width=True)
 
+# ===== SECCIÓN DE BACKTEST EN EL SIDEBAR =====
 st.sidebar.markdown("---")
 st.sidebar.markdown("**📊 Backtesting**")
 
