@@ -925,9 +925,30 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
 # Esta parte queda como separador para claridad.
 
 # ==================== FIN PARTE 8 ====================
-# ==================== PARTE 9: BUCLE DE ACTUALIZACIÓN (CON AUTO-REFRESH) ====================
+# ==================== PARTE 9: BUCLE INFINITO CON AUTO-REFRESH ====================
+# Esta parte se ejecuta en un bucle while True, actualizando los placeholders cada intervalo.
+
+# Inicializar variables de control si no existen
+if "intervalo_actualizacion" not in st.session_state:
+    st.session_state.intervalo_actualizacion = 5
+
+# ===== CONFIGURACIÓN DEL INTERVALO EN EL SIDEBAR =====
+st.sidebar.markdown("---")
+st.sidebar.markdown("**⏱️ Intervalo de actualización**")
+intervalo = st.sidebar.slider(
+    "Actualizar cada (segundos)",
+    min_value=5, max_value=60, value=st.session_state.intervalo_actualizacion, step=5
+)
+st.session_state.intervalo_actualizacion = intervalo
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("**🔄 Actualización**")
+if st.sidebar.button("🔄 Actualizar datos ahora"):
+    ejecutar_ciclo()  # Ejecuta un ciclo inmediato
+
+# ===== FUNCIÓN QUE EJECUTA UN CICLO Y ACTUALIZA LOS PLACEHOLDERS =====
 def ejecutar_ciclo():
-    """Función que ejecuta un ciclo de actualización y ejecuta órdenes automáticas si corresponde."""
+    """Función que ejecuta un ciclo de actualización y actualiza la interfaz."""
     btc = get_bitso_price("btc_mxn")
     eth = get_bitso_price("eth_mxn")
     if btc is None or eth is None:
@@ -975,6 +996,7 @@ def ejecutar_ciclo():
     senal_btc, confianza_btc, razon_btc, detalles_btc = analisis_avanzado("BTC", btc, fng_value)
     senal_eth, confianza_eth, razon_eth, detalles_eth = analisis_avanzado("ETH", eth, fng_value)
 
+    # --- Mostrar tabla ---
     tabla_placeholder.subheader("📊 Señales + Volumen + Tendencia 30d")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
@@ -994,17 +1016,18 @@ def ejecutar_ciclo():
         ]
     })
 
+    # --- Información de ciclo (sin tiempo_restante, porque no hace falta en bucle) ---
     info_texto = (
         f"Ciclo: {st.session_state.cycle} | Caída scalping: {st.session_state.umbral_caida}% | "
         f"TP: {st.session_state.take_profit}% | SL: {st.session_state.stop_loss}% | "
         f"Trailing: {st.session_state.trailing}% | Fear & Greed: {fng_value}/100 ({fng_label}) | "
         f"Aprendizaje: {'✅' if st.session_state.modo_aprendizaje else '❌'} | "
         f"Umbral confianza: {st.session_state.confianza_umbral}% | "
-        f"Actualización en: {st.session_state.tiempo_restante:.0f}s | "
         f"Intervalo: {st.session_state.intervalo_actualizacion}s"
     )
     info_placeholder.caption(info_texto)
 
+    # --- Cartera ---
     total_val = st.session_state.balance
     for s in ["BTC", "ETH"]:
         p = st.session_state.last_price.get(s, 0)
@@ -1015,6 +1038,7 @@ def ejecutar_ciclo():
     total_placeholder.metric("Valor total", f"${total_val:,.2f}")
     ops_placeholder.metric("Ops hoy", st.session_state.daily_trades)
 
+    # --- Historial ---
     historial_placeholder.subheader("📜 Historial (últimas 10)")
     if st.session_state.trades:
         txt = ""
@@ -1030,6 +1054,7 @@ def ejecutar_ciclo():
         st.session_state.daily_trades = 0
         st.session_state.last_day = hoy
 
+    # --- Aprendizaje ---
     if st.session_state.cycle % 5 == 0 and st.session_state.modo_aprendizaje:
         for sym in ["BTC", "ETH"]:
             eval_rend = evaluar_rendimiento(sym)
@@ -1042,6 +1067,7 @@ def ejecutar_ciclo():
                 st.session_state.take_profit = max(0.01, st.session_state.take_profit * 0.9)
                 st.session_state.confianza[sym] = max(0, st.session_state.confianza[sym] - 5)
 
+    # --- Procesar señales y ejecutar órdenes ---
     for sym, precio, senal, confianza_senal, razon in [
         ("BTC", btc, senal_btc, confianza_btc, razon_btc),
         ("ETH", eth, senal_eth, confianza_eth, razon_eth)
@@ -1117,6 +1143,7 @@ def ejecutar_ciclo():
                 )
                 setattr(st.session_state, f'ultima_senal_{sym}', st.session_state.cycle)
 
+    # --- Última señal ---
     if hasattr(st.session_state, 'ultima_senal'):
         senal = st.session_state.ultima_senal
         ultima_texto = (
@@ -1139,62 +1166,18 @@ def ejecutar_ciclo():
     if st.session_state.cycle % 3 == 0:
         save_data()
 
-if "intervalo_actualizacion" not in st.session_state:
-    st.session_state.intervalo_actualizacion = 5
+# ===== EJECUCIÓN DEL PRIMER CICLO =====
+ejecutar_ciclo()
 
-if "ultima_actualizacion" not in st.session_state:
-    st.session_state.ultima_actualizacion = time.time()
-    st.session_state.tiempo_restante = 5
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("**⏱️ Intervalo de actualización**")
-intervalo = st.sidebar.slider(
-    "Actualizar cada (segundos)",
-    min_value=5, max_value=60, value=st.session_state.intervalo_actualizacion, step=5
-)
-st.session_state.intervalo_actualizacion = intervalo
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("**🔄 Actualización**")
-if st.sidebar.button("🔄 Actualizar datos ahora"):
+# ===== BUCLE INFINITO =====
+while True:
+    # Dormir el intervalo configurado
+    time.sleep(st.session_state.intervalo_actualizacion)
+    # Ejecutar un ciclo
     ejecutar_ciclo()
-    st.session_state.ultima_actualizacion = time.time()
-    st.rerun()
-
-if "ciclo_inicial" not in st.session_state:
-    ejecutar_ciclo()
-    st.session_state.ciclo_inicial = True
-    st.session_state.ultima_actualizacion = time.time()
-
-tiempo_transcurrido = time.time() - st.session_state.ultima_actualizacion
-st.session_state.tiempo_restante = max(0, st.session_state.intervalo_actualizacion - tiempo_transcurrido)
-
-if tiempo_transcurrido >= st.session_state.intervalo_actualizacion:
-    saldo_anterior = st.session_state.balance if hasattr(st.session_state, 'balance') else 0
-    total_anterior = st.session_state.balance
-    for s in ["BTC", "ETH"]:
-        p = st.session_state.last_price.get(s, 0)
-        q = st.session_state.positions.get(s, 0)
-        if q > 0 and p > 0:
-            total_anterior += q * p
-    
-    ejecutar_ciclo()
-    st.session_state.ultima_actualizacion = time.time()
-    
-    total_nuevo = st.session_state.balance
-    for s in ["BTC", "ETH"]:
-        p = st.session_state.last_price.get(s, 0)
-        q = st.session_state.positions.get(s, 0)
-        if q > 0 and p > 0:
-            total_nuevo += q * p
-    
-    if abs(total_nuevo - total_anterior) > 100:
-        st.success(f"💰 Cartera actualizada: ${total_nuevo:,.2f} MXN")
-    
-    st.rerun()
 
 # ==================== FIN PARTE 9 ====================
-# ==================== PARTE 10A: FUNCIONES DE BACKTESTING ====================
+# =================== PARTE 10A: FUNCIONES DE BACKTESTING ====================
 def obtener_datos_historicos(symbol, start_date, end_date, interval="1h"):
     """Descarga datos históricos de Yahoo Finance."""
     try:
