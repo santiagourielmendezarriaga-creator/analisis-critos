@@ -1206,3 +1206,588 @@ while True:
     time.sleep(0.1)
 
 # ==================== FIN PARTE 9 ====================
+# ==================== PARTE 10A: FUNCIONES DE BACKTESTING ====================
+# Esta parte contiene las funciones principales para el backtest.
+# Se debe colocar ANTES de la Parte 10B.
+
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import yfinance as yf
+from datetime import datetime, timedelta
+
+def obtener_datos_historicos(symbol, start_date, end_date, interval="1h"):
+    """
+    Descarga datos históricos de Yahoo Finance.
+    interval: "1h" (por defecto), "15m", "5m", "1d"
+    """
+    try:
+        if symbol == "BTC":
+            ticker = "BTC-USD"
+        elif symbol == "ETH":
+            ticker = "ETH-USD"
+        else:
+            return None
+        
+        df = yf.download(ticker, start=start_date, end=end_date, interval=interval)
+        if df.empty:
+            return None
+        
+        # Devolver lista de precios de cierre
+        prices = df['Close'].tolist()
+        return prices
+    except Exception as e:
+        st.error(f"❌ Error descargando datos de {symbol}: {e}")
+        return None
+
+def analisis_avanzado_bt(sym, precio, fng_value, price_history, historical_trend, 
+                         ema_fast, ema_slow, rsi_os, rsi_ob, umbral_caida, take_profit, stop_loss):
+    """
+    Versión para backtest de analisis_avanzado, sin depender de st.session_state.
+    Retorna: (accion, confianza, razon, detalles)
+    """
+    # Obtener tendencia 30d
+    trend_data = historical_trend.get(sym, {})
+    cambio_30d = trend_data.get("cambio_porcentual", 0)
+    tendencia_30d = trend_data.get("tendencia", "NEUTRAL")
+    
+    # Volumen on-chain (simulado en backtest, usamos valor fijo)
+    volumen_onchain = 0.5  # Valor por defecto
+    
+    hist = list(price_history)
+    if len(hist) < 30:
+        return "HOLD", 0, "Datos insuficientes", {}
+    
+    # 1. RSI
+    rsi = compute_rsi(hist, 14)
+    rsi_ponderado = 0
+    if rsi <= rsi_os:
+        rsi_ponderado = 20
+    elif rsi >= rsi_ob:
+        rsi_ponderado = -20
+    else:
+        rsi_ponderado = (50 - rsi) * 0.5
+    
+    # 2. EMAs
+    ema_f = compute_ema(hist, ema_fast)
+    ema_s = compute_ema(hist, ema_slow)
+    ema_ponderado = 0
+    if ema_f is not None and ema_s is not None:
+        if ema_f > ema_s:
+            ema_ponderado = 15
+        elif ema_f < ema_s:
+            ema_ponderado = -15
+        if len(hist) > 10:
+            ema_prev = compute_ema(hist[:-1], ema_fast)
+            if ema_prev is not None and ema_f > ema_prev * 1.001:
+                ema_ponderado += 5
+            elif ema_prev is not None and ema_f < ema_prev * 0.999:
+                ema_ponderado -= 5
+    
+    # 3. Bandas de Bollinger
+    bb_ponderado = 0
+    if len(hist) >= 20:
+        sma_20 = sum(hist[-20:]) / 20
+        std_20 = statistics.stdev(hist[-20:]) if len(hist[-20:]) > 1 else 0
+        banda_superior = sma_20 + 2 * std_20
+        banda_inferior = sma_20 - 2 * std_20
+        if precio > banda_superior:
+            bb_ponderado = -15
+        elif precio < banda_inferior:
+            bb_ponderado = 15
+    
+    # 4. MACD
+    macd_ponderado = 0
+    if len(hist) >= 26:
+        ema_12 = compute_ema(hist, 12)
+        ema_26 = compute_ema(hist, 26)
+        if ema_12 is not None and ema_26 is not None:
+            macd = ema_12 - ema_26
+            if len(hist) >= 35:
+                macd_hist = []
+                for i in range(26, len(hist)):
+                    e12 = compute_ema(hist[:i+1], 12)
+                    e26 = compute_ema(hist[:i+1], 26)
+                    if e12 is not None and e26 is not None:
+                        macd_hist.append(e12 - e26)
+                if len(macd_hist) >= 9:
+                    signal = sum(macd_hist[-9:]) / 9
+                    if macd > signal:
+                        macd_ponderado = 10
+                    elif macd < signal:
+                        macd_ponderado = -10
+    
+    # 5. Volumen (simulado en backtest)
+    volumen_ponderado = 0
+    if volumen_onchain is not None:
+        if volumen_onchain > 2.0:
+            volumen_ponderado = 10
+        elif volumen_onchain < 0.5:
+            volumen_ponderado = -5
+    
+    # 6. Tendencia 30d
+    tendencia_ponderado = 0
+    if tendencia_30d == "ALCISTA":
+        tendencia_ponderado = 15
+    elif tendencia_30d == "BAJISTA":
+        tendencia_ponderado = -15
+    if abs(cambio_30d) > 20:
+        tendencia_ponderado = tendencia_ponderado * 1.5
+    
+    # 7. Fear & Greed
+    fng_ponderado = 0
+    if fng_value <= 20:
+        fng_ponderado = 10
+    elif fng_value >= 80:
+        fng_ponderado = -10
+    else:
+        fng_ponderado = (50 - fng_value) * 0.2
+    
+    # 8. Volatilidad (ATR)
+    atr_ponderado = 0
+    if len(hist) >= 14:
+        atr = calcular_atr(hist, 14)
+        if atr is not None and precio > 0:
+            volatilidad_pct = (atr / precio) * 100
+            if volatilidad_pct > 3:
+                atr_ponderado = -5
+            elif volatilidad_pct < 1:
+                atr_ponderado = 5
+    
+    puntuacion = (rsi_ponderado + ema_ponderado + bb_ponderado + 
+                  macd_ponderado + volumen_ponderado + tendencia_ponderado + 
+                  fng_ponderado + atr_ponderado)
+    
+    confianza = abs(puntuacion)
+    if confianza < 20:
+        accion = "HOLD"
+        razon = f"Puntuación baja ({confianza:.1f}), esperando confirmación"
+    elif puntuacion > 0:
+        accion = "BUY"
+        razon = f"Señal de compra (puntuación {puntuacion:.1f})"
+    else:
+        accion = "SELL"
+        razon = f"Señal de venta (puntuación {puntuacion:.1f})"
+    
+    detalles = {
+        "rsi": rsi,
+        "ema_ponderado": ema_ponderado,
+        "bb_ponderado": bb_ponderado,
+        "macd_ponderado": macd_ponderado,
+        "volumen_ponderado": volumen_ponderado,
+        "tendencia_ponderado": tendencia_ponderado,
+        "fng_ponderado": fng_ponderado,
+        "atr_ponderado": atr_ponderado,
+        "puntuacion": puntuacion,
+        "confianza": confianza
+    }
+    return accion, confianza, razon, detalles
+
+def ejecutar_backtest_completo(symbol, prices, config):
+    """
+    Ejecuta el backtest completo con la lógica de 8 indicadores.
+    config: diccionario con todos los parámetros (umbrales, RSI, EMAs, etc.)
+    Retorna: (operaciones, saldo_final, max_drawdown, win_rate, profit_factor, equity_curve)
+    """
+    if not prices or len(prices) < 30:
+        return None, 0, 0, 0, 0, []
+    
+    # Extraer configuración
+    umbral_confianza = config['umbral_confianza']
+    umbral_caida = config['umbral_caida']
+    take_profit = config['take_profit']
+    stop_loss = config['stop_loss']
+    rsi_os = config['rsi_os']
+    rsi_ob = config['rsi_ob']
+    ema_fast = config['ema_fast']
+    ema_slow = config['ema_slow']
+    
+    # Inicializar simulación
+    balance = 1000.0
+    positions = 0.0
+    entry_price = 0.0
+    highest_price = 0.0
+    operations = []
+    equity_curve = []
+    max_balance = balance
+    max_drawdown = 0
+    ciclo = 0
+    
+    # Historial de precios para indicadores
+    price_history = deque(maxlen=200)
+    ref_price = prices[0]
+    historical_trend = {}  # Se actualizará cada 60 ciclos
+    
+    # Fear & Greed simulado (usamos valor promedio)
+    fng_value = 50
+    
+    for i, price in enumerate(prices):
+        price_history.append(price)
+        ciclo += 1
+        
+        # Actualizar tendencia 30d cada 60 ciclos
+        if ciclo % 60 == 0:
+            # Calcular tendencia a partir de los últimos 30 días de datos
+            if len(prices) > i - 720:  # 30 días en horas (30*24=720)
+                subset = prices[max(0, i-720):i+1]
+                if subset:
+                    cambio = (subset[-1] - subset[0]) / subset[0] * 100 if subset[0] != 0 else 0
+                    sma_30 = sum(subset[-30:]) / 30 if len(subset) >= 30 else sum(subset) / len(subset)
+                    if subset[-1] > sma_30 * 1.01:
+                        tendencia = "ALCISTA"
+                    elif subset[-1] < sma_30 * 0.99:
+                        tendencia = "BAJISTA"
+                    else:
+                        tendencia = "LATERAL"
+                    historical_trend[symbol] = {
+                        "cambio_porcentual": cambio,
+                        "tendencia": tendencia
+                    }
+        
+        # Si no hay suficientes datos, saltar
+        if len(price_history) < 30:
+            continue
+        
+        # Ejecutar análisis avanzado
+        accion, confianza, razon, detalles = analisis_avanzado_bt(
+            symbol, price, fng_value, price_history, historical_trend,
+            ema_fast, ema_slow, rsi_os, rsi_ob, umbral_caida, take_profit, stop_loss
+        )
+        
+        # Ejecutar órdenes
+        if accion == "BUY" and confianza > umbral_confianza and positions == 0:
+            # Verificar tendencia (no comprar en bajista)
+            tendencia_30d = historical_trend.get(symbol, {}).get("tendencia", "NEUTRAL")
+            if tendencia_30d != "BAJISTA":
+                # Simular compra con monto fijo
+                monto = 100.0
+                com = monto * 0.001
+                qty = (monto - com) / price
+                balance -= monto
+                positions = qty
+                entry_price = price
+                highest_price = price
+                operations.append({
+                    "type": "BUY",
+                    "price": price,
+                    "qty": qty,
+                    "balance": balance,
+                    "index": i,
+                    "confianza": confianza
+                })
+        
+        elif accion == "SELL" and confianza > umbral_confianza and positions > 0:
+            # Verificar tendencia (no vender en alcista)
+            tendencia_30d = historical_trend.get(symbol, {}).get("tendencia", "NEUTRAL")
+            if tendencia_30d != "ALCISTA":
+                gross = positions * price
+                com = gross * 0.001
+                net = gross - com
+                balance += net
+                profit = net - (positions * entry_price)
+                operations.append({
+                    "type": "SELL",
+                    "price": price,
+                    "qty": positions,
+                    "balance": balance,
+                    "profit": profit,
+                    "index": i,
+                    "confianza": confianza
+                })
+                positions = 0
+                entry_price = 0
+                highest_price = 0
+        
+        # Stop Loss y Take Profit (solo si hay posición)
+        if positions > 0 and entry_price > 0:
+            # Trailing Stop
+            if price > highest_price:
+                highest_price = price
+            trailing_stop_price = highest_price * (1 - config['trailing'] / 100)
+            
+            # Stop Loss fijo
+            stop_loss_price = entry_price * (1 - stop_loss / 100)
+            
+            # Take Profit
+            take_profit_price = entry_price * (1 + take_profit / 100)
+            
+            # Verificar condiciones
+            if price <= stop_loss_price or price <= trailing_stop_price:
+                # Stop Loss o Trailing activado
+                gross = positions * price
+                com = gross * 0.001
+                net = gross - com
+                balance += net
+                profit = net - (positions * entry_price)
+                operations.append({
+                    "type": "SELL (SL)",
+                    "price": price,
+                    "qty": positions,
+                    "balance": balance,
+                    "profit": profit,
+                    "index": i
+                })
+                positions = 0
+                entry_price = 0
+                highest_price = 0
+            
+            elif price >= take_profit_price:
+                # Take Profit activado
+                gross = positions * price
+                com = gross * 0.001
+                net = gross - com
+                balance += net
+                profit = net - (positions * entry_price)
+                operations.append({
+                    "type": "SELL (TP)",
+                    "price": price,
+                    "qty": positions,
+                    "balance": balance,
+                    "profit": profit,
+                    "index": i
+                })
+                positions = 0
+                entry_price = 0
+                highest_price = 0
+        
+        # Calcular drawdown y equity
+        total_value = balance + (positions * price) if positions > 0 else balance
+        equity_curve.append(total_value)
+        if total_value > max_balance:
+            max_balance = total_value
+        drawdown = (max_balance - total_value) / max_balance * 100 if max_balance > 0 else 0
+        if drawdown > max_drawdown:
+            max_drawdown = drawdown
+        
+        # Guardar cada 100 ciclos para no saturar
+        if ciclo % 100 == 0:
+            # Actualizar progreso (opcional)
+            pass
+    
+    # Cerrar posición final si existe
+    if positions > 0 and len(prices) > 0:
+        final_price = prices[-1]
+        gross = positions * final_price
+        com = gross * 0.001
+        net = gross - com
+        balance += net
+        profit = net - (positions * entry_price)
+        operations.append({
+            "type": "SELL (FINAL)",
+            "price": final_price,
+            "qty": positions,
+            "balance": balance,
+            "profit": profit,
+            "index": len(prices) - 1
+        })
+    
+    # Calcular estadísticas finales
+    saldo_final = balance
+    
+    # Calcular win rate
+    sell_ops = [op for op in operations if op["type"] in ["SELL", "SELL (SL)", "SELL (TP)", "SELL (FINAL)"]]
+    wins = len([op for op in sell_ops if op.get("profit", 0) > 0])
+    total_sells = len(sell_ops)
+    win_rate = (wins / total_sells * 100) if total_sells > 0 else 0
+    
+    # Calcular profit factor
+    total_profit = sum([op.get("profit", 0) for op in sell_ops if op.get("profit", 0) > 0])
+    total_loss = abs(sum([op.get("profit", 0) for op in sell_ops if op.get("profit", 0) < 0]))
+    profit_factor = total_profit / total_loss if total_loss > 0 else 0
+    
+    return operations, saldo_final, max_drawdown, win_rate, profit_factor, equity_curve
+
+# ==================== FIN PARTE 10A ====================
+# ==================== PARTE 10B: INTERFAZ Y VISUALIZACIÓN ====================
+# Esta parte contiene la interfaz de usuario para el backtest.
+# Se debe colocar DESPUÉS de la Parte 10A.
+
+def mostrar_resultados_backtest_completo(symbol, operations, saldo_final, max_drawdown, win_rate, profit_factor, equity_curve, prices):
+    """Muestra los resultados del backtest en la interfaz con gráficos avanzados."""
+    st.subheader(f"📊 Resultados del Backtest - {symbol}")
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        st.metric("💰 Saldo final", f"${saldo_final:,.2f}")
+    with col2:
+        rentabilidad = ((saldo_final - 1000) / 1000 * 100)
+        st.metric("📈 Rentabilidad", f"{rentabilidad:+.2f}%")
+    with col3:
+        st.metric("📉 Drawdown máx.", f"{max_drawdown:.2f}%")
+    with col4:
+        st.metric("🎯 Win Rate", f"{win_rate:.1f}%")
+    with col5:
+        st.metric("💹 Profit Factor", f"{profit_factor:.2f}")
+    
+    # Mostrar estadísticas adicionales
+    st.subheader("📋 Resumen de operaciones")
+    sell_ops = [op for op in operations if op["type"] in ["SELL", "SELL (SL)", "SELL (TP)", "SELL (FINAL)"]]
+    buy_ops = [op for op in operations if op["type"] == "BUY"]
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("📊 Total operaciones", len(sell_ops))
+    with col2:
+        st.metric("🟢 Ganancias", len([op for op in sell_ops if op.get("profit", 0) > 0]))
+    with col3:
+        st.metric("🔴 Pérdidas", len([op for op in sell_ops if op.get("profit", 0) < 0]))
+    
+    # Tabla de operaciones (mostrar últimas 20)
+    st.subheader("📋 Detalle de operaciones (últimas 20)")
+    if operations:
+        df_ops = pd.DataFrame(operations)
+        df_ops_display = df_ops[['type', 'price', 'qty', 'balance', 'profit']].copy()
+        df_ops_display.columns = ['Tipo', 'Precio', 'Cantidad', 'Saldo', 'Profit']
+        st.dataframe(df_ops_display.tail(20))
+    
+    # Gráfico principal
+    st.subheader("📈 Evolución del precio y operaciones")
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
+                        vertical_spacing=0.08, 
+                        row_heights=[0.5, 0.25, 0.25])
+    
+    # Precios
+    fig.add_trace(go.Scatter(x=list(range(len(prices))), y=prices, 
+                             name='Precio', line=dict(color='blue', width=1)), row=1, col=1)
+    
+    # Puntos de compra
+    buys = [op for op in operations if op['type'] == 'BUY']
+    if buys:
+        buy_indices = [op['index'] for op in buys]
+        buy_prices = [op['price'] for op in buys]
+        fig.add_trace(go.Scatter(x=buy_indices, y=buy_prices, 
+                                 mode='markers', name='Compra', 
+                                 marker=dict(color='green', size=8, symbol='triangle-up')), row=1, col=1)
+    
+    # Puntos de venta
+    sells = [op for op in operations if op['type'] in ['SELL', 'SELL (SL)', 'SELL (TP)', 'SELL (FINAL)']]
+    if sells:
+        sell_indices = [op['index'] for op in sells]
+        sell_prices = [op['price'] for op in sells]
+        sell_colors = ['red' if op.get('profit', 0) < 0 else 'orange' for op in sells]
+        sell_symbols = ['triangle-down' if op.get('profit', 0) < 0 else 'diamond' for op in sells]
+        fig.add_trace(go.Scatter(x=sell_indices, y=sell_prices, 
+                                 mode='markers', name='Venta', 
+                                 marker=dict(color=sell_colors, size=8, symbol=sell_symbols)), row=1, col=1)
+    
+    # Equity curve
+    if equity_curve:
+        fig.add_trace(go.Scatter(x=list(range(len(equity_curve))), y=equity_curve, 
+                                 name='Balance', line=dict(color='green', width=2)), row=2, col=1)
+        # Línea de referencia (saldo inicial)
+        fig.add_hline(y=1000, line_dash="dash", line_color="gray", row=2, col=1)
+    
+    # Drawdown
+    if equity_curve:
+        max_balance_so_far = 1000
+        drawdowns = []
+        for val in equity_curve:
+            if val > max_balance_so_far:
+                max_balance_so_far = val
+            dd = (max_balance_so_far - val) / max_balance_so_far * 100 if max_balance_so_far > 0 else 0
+            drawdowns.append(dd)
+        fig.add_trace(go.Scatter(x=list(range(len(drawdowns))), y=drawdowns, 
+                                 name='Drawdown %', line=dict(color='red', width=1), fill='tozeroy'), row=3, col=1)
+    
+    fig.update_layout(height=800, title_text=f"Backtest {symbol} - {len(prices)} datos")
+    fig.update_xaxes(title_text="Tiempo (horas)", row=3, col=1)
+    fig.update_yaxes(title_text="Precio (USD)", row=1, col=1)
+    fig.update_yaxes(title_text="Balance (USD)", row=2, col=1)
+    fig.update_yaxes(title_text="Drawdown (%)", row=3, col=1)
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+# ===== SECCIÓN DE BACKTEST EN EL SIDEBAR =====
+st.sidebar.markdown("---")
+st.sidebar.markdown("**📊 Backtesting**")
+
+if st.sidebar.checkbox("🔬 Activar modo Backtest", value=False):
+    st.sidebar.markdown("### ⚙️ Configuración")
+    
+    # Selección de moneda
+    symbol_backtest = st.sidebar.selectbox("Moneda", ["BTC", "ETH"])
+    
+    # Selección de período
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        start_date = st.date_input("Fecha inicio", value=datetime(2025, 1, 1))
+    with col2:
+        end_date = st.date_input("Fecha fin", value=datetime.now() - timedelta(days=1))
+    
+    # Intervalo de datos (más rápido = menos precisión)
+    intervalo = st.sidebar.selectbox("Intervalo", ["1h", "4h", "1d"], index=0)
+    
+    # Parámetros de la estrategia (usando los mismos que el bot en vivo)
+    st.sidebar.markdown("**📈 Parámetros de la estrategia**")
+    umbral_bt = st.sidebar.slider("Umbral confianza (%)", 30, 90, st.session_state.confianza_umbral, 5)
+    stop_loss_bt = st.sidebar.number_input("Stop Loss (%)", 0.5, 10.0, float(st.session_state.stop_loss), 0.5)
+    take_profit_bt = st.sidebar.number_input("Take Profit (%)", 0.1, 5.0, float(st.session_state.take_profit), 0.1)
+    trailing_bt = st.sidebar.number_input("Trailing Stop (%)", 0.2, 5.0, float(st.session_state.trailing), 0.1)
+    umbral_caida_bt = st.sidebar.number_input("Caída para comprar (%)", 0.001, 5.0, float(st.session_state.umbral_caida), 0.001)
+    
+    # Indicadores (usando los mismos valores actuales)
+    st.sidebar.markdown("**🧠 Indicadores**")
+    rsi_os_bt = st.sidebar.number_input("RSI sobreventa", 20, 40, int(st.session_state.rsi_os), 1)
+    rsi_ob_bt = st.sidebar.number_input("RSI sobrecompra", 70, 90, int(st.session_state.rsi_ob), 1)
+    ema_fast_bt = st.sidebar.number_input("EMA rápida", 3, 20, int(st.session_state.ema_fast), 1)
+    ema_slow_bt = st.sidebar.number_input("EMA lenta", 10, 50, int(st.session_state.ema_slow), 1)
+    
+    if st.sidebar.button("🚀 Ejecutar Backtest"):
+        with st.spinner(f"📊 Ejecutando backtest de {symbol_backtest}..."):
+            # Obtener datos históricos
+            prices = obtener_datos_historicos(symbol_backtest, start_date, end_date, intervalo)
+            
+            if prices is None or len(prices) < 30:
+                st.sidebar.error("❌ No se pudieron obtener datos históricos suficientes.")
+            else:
+                # Preparar configuración
+                config = {
+                    'umbral_confianza': umbral_bt,
+                    'umbral_caida': umbral_caida_bt,
+                    'take_profit': take_profit_bt,
+                    'stop_loss': stop_loss_bt,
+                    'trailing': trailing_bt,
+                    'rsi_os': rsi_os_bt,
+                    'rsi_ob': rsi_ob_bt,
+                    'ema_fast': ema_fast_bt,
+                    'ema_slow': ema_slow_bt
+                }
+                
+                # Ejecutar backtest
+                operations, saldo_final, max_drawdown, win_rate, profit_factor, equity_curve = ejecutar_backtest_completo(
+                    symbol_backtest, prices, config
+                )
+                
+                if operations is None:
+                    st.sidebar.error("❌ Error en el backtest. Verifica los datos.")
+                else:
+                    # Mostrar resultados en el área principal
+                    mostrar_resultados_backtest_completo(
+                        symbol_backtest, operations, saldo_final, max_drawdown, 
+                        win_rate, profit_factor, equity_curve, prices
+                    )
+                    
+                    # Resumen en sidebar
+                    st.sidebar.success(f"✅ Backtest completado!")
+                    st.sidebar.metric("Saldo final", f"${saldo_final:,.2f}")
+                    rentabilidad = ((saldo_final - 1000) / 1000 * 100)
+                    st.sidebar.metric("Rentabilidad", f"{rentabilidad:+.2f}%")
+                    st.sidebar.metric("Operaciones", len([op for op in operations if op['type'] in ['SELL', 'SELL (SL)', 'SELL (TP)', 'SELL (FINAL)']]))
+                    st.sidebar.metric("Win Rate", f"{win_rate:.1f}%")
+                    
+                    # Botón para aplicar parámetros al bot en vivo
+                    if st.sidebar.button("📥 Aplicar parámetros al bot"):
+                        st.session_state.confianza_umbral = umbral_bt
+                        st.session_state.stop_loss = stop_loss_bt
+                        st.session_state.take_profit = take_profit_bt
+                        st.session_state.trailing = trailing_bt
+                        st.session_state.umbral_caida = umbral_caida_bt
+                        st.session_state.rsi_os = rsi_os_bt
+                        st.session_state.rsi_ob = rsi_ob_bt
+                        st.session_state.ema_fast = ema_fast_bt
+                        st.session_state.ema_slow = ema_slow_bt
+                        save_data()
+                        st.sidebar.success("✅ Parámetros aplicados al bot en vivo")
+                        st.rerun()
+
+# ==================== FIN PARTE 10B ====================
