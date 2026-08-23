@@ -941,7 +941,7 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
 # Esta parte queda como separador para claridad.
 
 # ==================== FIN PARTE 8 ====================
-# ==================== PARTE 9: AUTO-REFRESH SIEMPRE ACTIVO + MOSTRAR CONFIANZA REAL ====================
+# ==================== PARTE 9: AUTO-REFRESH CON INTERVALO CONFIGURABLE ====================
 def ejecutar_ciclo():
     """Función que ejecuta un ciclo de actualización y ejecuta órdenes automáticas si corresponde."""
     btc = get_bitso_price("btc_mxn")
@@ -1012,13 +1012,17 @@ def ejecutar_ciclo():
         ]
     })
 
+    # Tiempo restante para la próxima actualización
+    tiempo_restante = max(0, st.session_state.intervalo_actualizacion - (time.time() - st.session_state.ultima_actualizacion))
+    
     info_texto = (
         f"Ciclo: {st.session_state.cycle} | Caída scalping: {st.session_state.umbral_caida}% | "
         f"TP: {st.session_state.take_profit}% | SL: {st.session_state.stop_loss}% | "
         f"Trailing: {st.session_state.trailing}% | Fear & Greed: {fng_value}/100 ({fng_label}) | "
         f"Aprendizaje: {'✅' if st.session_state.modo_aprendizaje else '❌'} | "
         f"Umbral confianza: {st.session_state.confianza_umbral}% | "
-        f"Próxima actualización en: {st.session_state.tiempo_restante:.0f}s"
+        f"Actualización en: {tiempo_restante:.0f}s | "
+        f"Intervalo: {st.session_state.intervalo_actualizacion}s"
     )
     info_placeholder.caption(info_texto)
 
@@ -1064,7 +1068,6 @@ def ejecutar_ciclo():
         ("BTC", btc, senal_btc, confianza_btc, razon_btc),
         ("ETH", eth, senal_eth, confianza_eth, razon_eth)
     ]:
-        # *** CORREGIDO: historical_trend (no track) ***
         tendencia_30d = st.session_state.historical_trend.get(sym, {}).get("tendencia", "NEUTRAL")
         umbral_confianza = st.session_state.confianza_umbral
         
@@ -1121,7 +1124,7 @@ def ejecutar_ciclo():
                 else:
                     st.sidebar.info(f"ℹ️ No hay posición en {sym} para vender.")
         
-        # Enviar Telegram siempre (incluso si no se ejecuta)
+        # Enviar Telegram siempre
         if confianza_senal > umbral_confianza and senal != "HOLD":
             if sym == "BTC":
                 volumen_onchain = onchain_vol_btc
@@ -1162,10 +1165,24 @@ def ejecutar_ciclo():
     if st.session_state.cycle % 3 == 0:
         save_data()
 
-# ===== INICIALIZACIÓN Y AUTO-REFRESH SIEMPRE ACTIVO =====
+# ===== CONFIGURACIÓN DEL INTERVALO DE ACTUALIZACIÓN =====
+st.sidebar.markdown("---")
+st.sidebar.markdown("**⏱️ Intervalo de actualización**")
+
+# Inicializar intervalo si no existe
+if "intervalo_actualizacion" not in st.session_state:
+    st.session_state.intervalo_actualizacion = 5  # 5 segundos por defecto
+
+# Slider para elegir el intervalo
+intervalo = st.sidebar.slider(
+    "Actualizar cada (segundos)",
+    min_value=5, max_value=60, value=st.session_state.intervalo_actualizacion, step=5
+)
+st.session_state.intervalo_actualizacion = intervalo
+
+# ===== INICIALIZACIÓN Y AUTO-REFRESH CON INTERVALO DINÁMICO =====
 if "ultima_actualizacion" not in st.session_state:
     st.session_state.ultima_actualizacion = time.time()
-    st.session_state.tiempo_restante = 30
     st.session_state.ciclo_inicial = False
 
 if not st.session_state.ciclo_inicial:
@@ -1180,10 +1197,10 @@ if st.sidebar.button("🔄 Actualizar datos ahora"):
     st.session_state.ultima_actualizacion = time.time()
     st.rerun()
 
+# Calcular tiempo transcurrido y ejecutar si es necesario
 tiempo_transcurrido = time.time() - st.session_state.ultima_actualizacion
-st.session_state.tiempo_restante = max(0, 30 - tiempo_transcurrido)
 
-if tiempo_transcurrido >= 30:
+if tiempo_transcurrido >= st.session_state.intervalo_actualizacion:
     saldo_anterior = st.session_state.balance if hasattr(st.session_state, 'balance') else 0
     total_anterior = st.session_state.balance
     for s in ["BTC", "ETH"]:
