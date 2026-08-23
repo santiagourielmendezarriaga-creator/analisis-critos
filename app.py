@@ -529,7 +529,7 @@ def analisis_avanzado(sym, precio, fng_value):
     return accion, confianza, razon, detalles
 
 # ==================== FIN PARTE 6 ====================
-# ==================== PARTE 7: INTERFAZ DE USUARIO (CONFIGURACIÓN Y SIDEBAR) ====================
+# ==================== PARTE 7: INTERFAZ DE USUARIO (CON BACKTESTER) ====================
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
 required_vars = {
@@ -571,7 +571,8 @@ required_vars = {
         "ETH": {"valor": None, "timestamp": 0}
     },
     "historical_trend": {"BTC": {}, "ETH": {}},
-    "confianza_umbral": 70
+    "confianza_umbral": 70,
+    "intervalo_actualizacion": 5
 }
 
 for var_name, default_value in required_vars.items():
@@ -897,6 +898,7 @@ if st.sidebar.button("📡 Ejecutar señal de VENTA (ETH)"):
         else:
             st.sidebar.info(f"ℹ️ Señal no recomendada: {razon} (confianza {confianza:.1f}%)")
 
+# ===== PLACEHOLDERS PARA ACTUALIZACIÓN EN VIVO =====
 tabla_placeholder = st.empty()
 info_placeholder = st.empty()
 historial_placeholder = st.empty()
@@ -917,20 +919,15 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
         return True
     except Exception as e:
         print(f"Error enviando señal: {e}")
-        return False
-
-# ==================== FIN PARTE 7 ====================
+        
 # ==================== PARTE 8: FUNCIONES AUXILIARES DE INTERFAZ Y PLACEHOLDERS ====================
 # Los placeholders ya están definidos en la Parte 7.
 # Esta parte queda como separador para claridad.
 
 # ==================== FIN PARTE 8 ====================
 # ==================== PARTE 9: BUCLE INFINITO CON AUTO-REFRESH ====================
+# ==================== PARTE 9: BUCLE INFINITO CON AUTO-REFRESH ====================
 # Esta parte se ejecuta en un bucle while True, actualizando los placeholders cada intervalo.
-
-# Inicializar variables de control si no existen
-if "intervalo_actualizacion" not in st.session_state:
-    st.session_state.intervalo_actualizacion = 5
 
 # ===== CONFIGURACIÓN DEL INTERVALO EN EL SIDEBAR =====
 st.sidebar.markdown("---")
@@ -1166,10 +1163,10 @@ def ejecutar_ciclo():
     if st.session_state.cycle % 3 == 0:
         save_data()
 
-# ===== EJECUCIÓN DEL PRIMER CICLO =====
+# ===== BUCLE INFINITO =====
+# Ejecutar un primer ciclo antes de entrar al bucle
 ejecutar_ciclo()
 
-# ===== BUCLE INFINITO =====
 while True:
     time.sleep(st.session_state.intervalo_actualizacion)
     ejecutar_ciclo()
