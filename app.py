@@ -941,9 +941,19 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
 # Esta parte queda como separador para claridad.
 
 # ==================== FIN PARTE 8 ====================
-# ==================== PARTE 9: AUTO-REFRESH CON INTERVALO CONFIGURABLE ====================
-def ejecutar_ciclo():
-    """Función que ejecuta un ciclo de actualización y ejecuta órdenes automáticas si corresponde."""
+# ==================== PARTE 9: BUCLE INFINITO CON AUTO-REFRESH ====================
+# Esta parte se ejecuta en un bucle while True, actualizando los placeholders cada intervalo.
+
+# Inicializar variables de control si no existen
+if "intervalo_actualizacion" not in st.session_state:
+    st.session_state.intervalo_actualizacion = 5
+
+if "ultima_actualizacion" not in st.session_state:
+    st.session_state.ultima_actualizacion = time.time()
+
+# Función que ejecuta un ciclo y actualiza los placeholders
+def ejecutar_y_mostrar():
+    """Ejecuta un ciclo de actualización y actualiza la interfaz."""
     btc = get_bitso_price("btc_mxn")
     eth = get_bitso_price("eth_mxn")
     if btc is None or eth is None:
@@ -1165,63 +1175,34 @@ def ejecutar_ciclo():
     if st.session_state.cycle % 3 == 0:
         save_data()
 
-# ===== CONFIGURACIÓN DEL INTERVALO DE ACTUALIZACIÓN =====
+# ===== CONFIGURACIÓN DEL INTERVALO EN EL SIDEBAR =====
 st.sidebar.markdown("---")
 st.sidebar.markdown("**⏱️ Intervalo de actualización**")
-
-# Inicializar intervalo si no existe
-if "intervalo_actualizacion" not in st.session_state:
-    st.session_state.intervalo_actualizacion = 5  # 5 segundos por defecto
-
-# Slider para elegir el intervalo
 intervalo = st.sidebar.slider(
     "Actualizar cada (segundos)",
     min_value=5, max_value=60, value=st.session_state.intervalo_actualizacion, step=5
 )
 st.session_state.intervalo_actualizacion = intervalo
 
-# ===== INICIALIZACIÓN Y AUTO-REFRESH CON INTERVALO DINÁMICO =====
-if "ultima_actualizacion" not in st.session_state:
-    st.session_state.ultima_actualizacion = time.time()
-    st.session_state.ciclo_inicial = False
-
-if not st.session_state.ciclo_inicial:
-    ejecutar_ciclo()
-    st.session_state.ciclo_inicial = True
-    st.session_state.ultima_actualizacion = time.time()
-
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🔄 Actualización**")
 if st.sidebar.button("🔄 Actualizar datos ahora"):
-    ejecutar_ciclo()
+    ejecutar_y_mostrar()
     st.session_state.ultima_actualizacion = time.time()
-    st.rerun()
 
-# Calcular tiempo transcurrido y ejecutar si es necesario
-tiempo_transcurrido = time.time() - st.session_state.ultima_actualizacion
-
-if tiempo_transcurrido >= st.session_state.intervalo_actualizacion:
-    saldo_anterior = st.session_state.balance if hasattr(st.session_state, 'balance') else 0
-    total_anterior = st.session_state.balance
-    for s in ["BTC", "ETH"]:
-        p = st.session_state.last_price.get(s, 0)
-        q = st.session_state.positions.get(s, 0)
-        if q > 0 and p > 0:
-            total_anterior += q * p
+# ===== BUCLE INFINITO DE ACTUALIZACIÓN AUTOMÁTICA =====
+# Este bucle se ejecuta continuamente mientras la app esté abierta.
+# No usa st.rerun(), solo actualiza los placeholders en cada ciclo.
+while True:
+    # Calcular tiempo transcurrido desde la última actualización
+    tiempo_transcurrido = time.time() - st.session_state.ultima_actualizacion
     
-    ejecutar_ciclo()
-    st.session_state.ultima_actualizacion = time.time()
+    # Si ha pasado el intervalo, ejecutar un ciclo
+    if tiempo_transcurrido >= st.session_state.intervalo_actualizacion:
+        ejecutar_y_mostrar()
+        st.session_state.ultima_actualizacion = time.time()
     
-    total_nuevo = st.session_state.balance
-    for s in ["BTC", "ETH"]:
-        p = st.session_state.last_price.get(s, 0)
-        q = st.session_state.positions.get(s, 0)
-        if q > 0 and p > 0:
-            total_nuevo += q * p
-    
-    if abs(total_nuevo - total_anterior) > 100:
-        st.success(f"💰 Cartera actualizada: ${total_nuevo:,.2f} MXN")
-    
-    st.rerun()
+    # Pequeña pausa para no saturar la CPU
+    time.sleep(0.1)
 
 # ==================== FIN PARTE 9 ====================
