@@ -1064,7 +1064,8 @@ def ejecutar_ciclo():
         ("BTC", btc, senal_btc, confianza_btc, razon_btc),
         ("ETH", eth, senal_eth, confianza_eth, razon_eth)
     ]:
-        tendencia_30d = st.session_state.historical_track.get(sym, {}).get("tendencia", "NEUTRAL")
+        # *** CORREGIDO: historical_trend (no track) ***
+        tendencia_30d = st.session_state.historical_trend.get(sym, {}).get("tendencia", "NEUTRAL")
         umbral_confianza = st.session_state.confianza_umbral
         
         # Mostrar en la última señal
@@ -1120,7 +1121,7 @@ def ejecutar_ciclo():
                 else:
                     st.sidebar.info(f"ℹ️ No hay posición en {sym} para vender.")
         
-        # Enviar Telegram siempre
+        # Enviar Telegram siempre (incluso si no se ejecuta)
         if confianza_senal > umbral_confianza and senal != "HOLD":
             if sym == "BTC":
                 volumen_onchain = onchain_vol_btc
