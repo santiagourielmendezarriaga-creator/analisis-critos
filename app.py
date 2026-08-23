@@ -941,7 +941,7 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
 # Esta parte queda como separador para claridad.
 
 # ==================== FIN PARTE 8 ====================
-# ==================== PARTE 9: AUTO-REFRESH SIEMPRE ACTIVO (SIN CHECKBOX) ====================
+# ==================== PARTE 9: AUTO-REFRESH SIEMPRE ACTIVO + MOSTRAR CONFIANZA REAL ====================
 def ejecutar_ciclo():
     """Función que ejecuta un ciclo de actualización y ejecuta órdenes automáticas si corresponde."""
     btc = get_bitso_price("btc_mxn")
@@ -988,29 +988,27 @@ def ejecutar_ciclo():
     trend_btc = st.session_state.historical_trend.get("BTC", {})
     trend_eth = st.session_state.historical_trend.get("ETH", {})
 
-    # Mostrar tabla
+    # ===== OBTENER SEÑALES =====
+    senal_btc, confianza_btc, razon_btc, detalles_btc = analisis_avanzado("BTC", btc, fng_value)
+    senal_eth, confianza_eth, razon_eth, detalles_eth = analisis_avanzado("ETH", eth, fng_value)
+
+    # Mostrar tabla (incluyendo señal y confianza real)
     tabla_placeholder.subheader("📊 Señales + Volumen + Tendencia 30d")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
         "Precio MXN": [f"${btc:,.0f}", f"${eth:,.0f}"],
         "Cambio desde inicio": [f"{cambio_btc:+.2f}%", f"{cambio_eth:+.2f}%"],
         "Tendencia (corta)": [st.session_state.tendencia["BTC"], st.session_state.tendencia["ETH"]],
-        "Confianza general": [f"{st.session_state.confianza['BTC']}%", f"{st.session_state.confianza['ETH']}%"],
-        "Volumen 24h (USD)": [
+        "Señal": [senal_btc, senal_eth],
+        "Confianza señal": [f"{confianza_btc:.1f}%", f"{confianza_eth:.1f}%"],
+        "Umbral": [f"{st.session_state.confianza_umbral}%", f"{st.session_state.confianza_umbral}%"],
+        "Volumen 24h": [
             f"{onchain_vol_btc:.2f}B" if onchain_vol_btc else "N/A",
             f"{onchain_vol_eth:.2f}B" if onchain_vol_eth else "N/A"
-        ],
-        "Cambio 30d": [
-            f"{trend_btc.get('cambio_porcentual', 0):+.2f}%" if trend_btc else "N/A",
-            f"{trend_eth.get('cambio_porcentual', 0):+.2f}%" if trend_eth else "N/A"
         ],
         "Tendencia 30d": [
             trend_btc.get("tendencia", "N/A") if trend_btc else "N/A",
             trend_eth.get("tendencia", "N/A") if trend_eth else "N/A"
-        ],
-        "Modo": [
-            "📉 Scalping" if not st.session_state.indicadores_activados["BTC"] else "🧠 Indicadores",
-            "📉 Scalping" if not st.session_state.indicadores_activados["ETH"] else "🧠 Indicadores"
         ]
     })
 
@@ -1061,16 +1059,18 @@ def ejecutar_ciclo():
                 st.session_state.take_profit = max(0.01, st.session_state.take_profit * 0.9)
                 st.session_state.confianza[sym] = max(0, st.session_state.confianza[sym] - 5)
 
-    # ===== PROCESAR SEÑALES Y EJECUTAR ÓRDENES AUTOMÁTICAS =====
-    for sym, precio in [("BTC", btc), ("ETH", eth)]:
-        accion, confianza_senal, razon, detalles = analisis_avanzado(sym, precio, fng_value)
-        tendencia_30d = st.session_state.historical_trend.get(sym, {}).get("tendencia", "NEUTRAL")
+    # ===== PROCESAR SEÑALES Y EJECUTAR ÓRDENES =====
+    for sym, precio, senal, confianza_senal, razon in [
+        ("BTC", btc, senal_btc, confianza_btc, razon_btc),
+        ("ETH", eth, senal_eth, confianza_eth, razon_eth)
+    ]:
+        tendencia_30d = st.session_state.historical_track.get(sym, {}).get("tendencia", "NEUTRAL")
         umbral_confianza = st.session_state.confianza_umbral
         
-        # Mostrar la confianza real de la señal en la última señal
+        # Mostrar en la última señal
         st.session_state.ultima_senal = {
             "sym": sym,
-            "accion": accion,
+            "accion": senal,
             "razon": razon,
             "confianza_senal": confianza_senal,
             "precio": precio,
@@ -1079,9 +1079,9 @@ def ejecutar_ciclo():
             "umbral": umbral_confianza
         }
         
-        # Si la señal es fuerte y no estamos en modo solo señales, ejecutar orden
+        # Verificar si debemos ejecutar
         if not st.session_state.modo_solo_senales:
-            if accion == "BUY" and confianza_senal > umbral_confianza:
+            if senal == "BUY" and confianza_senal > umbral_confianza:
                 if st.session_state.positions.get(sym, 0) == 0:
                     if tendencia_30d != "BAJISTA":
                         if sym == "BTC":
@@ -1097,7 +1097,7 @@ def ejecutar_ciclo():
                 else:
                     st.sidebar.info(f"ℹ️ Ya tienes posición en {sym}, no se compra más.")
             
-            elif accion == "SELL" and confianza_senal > umbral_confianza:
+            elif senal == "SELL" and confianza_senal > umbral_confianza:
                 if st.session_state.positions.get(sym, 0) > 0:
                     if tendencia_30d != "ALCISTA":
                         qty = st.session_state.positions[sym]
@@ -1120,8 +1120,8 @@ def ejecutar_ciclo():
                 else:
                     st.sidebar.info(f"ℹ️ No hay posición en {sym} para vender.")
         
-        # Enviar señal por Telegram siempre (incluso si no se ejecuta)
-        if confianza_senal > umbral_confianza and accion != "HOLD":
+        # Enviar Telegram siempre
+        if confianza_senal > umbral_confianza and senal != "HOLD":
             if sym == "BTC":
                 volumen_onchain = onchain_vol_btc
             else:
@@ -1133,7 +1133,7 @@ def ejecutar_ciclo():
             
             if st.session_state.cycle - getattr(st.session_state, f'ultima_senal_{sym}', 0) > 10:
                 send_signal_telegram_buttons(
-                    sym, accion, precio, razon, confianza_senal,
+                    sym, senal, precio, razon, confianza_senal,
                     volumen_onchain, cambio_30d, tendencia_30d
                 )
                 setattr(st.session_state, f'ultima_senal_{sym}', st.session_state.cycle)
@@ -1161,20 +1161,17 @@ def ejecutar_ciclo():
     if st.session_state.cycle % 3 == 0:
         save_data()
 
-# ===== INICIALIZACIÓN DE CICLO Y AUTO-REFRESH =====
-# Variables para controlar el auto-refresh
+# ===== INICIALIZACIÓN Y AUTO-REFRESH SIEMPRE ACTIVO =====
 if "ultima_actualizacion" not in st.session_state:
     st.session_state.ultima_actualizacion = time.time()
     st.session_state.tiempo_restante = 30
     st.session_state.ciclo_inicial = False
 
-# Ejecutar primer ciclo al cargar la app (solo una vez)
 if not st.session_state.ciclo_inicial:
     ejecutar_ciclo()
     st.session_state.ciclo_inicial = True
     st.session_state.ultima_actualizacion = time.time()
 
-# ===== BOTÓN DE ACTUALIZACIÓN MANUAL =====
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🔄 Actualización**")
 if st.sidebar.button("🔄 Actualizar datos ahora"):
@@ -1182,30 +1179,21 @@ if st.sidebar.button("🔄 Actualizar datos ahora"):
     st.session_state.ultima_actualizacion = time.time()
     st.rerun()
 
-# ===== AUTO-REFRESH SIEMPRE ACTIVO (SIN CHECKBOX) =====
-# Calcular tiempo restante para la próxima actualización
 tiempo_transcurrido = time.time() - st.session_state.ultima_actualizacion
 st.session_state.tiempo_restante = max(0, 30 - tiempo_transcurrido)
 
-# Si han pasado 30 segundos desde la última actualización
 if tiempo_transcurrido >= 30:
-    # Guardar el saldo antes de actualizar (para detectar cambios)
     saldo_anterior = st.session_state.balance if hasattr(st.session_state, 'balance') else 0
-    total_anterior = 0
+    total_anterior = st.session_state.balance
     for s in ["BTC", "ETH"]:
         p = st.session_state.last_price.get(s, 0)
         q = st.session_state.positions.get(s, 0)
         if q > 0 and p > 0:
             total_anterior += q * p
-    total_anterior += st.session_state.balance
     
-    # Ejecutar ciclo
     ejecutar_ciclo()
-    
-    # Actualizar timestamp
     st.session_state.ultima_actualizacion = time.time()
     
-    # Verificar si hubo cambios en el saldo o valor total
     total_nuevo = st.session_state.balance
     for s in ["BTC", "ETH"]:
         p = st.session_state.last_price.get(s, 0)
@@ -1213,11 +1201,9 @@ if tiempo_transcurrido >= 30:
         if q > 0 and p > 0:
             total_nuevo += q * p
     
-    # Si hubo cambios significativos, mostrar alerta
     if abs(total_nuevo - total_anterior) > 100:
         st.success(f"💰 Cartera actualizada: ${total_nuevo:,.2f} MXN")
     
-    # Recargar la página para actualizar la interfaz
     st.rerun()
 
 # ==================== FIN PARTE 9 ====================
