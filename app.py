@@ -941,7 +941,7 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
 # Esta parte queda como separador para claridad.
 
 # ==================== FIN PARTE 8 ====================
-# ==================== PARTE 9: BUCLE DE ACTUALIZACIÓN CON AUTO-REFRESH CORREGIDO ====================
+# ==================== PARTE 9: AUTO-REFRESH SIEMPRE ACTIVO (SIN CHECKBOX) ====================
 def ejecutar_ciclo():
     """Función que ejecuta un ciclo de actualización y ejecuta órdenes automáticas si corresponde."""
     btc = get_bitso_price("btc_mxn")
@@ -1019,7 +1019,8 @@ def ejecutar_ciclo():
         f"TP: {st.session_state.take_profit}% | SL: {st.session_state.stop_loss}% | "
         f"Trailing: {st.session_state.trailing}% | Fear & Greed: {fng_value}/100 ({fng_label}) | "
         f"Aprendizaje: {'✅' if st.session_state.modo_aprendizaje else '❌'} | "
-        f"Umbral confianza: {st.session_state.confianza_umbral}%"
+        f"Umbral confianza: {st.session_state.confianza_umbral}% | "
+        f"Próxima actualización en: {st.session_state.tiempo_restante:.0f}s"
     )
     info_placeholder.caption(info_texto)
 
@@ -1161,30 +1162,62 @@ def ejecutar_ciclo():
         save_data()
 
 # ===== INICIALIZACIÓN DE CICLO Y AUTO-REFRESH =====
-# Ejecutar un primer ciclo al cargar la app
-if "ciclo_inicial" not in st.session_state:
+# Variables para controlar el auto-refresh
+if "ultima_actualizacion" not in st.session_state:
+    st.session_state.ultima_actualizacion = time.time()
+    st.session_state.tiempo_restante = 30
+    st.session_state.ciclo_inicial = False
+
+# Ejecutar primer ciclo al cargar la app (solo una vez)
+if not st.session_state.ciclo_inicial:
     ejecutar_ciclo()
     st.session_state.ciclo_inicial = True
+    st.session_state.ultima_actualizacion = time.time()
 
-# ===== BOTÓN DE ACTUALIZACIÓN MANUAL Y AUTO-REFRESH =====
+# ===== BOTÓN DE ACTUALIZACIÓN MANUAL =====
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🔄 Actualización**")
-auto_refresh = st.sidebar.checkbox("Auto-refresh cada 30 segundos", value=False)
-
 if st.sidebar.button("🔄 Actualizar datos ahora"):
     ejecutar_ciclo()
+    st.session_state.ultima_actualizacion = time.time()
     st.rerun()
 
-# ===== LÓGICA DE AUTO-REFRESH CORREGIDA =====
-if auto_refresh:
-    # Inicializar timestamp de última actualización
-    if "last_refresh" not in st.session_state:
-        st.session_state.last_refresh = time.time()
+# ===== AUTO-REFRESH SIEMPRE ACTIVO (SIN CHECKBOX) =====
+# Calcular tiempo restante para la próxima actualización
+tiempo_transcurrido = time.time() - st.session_state.ultima_actualizacion
+st.session_state.tiempo_restante = max(0, 30 - tiempo_transcurrido)
+
+# Si han pasado 30 segundos desde la última actualización
+if tiempo_transcurrido >= 30:
+    # Guardar el saldo antes de actualizar (para detectar cambios)
+    saldo_anterior = st.session_state.balance if hasattr(st.session_state, 'balance') else 0
+    total_anterior = 0
+    for s in ["BTC", "ETH"]:
+        p = st.session_state.last_price.get(s, 0)
+        q = st.session_state.positions.get(s, 0)
+        if q > 0 and p > 0:
+            total_anterior += q * p
+    total_anterior += st.session_state.balance
     
-    # Si han pasado 30 segundos desde la última actualización
-    if time.time() - st.session_state.last_refresh >= 30:
-        ejecutar_ciclo()
-        st.session_state.last_refresh = time.time()
-        st.rerun()
+    # Ejecutar ciclo
+    ejecutar_ciclo()
+    
+    # Actualizar timestamp
+    st.session_state.ultima_actualizacion = time.time()
+    
+    # Verificar si hubo cambios en el saldo o valor total
+    total_nuevo = st.session_state.balance
+    for s in ["BTC", "ETH"]:
+        p = st.session_state.last_price.get(s, 0)
+        q = st.session_state.positions.get(s, 0)
+        if q > 0 and p > 0:
+            total_nuevo += q * p
+    
+    # Si hubo cambios significativos, mostrar alerta
+    if abs(total_nuevo - total_anterior) > 100:
+        st.success(f"💰 Cartera actualizada: ${total_nuevo:,.2f} MXN")
+    
+    # Recargar la página para actualizar la interfaz
+    st.rerun()
 
 # ==================== FIN PARTE 9 ====================
