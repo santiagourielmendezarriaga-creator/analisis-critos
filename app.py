@@ -10,11 +10,11 @@ from collections import deque
 
 # ==================== FIN PARTE 1 ====================
 # ==================== PARTE 2: PERSISTENCIA EN LA NUBE (JSONBIN.IO) ====================
-JSONBIN_API_KEY = "$2a$10$.0VWs5v3ksUe.tLFXfazs03khU.QmU5wK8naxAK/myEawEv/Ps0Gi"
+JSONBIN_API_KEY = "$2a$10$bs37PqOCHeyNUlYlh.Hi1ednPaQmX/lgZhQR4D/W80JmWPZjrskf."
 JSONBIN_BIN_ID = "6aa7218fff5d1605302abc0"
 
 def save_data():
-    """Guarda los datos en JSONBin.io (nube persistente)."""
+    """Guarda los datos en JSONBin.io (nube persistente). Retorna (éxito, mensaje)."""
     try:
         data = {
             "balance": st.session_state.balance,
@@ -58,20 +58,25 @@ def save_data():
             "Content-Type": "application/json",
             "X-Master-Key": JSONBIN_API_KEY
         }
-        resp = requests.put(url, json=data, headers=headers, timeout=5)
+        resp = requests.put(url, json=data, headers=headers, timeout=10)
+        
         if resp.status_code == 200:
             print(f"💾 Datos guardados en la nube. Ciclo: {st.session_state.cycle}")
+            return True, "Guardado exitoso"
         else:
-            print(f"⚠️ Error al guardar en JSONBin: {resp.status_code} - {resp.text}")
+            error_msg = f"Status {resp.status_code}: {resp.text[:200]}"
+            print(f"⚠️ Error al guardar en JSONBin: {error_msg}")
+            return False, error_msg
     except Exception as e:
-        print(f"Error al guardar datos en la nube: {e}")
+        print(f"❌ Excepción al guardar: {e}")
+        return False, str(e)
 
 def load_data():
     """Carga los datos desde JSONBin.io (nube persistente)."""
     try:
         url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}/latest"
         headers = {"X-Master-Key": JSONBIN_API_KEY}
-        resp = requests.get(url, headers=headers, timeout=5)
+        resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
             data = resp.json().get("record", {})
             if "balance" in data and "positions" in data and "cycle" in data:
@@ -649,8 +654,11 @@ if st.sidebar.button("📢 Prueba Telegram"):
     send_telegram("🧠 Bot Scalping Extremo activo")
     st.success("Enviado")
 if st.sidebar.button("💾 Guardar datos ahora"):
-    save_data()
-    st.sidebar.success("✅ Datos guardados en la nube")
+    exito, mensaje = save_data()
+    if exito:
+        st.sidebar.success("✅ Datos guardados en la nube")
+    else:
+        st.sidebar.error(f"❌ Error: {mensaje}")
 
 # ===== BOTONES DE CONTROL MANUAL =====
 st.sidebar.markdown("---")
