@@ -9,12 +9,11 @@ from datetime import datetime, timedelta
 from collections import deque
 
 # ==================== FIN PARTE 1 ====================
-# ==================== PARTE 2: PERSISTENCIA EN LA NUBE (JSONBIN.IO) ====================
-JSONBIN_API_KEY = "$2a$10$bs37PqOCHeyNUlYlh.Hi1ednPaQmX/lgZhQR4D/W80JmWPZjrskf."
-JSONBIN_BIN_ID = "6aa7218fffd5d1605302abc0"
+# ==================== PARTE 2: PERSISTENCIA EN FIREBASE REALTIME DATABASE ====================
+FIREBASE_URL = "https://bot-cc6c4-default-rtdb.firebaseio.com"
 
 def save_data():
-    """Guarda los datos en JSONBin.io. Retorna (éxito, mensaje)."""
+    """Guarda los datos en Firebase. Retorna (éxito, mensaje)."""
     try:
         data = {
             "balance": st.session_state.balance,
@@ -53,44 +52,38 @@ def save_data():
             "confianza_umbral": st.session_state.confianza_umbral,
             "intervalo_actualizacion": st.session_state.intervalo_actualizacion
         }
-        # ---- API sin prefijo de versión (compatible con Bin ID de 24 caracteres) ----
-        url = f"https://api.jsonbin.io/b/{JSONBIN_BIN_ID}"
-        headers = {
-            "Content-Type": "application/json",
-            "X-Master-Key": JSONBIN_API_KEY
-        }
-        resp = requests.put(url, json=data, headers=headers, timeout=10)
+        url = f"{FIREBASE_URL}/bot.json"
+        resp = requests.put(url, json=data, timeout=10)
         
         if resp.status_code == 200:
-            print(f"💾 Datos guardados en la nube. Ciclo: {st.session_state.cycle}")
+            print(f"💾 Datos guardados en Firebase. Ciclo: {st.session_state.cycle}")
             return True, "Guardado exitoso"
         else:
             error_msg = f"Status {resp.status_code}: {resp.text[:200]}"
-            print(f"⚠️ Error al guardar en JSONBin: {error_msg}")
+            print(f"⚠️ Error al guardar en Firebase: {error_msg}")
             return False, error_msg
     except Exception as e:
         print(f"❌ Excepción al guardar: {e}")
         return False, str(e)
 
 def load_data():
-    """Carga los datos desde JSONBin.io."""
+    """Carga los datos desde Firebase."""
     try:
-        url = f"https://api.jsonbin.io/b/{JSONBIN_BIN_ID}/latest"
-        headers = {"X-Master-Key": JSONBIN_API_KEY}
-        resp = requests.get(url, headers=headers, timeout=10)
+        url = f"{FIREBASE_URL}/bot.json"
+        resp = requests.get(url, timeout=10)
         
         if resp.status_code == 200:
-            data = resp.json().get("record", {})
-            if "balance" in data and "positions" in data and "cycle" in data:
+            data = resp.json()
+            if data and "balance" in data and "positions" in data and "cycle" in data:
                 return data
             else:
-                print("ℹ️ Datos incompletos en la nube. Iniciando nuevo estado.")
+                print("ℹ️ Datos incompletos en Firebase. Iniciando nuevo estado.")
                 return None
         else:
-            print(f"⚠️ Error al cargar de JSONBin: {resp.status_code} - {resp.text[:200]}")
+            print(f"⚠️ Error al cargar de Firebase: {resp.status_code}")
             return None
     except Exception as e:
-        print(f"Error al cargar datos de la nube: {e}")
+        print(f"Error al cargar datos de Firebase: {e}")
         return None
 
 def init_new_user_state():
@@ -140,10 +133,10 @@ def init_new_user_state():
     st.session_state.intervalo_actualizacion = 5
 
 def restore_from_file():
-    """Restaura los datos desde JSONBin.io."""
+    """Restaura los datos desde Firebase."""
     data = load_data()
     if data is None:
-        print("ℹ️ No hay datos previos en la nube. Iniciando estado nuevo.")
+        print("ℹ️ No hay datos previos en Firebase. Iniciando estado nuevo.")
         init_new_user_state()
         return
     try:
@@ -197,7 +190,7 @@ def restore_from_file():
         
         ph = data.get("price_history", {"BTC": [], "ETH": []})
         st.session_state.price_history = {k: deque(v, maxlen=200) for k, v in ph.items()}
-        print(f"✅ Datos restaurados desde la nube. Ciclo: {st.session_state.cycle} | Saldo: ${st.session_state.balance:.2f}")
+        print(f"✅ Datos restaurados desde Firebase. Ciclo: {st.session_state.cycle} | Saldo: ${st.session_state.balance:.2f}")
     except Exception as e:
         print(f"Error al restaurar datos: {e}")
         init_new_user_state()
