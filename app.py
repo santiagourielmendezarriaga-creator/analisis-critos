@@ -11,10 +11,10 @@ from collections import deque
 # ==================== FIN PARTE 1 ====================
 # ==================== PARTE 2: PERSISTENCIA EN LA NUBE (JSONBIN.IO) ====================
 JSONBIN_API_KEY = "$2a$10$bs37PqOCHeyNUlYlh.Hi1ednPaQmX/lgZhQR4D/W80JmWPZjrskf."
-JSONBIN_BIN_ID = "6aa7218fff5d1605302abc0"
+JSONBIN_BIN_ID = "6aa7218fffd5d1605302abc0"
 
 def save_data():
-    """Guarda los datos en JSONBin.io (API v2). Retorna (éxito, mensaje)."""
+    """Guarda los datos en JSONBin.io. Retorna (éxito, mensaje)."""
     try:
         data = {
             "balance": st.session_state.balance,
@@ -53,8 +53,8 @@ def save_data():
             "confianza_umbral": st.session_state.confianza_umbral,
             "intervalo_actualizacion": st.session_state.intervalo_actualizacion
         }
-        # ---- API v2 (compatible con Bin ID tipo 6aa7218fff5d1605302abc0) ----
-        url = f"https://api.jsonbin.io/v2/b/{JSONBIN_BIN_ID}"
+        # ---- API sin prefijo de versión (compatible con Bin ID de 24 caracteres) ----
+        url = f"https://api.jsonbin.io/b/{JSONBIN_BIN_ID}"
         headers = {
             "Content-Type": "application/json",
             "X-Master-Key": JSONBIN_API_KEY
@@ -73,10 +73,9 @@ def save_data():
         return False, str(e)
 
 def load_data():
-    """Carga los datos desde JSONBin.io (API v2)."""
+    """Carga los datos desde JSONBin.io."""
     try:
-        # ---- API v2 ----
-        url = f"https://api.jsonbin.io/v2/b/{JSONBIN_BIN_ID}/latest"
+        url = f"https://api.jsonbin.io/b/{JSONBIN_BIN_ID}/latest"
         headers = {"X-Master-Key": JSONBIN_API_KEY}
         resp = requests.get(url, headers=headers, timeout=10)
         
