@@ -9,34 +9,12 @@ from datetime import datetime, timedelta
 from collections import deque
 
 # ==================== FIN PARTE 1 ====================
-# ==================== PARTE 2: PERSISTENCIA (DATA.JSON) ====================
-DATA_FILE = "data.json"
-BACKUP_FILE = "data_backup.json"
-
-def load_data():
-    try:
-        if os.path.exists(DATA_FILE):
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if "balance" in data and "positions" in data and "cycle" in data:
-                    return data
-                else:
-                    if os.path.exists(BACKUP_FILE):
-                        with open(BACKUP_FILE, "r", encoding="utf-8") as bf:
-                            return json.load(bf)
-                    else:
-                        return None
-        return None
-    except (json.JSONDecodeError, KeyError, ValueError):
-        if os.path.exists(BACKUP_FILE):
-            try:
-                with open(BACKUP_FILE, "r", encoding="utf-8") as bf:
-                    return json.load(bf)
-            except:
-                return None
-        return None
+# ==================== PARTE 2: PERSISTENCIA EN LA NUBE (JSONBIN.IO) ====================
+JSONBIN_API_KEY = "$2a$10$.0VWs5v3ksUe.tLFXfazs03khU.QmU5wK8naxAK/myEawEv/Ps0Gi"
+JSONBIN_BIN_ID = "6aa7218fff5d1605302abc0"
 
 def save_data():
+    """Guarda los datos en JSONBin.io (nube persistente)."""
     try:
         data = {
             "balance": st.session_state.balance,
@@ -75,12 +53,38 @@ def save_data():
             "confianza_umbral": st.session_state.confianza_umbral,
             "intervalo_actualizacion": st.session_state.intervalo_actualizacion
         }
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        with open(BACKUP_FILE, "w", encoding="utf-8") as bf:
-            json.dump(data, bf, ensure_ascii=False, indent=2)
+        url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
+        headers = {
+            "Content-Type": "application/json",
+            "X-Master-Key": JSONBIN_API_KEY
+        }
+        resp = requests.put(url, json=data, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            print(f"💾 Datos guardados en la nube. Ciclo: {st.session_state.cycle}")
+        else:
+            print(f"⚠️ Error al guardar en JSONBin: {resp.status_code} - {resp.text}")
     except Exception as e:
-        print(f"Error al guardar datos: {e}")
+        print(f"Error al guardar datos en la nube: {e}")
+
+def load_data():
+    """Carga los datos desde JSONBin.io (nube persistente)."""
+    try:
+        url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}/latest"
+        headers = {"X-Master-Key": JSONBIN_API_KEY}
+        resp = requests.get(url, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json().get("record", {})
+            if "balance" in data and "positions" in data and "cycle" in data:
+                return data
+            else:
+                print("ℹ️ Datos incompletos en la nube. Iniciando nuevo estado.")
+                return None
+        else:
+            print(f"⚠️ Error al cargar de JSONBin: {resp.status_code}")
+            return None
+    except Exception as e:
+        print(f"Error al cargar datos de la nube: {e}")
+        return None
 
 def init_new_user_state():
     st.session_state.balance = 1000.0
@@ -129,8 +133,10 @@ def init_new_user_state():
     st.session_state.intervalo_actualizacion = 5
 
 def restore_from_file():
+    """Restaura los datos desde JSONBin.io."""
     data = load_data()
     if data is None:
+        print("ℹ️ No hay datos previos en la nube. Iniciando estado nuevo.")
         init_new_user_state()
         return
     try:
@@ -184,6 +190,7 @@ def restore_from_file():
         
         ph = data.get("price_history", {"BTC": [], "ETH": []})
         st.session_state.price_history = {k: deque(v, maxlen=200) for k, v in ph.items()}
+        print(f"✅ Datos restaurados desde la nube. Ciclo: {st.session_state.cycle} | Saldo: ${st.session_state.balance:.2f}")
     except Exception as e:
         print(f"Error al restaurar datos: {e}")
         init_new_user_state()
@@ -641,6 +648,9 @@ if st.sidebar.button("Reiniciar simulación"):
 if st.sidebar.button("📢 Prueba Telegram"):
     send_telegram("🧠 Bot Scalping Extremo activo")
     st.success("Enviado")
+if st.sidebar.button("💾 Guardar datos ahora"):
+    save_data()
+    st.sidebar.success("✅ Datos guardados en la nube")
 
 # ===== BOTONES DE CONTROL MANUAL =====
 st.sidebar.markdown("---")
@@ -982,7 +992,8 @@ def ejecutar_ciclo():
 
     st.session_state.cycle += 1
     
-    if st.session_state.cycle % 3 == 0:
+    # Guardar en la nube cada 120 ciclos (10 minutos) para no exceder el límite de JSONBin
+    if st.session_state.cycle % 120 == 0:
         save_data()
 
     fng_value, fng_label = get_fear_greed()
@@ -1179,9 +1190,6 @@ def ejecutar_ciclo():
         f"Modo: {'🔇 Solo señales' if st.session_state.modo_solo_senales else '✅ Ejecución automática'}"
     )
     estado_placeholder.info(estado_texto)
-
-    if st.session_state.cycle % 3 == 0:
-        save_data()
 
 # ===== EJECUCIÓN DEL PRIMER CICLO =====
 ejecutar_ciclo()
