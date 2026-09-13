@@ -14,7 +14,7 @@ JSONBIN_API_KEY = "$2a$10$bs37PqOCHeyNUlYlh.Hi1ednPaQmX/lgZhQR4D/W80JmWPZjrskf."
 JSONBIN_BIN_ID = "6aa7218fff5d1605302abc0"
 
 def save_data():
-    """Guarda los datos en JSONBin.io (nube persistente). Retorna (éxito, mensaje)."""
+    """Guarda los datos en JSONBin.io (API v2). Retorna (éxito, mensaje)."""
     try:
         data = {
             "balance": st.session_state.balance,
@@ -53,7 +53,8 @@ def save_data():
             "confianza_umbral": st.session_state.confianza_umbral,
             "intervalo_actualizacion": st.session_state.intervalo_actualizacion
         }
-        url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
+        # ---- API v2 (compatible con Bin ID tipo 6aa7218fff5d1605302abc0) ----
+        url = f"https://api.jsonbin.io/v2/b/{JSONBIN_BIN_ID}"
         headers = {
             "Content-Type": "application/json",
             "X-Master-Key": JSONBIN_API_KEY
@@ -72,11 +73,13 @@ def save_data():
         return False, str(e)
 
 def load_data():
-    """Carga los datos desde JSONBin.io (nube persistente)."""
+    """Carga los datos desde JSONBin.io (API v2)."""
     try:
-        url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}/latest"
+        # ---- API v2 ----
+        url = f"https://api.jsonbin.io/v2/b/{JSONBIN_BIN_ID}/latest"
         headers = {"X-Master-Key": JSONBIN_API_KEY}
         resp = requests.get(url, headers=headers, timeout=10)
+        
         if resp.status_code == 200:
             data = resp.json().get("record", {})
             if "balance" in data and "positions" in data and "cycle" in data:
@@ -85,7 +88,7 @@ def load_data():
                 print("ℹ️ Datos incompletos en la nube. Iniciando nuevo estado.")
                 return None
         else:
-            print(f"⚠️ Error al cargar de JSONBin: {resp.status_code}")
+            print(f"⚠️ Error al cargar de JSONBin: {resp.status_code} - {resp.text[:200]}")
             return None
     except Exception as e:
         print(f"Error al cargar datos de la nube: {e}")
