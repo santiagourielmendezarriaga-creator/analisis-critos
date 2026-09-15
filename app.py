@@ -4,12 +4,13 @@ import requests
 import time
 import json
 import os
+import re
 import statistics
 from datetime import datetime, timedelta, timezone
 from collections import deque
 
 # ==================== FIN PARTE 1 ====================
-# ==================== PARTE 2: PERSISTENCIA EN FIREBASE REALTIME DATABASE ====================
+# ==================== PARTE 2: PERSISTENCIA EN FIREBASE ====================
 FIREBASE_URL = "https://bot-cc6c4-default-rtdb.firebaseio.com"
 
 def save_data():
@@ -18,7 +19,7 @@ def save_data():
         data = {
             "balance": st.session_state.balance,
             "positions": st.session_state.positions,
-            "trades": [(t.isoformat(), msg) for t, msg in st.session_state.trades[-100:]],
+            "trades": [(t.isoformat(), msg) for t, msg in st.session_state.trades],
             "price_history": {k: list(v) for k, v in st.session_state.price_history.items()},
             "last_action": st.session_state.last_action,
             "daily_trades": st.session_state.daily_trades,
@@ -50,13 +51,16 @@ def save_data():
             "onchain_cache": st.session_state.onchain_cache,
             "historical_trend": st.session_state.historical_trend,
             "confianza_umbral": st.session_state.confianza_umbral,
-            "intervalo_actualizacion": st.session_state.intervalo_actualizacion
+            "intervalo_actualizacion": st.session_state.intervalo_actualizacion,
+            "inicio_fase": st.session_state.inicio_fase,
+            "fase_actual": st.session_state.fase_actual,
+            "analisis_anterior": st.session_state.analisis_anterior
         }
         url = f"{FIREBASE_URL}/bot.json"
         resp = requests.put(url, json=data, timeout=10)
         
         if resp.status_code == 200:
-            print(f"💾 Datos guardados en Firebase. Ciclo: {st.session_state.cycle}")
+            print(f"💾 Datos guardados. Ciclo: {st.session_state.cycle} | Trades: {len(st.session_state.trades)}")
             return True, "Guardado exitoso"
         else:
             return False, f"Status {resp.status_code}"
@@ -64,7 +68,6 @@ def save_data():
         return False, str(e)
 
 def load_data():
-    """Carga los datos desde Firebase."""
     try:
         url = f"{FIREBASE_URL}/bot.json"
         resp = requests.get(url, timeout=10)
@@ -119,6 +122,9 @@ def init_new_user_state():
     st.session_state.historical_trend = {"BTC": {}, "ETH": {}}
     st.session_state.confianza_umbral = 20
     st.session_state.intervalo_actualizacion = 5
+    st.session_state.inicio_fase = datetime.now().isoformat()
+    st.session_state.fase_actual = "operando"
+    st.session_state.analisis_anterior = {}
 
 def restore_from_file():
     data = load_data()
@@ -173,10 +179,13 @@ def restore_from_file():
         st.session_state.historical_trend = data.get("historical_trend", {"BTC": {}, "ETH": {}})
         st.session_state.confianza_umbral = data.get("confianza_umbral", 20)
         st.session_state.intervalo_actualizacion = data.get("intervalo_actualizacion", 5)
+        st.session_state.inicio_fase = data.get("inicio_fase", datetime.now().isoformat())
+        st.session_state.fase_actual = data.get("fase_actual", "operando")
+        st.session_state.analisis_anterior = data.get("analisis_anterior", {})
         
         ph = data.get("price_history", {"BTC": [], "ETH": []})
         st.session_state.price_history = {k: deque(v, maxlen=200) for k, v in ph.items()}
-        print(f"✅ Datos restaurados. Ciclo: {st.session_state.cycle}")
+        print(f"✅ Datos restaurados. Ciclo: {st.session_state.cycle} | Trades: {len(trades)}")
     except Exception as e:
         print(f"Error al restaurar: {e}")
         init_new_user_state()
@@ -217,7 +226,7 @@ def get_fear_greed():
     return 50, "Neutral"
 
 # ==================== FIN PARTE 3 ====================
-# ==================== PARTE 4: FUNCIONES DE ANÁLISIS Y APRENDIZAJE ====================
+# ==================== PARTE 4: ANÁLISIS Y APRENDIZAJE ====================
 def analizar_tendencia(historial, periodo=20):
     if len(historial) < periodo:
         return "NEUTRAL"
@@ -251,6 +260,109 @@ def evaluar_rendimiento(sym):
     else:
         return {"accion": "MANTENER"}
 
+def analizar_fase_aprendizaje():
+    """
+    Analiza las operaciones de los últimos 2 días y saca conclusiones.
+    Ajusta parámetros automáticamente.
+    """
+    trades = st.session_state.trades
+    if len(trades) < 3:
+        return {
+            "suficiente": False,
+            "razon": f"Solo {len(trades)} operaciones. Se necesitan mínimo 3."
+        }
+    
+    ventas = []
+    for ts, msg in trades:
+        if "VENTA" in msg or "SELL" in msg:
+            ventas.append({"ts": ts, "msg": msg})
+    
+    if len(ventas) == 0:
+        return {"suficiente": False, "razon": "No hay ventas cerradas para analizar."}
+    
+    ganancias = 0
+    perdidas = 0
+    horarios_op = {}
+    simbolos = {"BTC": {"wins": 0, "losses": 0}, "ETH": {"wins": 0, "losses": 0}}
+    
+    for v in ventas:
+        msg = v["msg"]
+        hora = v["ts"].hour
+        horarios_op.setdefault(hora, {"wins": 0, "losses": 0})
+        
+        es_ganancia = "GANANCIA" in msg.upper() or "PROFIT" in msg.upper() or "Neto" in msg
+        
+        if es_ganancia:
+            ganancias += 1
+            horarios_op[hora]["wins"] += 1
+            for sym in simbolos:
+                if sym in msg:
+                    simbolos[sym]["wins"] += 1
+        else:
+            perdidas += 1
+            horarios_op[hora]["losses"] += 1
+            for sym in simbolos:
+                if sym in msg:
+                    simbolos[sym]["losses"] += 1
+    
+    total_ventas = ganancias + perdidas
+    win_rate = (ganancias / total_ventas * 100) if total_ventas > 0 else 0
+    
+    mejor_hora = None
+    peor_hora = None
+    mejor_score = -999
+    peor_score = 999
+    for h, d in horarios_op.items():
+        score = d["wins"] - d["losses"]
+        if score > mejor_score:
+            mejor_score = score
+            mejor_hora = h
+        if score < peor_score:
+            peor_score = score
+            peor_hora = h
+    
+    analisis = {
+        "suficiente": True,
+        "total_operaciones": total_ventas,
+        "ganancias": ganancias,
+        "perdidas": perdidas,
+        "win_rate": win_rate,
+        "mejor_hora": mejor_hora,
+        "peor_hora": peor_hora,
+        "simbolos": simbolos,
+        "ajustes_aplicados": []
+    }
+    
+    # Ajuste 1: Umbral según win rate
+    if win_rate < 40:
+        st.session_state.confianza_umbral = min(70, st.session_state.confianza_umbral + 5)
+        analisis["ajustes_aplicados"].append(f"Umbral subido a {st.session_state.confianza_umbral}% (win rate bajo)")
+    elif win_rate > 65:
+        st.session_state.confianza_umbral = max(20, st.session_state.confianza_umbral - 5)
+        analisis["ajustes_aplicados"].append(f"Umbral bajado a {st.session_state.confianza_umbral}% (win rate alto)")
+    
+    # Ajuste 2: BTC vs ETH
+    for sym, stats in simbolos.items():
+        total_sym = stats["wins"] + stats["losses"]
+        if total_sym >= 2:
+            wr_sym = (stats["wins"] / total_sym * 100)
+            if wr_sym < 30:
+                analisis["ajustes_aplicados"].append(f"{sym} rinde mal ({wr_sym:.0f}%)")
+            elif wr_sym > 70:
+                analisis["ajustes_aplicados"].append(f"{sym} rinde bien ({wr_sym:.0f}%)")
+    
+    # Ajuste 3: TP según win rate
+    if win_rate > 60:
+        st.session_state.take_profit = min(0.5, st.session_state.take_profit * 1.1)
+        analisis["ajustes_aplicados"].append(f"TP aumentado a {st.session_state.take_profit:.3f}%")
+    elif win_rate < 40:
+        st.session_state.take_profit = max(0.01, st.session_state.take_profit * 0.9)
+        analisis["ajustes_aplicados"].append(f"TP reducido a {st.session_state.take_profit:.3f}%")
+        st.session_state.stop_loss = max(0.5, st.session_state.stop_loss * 0.9)
+        analisis["ajustes_aplicados"].append(f"SL ajustado a {st.session_state.stop_loss:.2f}%")
+    
+    return analisis
+
 # ==================== FIN PARTE 4 ====================
 # ==================== PARTE 5: DATOS EXTERNOS ====================
 def get_historical_trend(symbol="BTC", days=30):
@@ -260,16 +372,13 @@ def get_historical_trend(symbol="BTC", days=30):
         response = requests.get(url, timeout=5)
         if response.status_code != 200:
             return None
-        
         data = response.json()
         prices = [p[1] for p in data.get("prices", [])]
         if len(prices) < 2:
             return None
-        
         precio_actual = prices[-1]
         precio_hace_30d = prices[0]
         cambio_porcentual = (precio_actual - precio_hace_30d) / precio_hace_30d * 100
-        
         sma_30 = sum(prices[-30:]) / 30 if len(prices) >= 30 else sum(prices) / len(prices)
         if precio_actual > sma_30 * 1.01:
             tendencia = "ALCISTA"
@@ -277,7 +386,6 @@ def get_historical_trend(symbol="BTC", days=30):
             tendencia = "BAJISTA"
         else:
             tendencia = "LATERAL"
-        
         return {
             "cambio_porcentual": cambio_porcentual,
             "tendencia": tendencia,
@@ -292,7 +400,6 @@ def get_onchain_volume(symbol="BTC"):
     cache = st.session_state.onchain_cache.get(symbol, {"valor": None, "timestamp": 0})
     if cache["valor"] is not None and (now - cache["timestamp"]) < 60:
         return cache["valor"]
-    
     try:
         coin = "bitcoin" if symbol == "BTC" else "ethereum"
         url = f"https://api.coingecko.com/api/v3/coins/{coin}/market_chart?vs_currency=usd&days=1"
@@ -311,7 +418,7 @@ def get_onchain_volume(symbol="BTC"):
     return volume
 
 # ==================== FIN PARTE 5 ====================
-# ==================== PARTE 6: INDICADORES Y FUNCIÓN DE HORARIOS ====================
+# ==================== PARTE 6: INDICADORES Y SEÑAL AVANZADA ====================
 def compute_ema(prices, period):
     if len(prices) < period:
         return None
@@ -347,57 +454,39 @@ def calcular_atr(prices, periodo=14):
     return atr
 
 def calcular_probabilidad(confianza):
-    """20% confianza = 50% probabilidad."""
     return min(100, max(0, confianza * 2.5))
 
 def obtener_horario_operacion():
-    """
-    Determina la calidad del horario actual para operar (hora México).
-    Retorna: (estado, emoji, descripcion, es_buen_horario)
-    """
+    """Determina la calidad del horario actual (hora México)."""
     tz_mexico = timezone(timedelta(hours=-6))
     ahora = datetime.now(tz_mexico)
     hora = ahora.hour
-    dia_semana = ahora.weekday()  # 0=lunes, 6=domingo
+    dia_semana = ahora.weekday()
     
-    # Fin de semana
     if dia_semana >= 5:
-        return ("FIN DE SEMANA", "🛑", "Mercado con muy poca actividad. Evita abrir posiciones.", False)
-    
-    # 07:00 - 11:00 (Mejor horario)
+        return ("FIN DE SEMANA", "🛑", "Mercado con muy poca actividad. Evita operar.", False)
     if 7 <= hora < 11:
         return ("MEJOR HORARIO", "🔥", "Europa + USA activos. Mejores señales y liquidez.", True)
-    
-    # 06:00 - 07:00 y 11:00 - 14:00 (Sesión USA)
     if (6 <= hora < 7) or (11 <= hora < 14):
         return ("SESIÓN USA", "✅", "Sesión completa de EE.UU. Buen movimiento.", True)
-    
-    # 02:00 - 06:00 (Europa abre)
     if 2 <= hora < 6:
         return ("APERTURA EUROPA", "⚠️", "Europa abre: se define la tendencia del día.", True)
-    
-    # 20:00 - 02:00 (Asia, evitar)
     if hora >= 20 or hora < 2:
-        return ("SESIÓN ASIA", "🚫", "Solo Asia: poco movimiento y precios falsos. EVITAR.", False)
-    
-    # 14:00 - 20:00 (Tarde)
-    return ("TARDE / TRANSICIÓN", "🟡", "Entre USA y Asia. Movimiento moderado. Cuidado.", False)
+        return ("SESIÓN ASIA", "🚫", "Solo Asia: poco movimiento. EVITAR operar.", False)
+    return ("TARDE / TRANSICIÓN", "🟡", "Entre USA y Asia. Movimiento moderado.", False)
 
 def analisis_avanzado(sym, precio, fng_value):
     trend_data = st.session_state.historical_trend.get(sym, {})
     cambio_30d = trend_data.get("cambio_porcentual", 0)
     tendencia_30d = trend_data.get("tendencia", "NEUTRAL")
-    
     volumen_onchain = get_onchain_volume(sym)
     hist = list(st.session_state.price_history.get(sym, []))
     if len(hist) < 30:
         return "HOLD", 0, "Datos insuficientes", {}
     
-    # 1. RSI
     rsi = compute_rsi(hist, 14)
     rsi_pond = 20 if rsi <= 30 else -20 if rsi >= 70 else (50 - rsi) * 0.5
     
-    # 2. EMAs
     ema_f = compute_ema(hist, st.session_state.ema_fast)
     ema_s = compute_ema(hist, st.session_state.ema_slow)
     ema_pond = 0
@@ -409,7 +498,6 @@ def analisis_avanzado(sym, precio, fng_value):
             if ema_prev and ema_f > ema_prev * 1.001: ema_pond += 5
             elif ema_prev and ema_f < ema_prev * 0.999: ema_pond -= 5
     
-    # 3. Bollinger
     bb_pond = 0
     if len(hist) >= 20:
         sma_20 = sum(hist[-20:]) / 20
@@ -417,7 +505,6 @@ def analisis_avanzado(sym, precio, fng_value):
         if precio > sma_20 + 2*std_20: bb_pond = -15
         elif precio < sma_20 - 2*std_20: bb_pond = 15
     
-    # 4. MACD
     macd_pond = 0
     if len(hist) >= 26:
         ema_12 = compute_ema(hist, 12)
@@ -435,17 +522,11 @@ def analisis_avanzado(sym, precio, fng_value):
                     if macd > signal: macd_pond = 10
                     elif macd < signal: macd_pond = -10
     
-    # 5. Volumen
     vol_pond = 10 if volumen_onchain > 2.0 else -5 if volumen_onchain < 0.5 else 0
-    
-    # 6. Tendencia 30d
     tend_pond = 15 if tendencia_30d == "ALCISTA" else -15 if tendencia_30d == "BAJISTA" else 0
     if abs(cambio_30d) > 20: tend_pond *= 1.5
-    
-    # 7. Fear & Greed
     fng_pond = 10 if fng_value <= 20 else -10 if fng_value >= 80 else (50 - fng_value) * 0.2
     
-    # 8. ATR
     atr_pond = 0
     if len(hist) >= 14:
         atr = calcular_atr(hist, 14)
@@ -508,7 +589,10 @@ required_vars = {
     },
     "historical_trend": {"BTC": {}, "ETH": {}},
     "confianza_umbral": 20,
-    "intervalo_actualizacion": 5
+    "intervalo_actualizacion": 5,
+    "inicio_fase": datetime.now().isoformat(),
+    "fase_actual": "operando",
+    "analisis_anterior": {}
 }
 
 for var_name, default_value in required_vars.items():
@@ -585,7 +669,7 @@ if st.sidebar.button("💸 Vender TODO"):
                 st.session_state.entry_price["BTC"] = 0
                 st.session_state.highest_price["BTC"] = 0
                 st.session_state.daily_trades += 1
-                msg = f"🔴 VENTA FORZADA BTC | ${net:.2f}"
+                msg = f"🔴 VENTA FORZADA BTC | Neto: ${net:.2f}"
                 send_telegram(msg)
                 st.session_state.trades.append((datetime.now(), msg))
                 vendido = True
@@ -597,7 +681,7 @@ if st.sidebar.button("💸 Vender TODO"):
                 st.session_state.entry_price["ETH"] = 0
                 st.session_state.highest_price["ETH"] = 0
                 st.session_state.daily_trades += 1
-                msg = f"🔴 VENTA FORZADA ETH | ${net:.2f}"
+                msg = f"🔴 VENTA FORZADA ETH | Neto: ${net:.2f}"
                 send_telegram(msg)
                 st.session_state.trades.append((datetime.now(), msg))
                 vendido = True
@@ -620,12 +704,11 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
     elif confianza >= 20:
         monto, cant = 50.0, 2
     else:
-        st.sidebar.warning(f"⚠️ Probabilidad baja ({calcular_probabilidad(confianza):.1f}%)")
+        st.sidebar.warning(f"⚠️ Probabilidad baja")
         return
     
     precio_obj = precio * 0.995
     if st.session_state.positions.get(sym, 0) > 0:
-        st.sidebar.warning(f"⚠️ Ya tienes posición en {sym}")
         return
     
     ejecutadas = 0
@@ -654,19 +737,13 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
 
 if st.sidebar.button("🟢 Comprar BTC AHORA"):
     precio = get_bitso_price("btc_mxn")
-    if precio:
-        if st.session_state.positions.get("BTC", 0) > 0:
-            st.sidebar.warning("⚠️ Ya tienes BTC")
-        else:
-            ejecutar_compra_profesional("BTC", precio, 50, "Manual", "NEUTRAL")
+    if precio and st.session_state.positions.get("BTC", 0) == 0:
+        ejecutar_compra_profesional("BTC", precio, 50, "Manual", "NEUTRAL")
 
 if st.sidebar.button("🟢 Comprar ETH AHORA"):
     precio = get_bitso_price("eth_mxn")
-    if precio:
-        if st.session_state.positions.get("ETH", 0) > 0:
-            st.sidebar.warning("⚠️ Ya tienes ETH")
-        else:
-            ejecutar_compra_profesional("ETH", precio, 50, "Manual", "NEUTRAL")
+    if precio and st.session_state.positions.get("ETH", 0) == 0:
+        ejecutar_compra_profesional("ETH", precio, 50, "Manual", "NEUTRAL")
 
 # ==================== FIN PARTE 7 ====================
 # ==================== PARTE 8: PLACEHOLDERS ====================
@@ -676,6 +753,7 @@ historial_placeholder = st.empty()
 estado_placeholder = st.empty()
 ultima_senal_placeholder = st.empty()
 horario_placeholder = st.empty()
+fase_placeholder = st.empty()
 
 def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_onchain, cambio_30d, tendencia_30d):
     try:
@@ -689,12 +767,11 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
                f"Tendencia 30d: {tendencia_30d}")
         send_telegram(msg)
         return True
-    except Exception as e:
-        print(f"Error: {e}")
+    except:
         return False
 
 # ==================== FIN PARTE 8 ====================
-# ==================== PARTE 9: BUCLE INFINITO ====================
+# ==================== PARTE 9: BUCLE INFINITO CON FASE DE APRENDIZAJE ====================
 st.sidebar.markdown("---")
 st.sidebar.markdown("**⏱️ Intervalo de actualización**")
 intervalo = st.sidebar.slider(
@@ -727,7 +804,7 @@ def ejecutar_ciclo():
 
     st.session_state.cycle += 1
     
-    # ✅ Guardar cada 5 ciclos
+    # Guardar cada 5 ciclos
     if st.session_state.cycle % 5 == 0:
         save_data()
 
@@ -763,6 +840,57 @@ def ejecutar_ciclo():
     # ===== HORARIO ACTUAL =====
     estado_horario, emoji_horario, desc_horario, es_buen_horario = obtener_horario_operacion()
 
+    # ===== CONTROL DE FASE DE APRENDIZAJE (2 DÍAS) =====
+    ahora = datetime.now()
+    try:
+        inicio_fase = datetime.fromisoformat(st.session_state.inicio_fase)
+    except:
+        inicio_fase = ahora
+        st.session_state.inicio_fase = ahora.isoformat()
+    
+    horas_transcurridas = (ahora - inicio_fase).total_seconds() / 3600
+    horas_restantes = max(0, 48 - horas_transcurridas)
+    
+    # Cambiar a fase "analizando" si pasaron 48h
+    if horas_transcurridas >= 48 and st.session_state.fase_actual == "operando":
+        st.session_state.fase_actual = "analizando"
+        send_telegram("🧠 **FASE DE ANÁLISIS INICIADA**\n\nHan pasado 48h. El bot está analizando sus operaciones para ajustar parámetros.")
+    
+    # Ejecutar análisis
+    if st.session_state.fase_actual == "analizando":
+        resultado = analizar_fase_aprendizaje()
+        
+        if resultado.get("suficiente"):
+            st.session_state.analisis_anterior = resultado
+            
+            mejor_hora_str = f"{resultado['mejor_hora']}:00" if resultado['mejor_hora'] is not None else "N/A"
+            peor_hora_str = f"{resultado['peor_hora']}:00" if resultado['peor_hora'] is not None else "N/A"
+            
+            msg_analisis = (
+                f"📊 **ANÁLISIS DE FASE COMPLETADO**\n\n"
+                f"📈 Operaciones: {resultado['total_operaciones']}\n"
+                f"✅ Ganancias: {resultado['ganancias']}\n"
+                f"❌ Pérdidas: {resultado['perdidas']}\n"
+                f"🎯 Win Rate: {resultado['win_rate']:.1f}%\n"
+                f"⏰ Mejor hora: {mejor_hora_str}\n"
+                f"⏰ Peor hora: {peor_hora_str}\n\n"
+                f"**Ajustes aplicados:**\n"
+                + "\n".join([f"• {a}" for a in resultado['ajustes_aplicados']])
+            )
+            send_telegram(msg_analisis)
+        
+        # Reiniciar fase
+        st.session_state.inicio_fase = ahora.isoformat()
+        st.session_state.fase_actual = "operando"
+        st.session_state.trades = []
+        st.session_state.rendimiento = {
+            "BTC": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []},
+            "ETH": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []}
+        }
+        save_data()
+        send_telegram("🔄 **NUEVA FASE DE 2 DÍAS INICIADA**\nEl bot operará con los parámetros ajustados.")
+        st.rerun()
+
     # ===== TABLA =====
     tabla_placeholder.subheader("📊 Señales + Volumen + Tendencia 30d")
     tabla_placeholder.table({
@@ -783,14 +911,20 @@ def ejecutar_ciclo():
         ]
     })
 
-    # ===== HORARIO EN PANTALLA =====
+    # ===== HORARIO =====
     horario_texto = f"{emoji_horario} **{estado_horario}** → {desc_horario}"
     if es_buen_horario:
         horario_placeholder.success(horario_texto)
     else:
         horario_placeholder.warning(horario_texto)
 
-    # ===== ALERTA TELEGRAM CUANDO CAMBIA DE SESIÓN =====
+    # ===== FASE =====
+    if st.session_state.fase_actual == "operando":
+        fase_placeholder.info(f"📅 **FASE OPERATIVA** — Próximo análisis en {horas_restantes:.1f} horas")
+    else:
+        fase_placeholder.warning("🧠 **ANALIZANDO FASE**...")
+
+    # ===== ALERTA TELEGRAM CAMBIO DE SESIÓN =====
     if "ultimo_horario_alerta" not in st.session_state:
         st.session_state.ultimo_horario_alerta = None
 
@@ -822,7 +956,7 @@ def ejecutar_ciclo():
         f"F&G: {fng_value}/100 ({fng_label}) | "
         f"Aprendizaje: {'✅' if st.session_state.modo_aprendizaje else '❌'} | "
         f"Prob. mínima: {prob_umbral:.1f}% | "
-        f"Intervalo: {st.session_state.intervalo_actualizacion}s"
+        f"Trades fase: {len(st.session_state.trades)}"
     )
     info_placeholder.caption(info_texto)
 
@@ -838,7 +972,7 @@ def ejecutar_ciclo():
     ops_placeholder.metric("Ops hoy", st.session_state.daily_trades)
 
     # ===== HISTORIAL =====
-    historial_placeholder.subheader("📜 Historial (últimas 10)")
+    historial_placeholder.subheader(f"📜 Historial (últimas 10 de {len(st.session_state.trades)})")
     if st.session_state.trades:
         txt = ""
         for ts, msg in reversed(st.session_state.trades[-10:]):
@@ -853,7 +987,7 @@ def ejecutar_ciclo():
         st.session_state.daily_trades = 0
         st.session_state.last_day = hoy
 
-    # ===== APRENDIZAJE =====
+    # ===== APRENDIZAJE PARAMÉTRICO =====
     if st.session_state.cycle % 5 == 0 and st.session_state.modo_aprendizaje:
         for sym in ["BTC", "ETH"]:
             eval_rend = evaluar_rendimiento(sym)
@@ -879,8 +1013,11 @@ def ejecutar_ciclo():
             "tendencia_30d": tendencia_30d, "umbral": umbral_conf
         }
         
-        # ✅ Solo opera en buen horario
-        if not st.session_state.modo_solo_senales and es_buen_horario:
+        # Solo opera si: NO está en modo solo señales Y está en buen horario Y está en fase operativa
+        if (not st.session_state.modo_solo_senales 
+            and es_buen_horario 
+            and st.session_state.fase_actual == "operando"):
+            
             if senal == "BUY" and conf_senal > umbral_conf:
                 if st.session_state.positions.get(sym, 0) == 0:
                     if tendencia_30d != "BAJISTA":
@@ -899,7 +1036,7 @@ def ejecutar_ciclo():
                         st.session_state.highest_price[sym] = 0
                         st.session_state.daily_trades += 1
                         prob = calcular_probabilidad(conf_senal)
-                        msg = f"🔴 VENTA {sym} | ${net:.2f} | Prob: {prob:.1f}%"
+                        msg = f"🔴 VENTA {sym} | Neto: ${net:.2f} | Prob: {prob:.1f}%"
                         send_telegram(msg)
                         st.session_state.trades.append((datetime.now(), msg))
                         save_data()
@@ -927,7 +1064,8 @@ def ejecutar_ciclo():
     estado_placeholder.info(
         f"🔹 Indicadores: BTC={st.session_state.indicadores_activados.get('BTC')} | "
         f"ETH={st.session_state.indicadores_activados.get('ETH')} | "
-        f"Modo: {'🔇 Solo señales' if st.session_state.modo_solo_senales else '✅ Auto'}"
+        f"Modo: {'🔇 Solo señales' if st.session_state.modo_solo_senales else '✅ Auto'} | "
+        f"Fase: {st.session_state.fase_actual}"
     )
 
 # ===== PRIMER CICLO + BUCLE INFINITO =====
