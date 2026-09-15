@@ -995,8 +995,8 @@ def ejecutar_ciclo():
 
     st.session_state.cycle += 1
     
-    # Guardar en la nube cada 120 ciclos (10 minutos) para no exceder el límite de JSONBin
-    if st.session_state.cycle % 120 == 0:
+    # Guardar en Firebase cada 5 ciclos (25 segundos) para no perder progreso
+    if st.session_state.cycle % 5 == 0:
         save_data()
 
     fng_value, fng_label = get_fear_greed()
@@ -1201,5 +1201,3 @@ ejecutar_ciclo()
 while True:
     time.sleep(st.session_state.intervalo_actualizacion)
     ejecutar_ciclo()
-
-# ==================== FIN PARTE 9 ====================
