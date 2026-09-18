@@ -720,18 +720,21 @@ if st.sidebar.button("💸 Vender TODO"):
         st.sidebar.error(f"❌ {e}")
 
 def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
+    """Función de compra CORREGIDA. Convierte confianza a probabilidad."""
+    prob = calcular_probabilidad(confianza)
     volumen = get_onchain_volume(sym)
     if volumen and volumen < 0.5:
         st.sidebar.warning(f"⚠️ Volumen bajo ({volumen:.2f}B)")
         return
-    if confianza >= 40:
+    
+    if prob >= 100:
         monto, cant = 100.0, 4
-    elif confianza >= 30:
+    elif prob >= 75:
         monto, cant = 75.0, 3
-    elif confianza >= 20:
+    elif prob >= 50:
         monto, cant = 50.0, 2
     else:
-        st.sidebar.warning(f"⚠️ Probabilidad baja")
+        st.sidebar.warning(f"⚠️ Probabilidad baja ({prob:.1f}%)")
         return
     
     precio_obj = precio * 0.995
@@ -755,7 +758,6 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
                 ejecutadas += 1
         if ejecutadas > 0:
             save_data()
-            prob = calcular_probabilidad(confianza)
             msg = f"🟢 COMPRA {sym} | {ejecutadas}x${monto:.0f} | ${precio_obj:,.0f} | Prob: {prob:.1f}%"
             send_telegram(msg)
             st.session_state.trades.append((datetime.now(), msg))
@@ -765,12 +767,12 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
 if st.sidebar.button("🟢 Comprar BTC AHORA"):
     precio = get_bitso_price("btc_mxn")
     if precio and st.session_state.positions.get("BTC", 0) == 0:
-        ejecutar_compra_profesional("BTC", precio, 50, "Manual", "NEUTRAL")
+        ejecutar_compra_profesional("BTC", precio, 30, "Manual", "NEUTRAL")
 
 if st.sidebar.button("🟢 Comprar ETH AHORA"):
     precio = get_bitso_price("eth_mxn")
     if precio and st.session_state.positions.get("ETH", 0) == 0:
-        ejecutar_compra_profesional("ETH", precio, 50, "Manual", "NEUTRAL")
+        ejecutar_compra_profesional("ETH", precio, 30, "Manual", "NEUTRAL")
 
 # ==================== FIN PARTE 7 ====================
 # ==================== PARTE 8: PLACEHOLDERS ====================
@@ -831,7 +833,6 @@ def ejecutar_ciclo():
 
     st.session_state.cycle += 1
     
-    # Guardar cada 5 ciclos
     if st.session_state.cycle % 5 == 0:
         save_data()
 
@@ -907,7 +908,6 @@ def ejecutar_ciclo():
             )
             send_telegram(msg_analisis)
         
-        # Reiniciar fase
         st.session_state.inicio_fase = ahora.isoformat()
         st.session_state.fase_actual = "operando"
         st.session_state.trades = []
@@ -1026,33 +1026,36 @@ def ejecutar_ciclo():
                 st.session_state.umbral_caida = max(0.001, st.session_state.umbral_caida * 0.8)
                 st.session_state.take_profit = max(0.01, st.session_state.take_profit * 0.9)
 
-    # ===== OPERACIONES =====
+    # ===== OPERACIONES (CORREGIDO) =====
     for sym, precio, senal, conf_senal, razon in [
         ("BTC", btc, senal_btc, conf_btc, razon_btc),
         ("ETH", eth, senal_eth, conf_eth, razon_eth)
     ]:
         tendencia_30d = st.session_state.historical_trend.get(sym, {}).get("tendencia", "NEUTRAL")
-        umbral_conf = st.session_state.confianza_umbral
+        
+        prob_senal = calcular_probabilidad(conf_senal)
+        prob_umbral_val = st.session_state.confianza_umbral
         
         st.session_state.ultima_senal = {
             "sym": sym, "accion": senal, "razon": razon,
             "confianza_senal": conf_senal, "precio": precio,
             "timestamp": datetime.now().strftime("%H:%M:%S"),
-            "tendencia_30d": tendencia_30d, "umbral": umbral_conf
+            "tendencia_30d": tendencia_30d, "umbral": prob_umbral_val
         }
         
         if (not st.session_state.modo_solo_senales 
             and es_buen_horario 
             and st.session_state.fase_actual == "operando"):
             
-            if senal == "BUY" and conf_senal > umbral_conf:
+            # ✅ CORREGIDO: Compara probabilidad con probabilidad
+            if senal == "BUY" and prob_senal > prob_umbral_val:
                 if st.session_state.positions.get(sym, 0) == 0:
                     if tendencia_30d != "BAJISTA":
                         volumen = onchain_vol_btc if sym == "BTC" else onchain_vol_eth
                         if volumen is None or volumen >= 0.5:
                             ejecutar_compra_profesional(sym, precio, conf_senal, razon, tendencia_30d)
             
-            elif senal == "SELL" and conf_senal > umbral_conf:
+            elif senal == "SELL" and prob_senal > prob_umbral_val:
                 if st.session_state.positions.get(sym, 0) > 0:
                     if tendencia_30d != "ALCISTA":
                         qty = st.session_state.positions[sym]
@@ -1064,17 +1067,16 @@ def ejecutar_ciclo():
                         st.session_state.entry_price[sym] = 0
                         st.session_state.highest_price[sym] = 0
                         st.session_state.daily_trades += 1
-                        prob = calcular_probabilidad(conf_senal)
                         resultado = "GANANCIA" if profit > 0 else "PÉRDIDA"
                         signo = "+" if profit > 0 else ""
-                        msg = f"🔴 VENTA {sym} | Neto: ${net:.2f} | PROFIT: {signo}${profit:.2f} ({resultado}) | Prob: {prob:.1f}%"
+                        msg = f"🔴 VENTA {sym} | Neto: ${net:.2f} | PROFIT: {signo}${profit:.2f} ({resultado}) | Prob: {prob_senal:.1f}%"
                         send_telegram(msg)
                         st.session_state.trades.append((datetime.now(), msg))
                         save_data()
                         st.sidebar.success(f"✅ Venta {sym} | {resultado}: ${profit:.2f}")
         
         # Alertas Telegram
-        if conf_senal > umbral_conf and senal != "HOLD":
+        if prob_senal > prob_umbral_val and senal != "HOLD":
             if not hasattr(st.session_state, f'ultima_senal_{sym}'):
                 setattr(st.session_state, f'ultima_senal_{sym}', 0)
             if st.session_state.cycle - getattr(st.session_state, f'ultima_senal_{sym}', 0) > 10:
