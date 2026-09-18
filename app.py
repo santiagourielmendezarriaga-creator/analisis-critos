@@ -60,7 +60,7 @@ def save_data():
         resp = requests.put(url, json=data, timeout=10)
         
         if resp.status_code == 200:
-            print(f"💾 Datos guardados. Ciclo: {st.session_state.cycle} | Trades: {len(st.session_state.trades)}")
+            print(f"💾 Guardado. Ciclo: {st.session_state.cycle} | Trades: {len(st.session_state.trades)}")
             return True, "Guardado exitoso"
         else:
             return False, f"Status {resp.status_code}"
@@ -262,8 +262,7 @@ def evaluar_rendimiento(sym):
 
 def analizar_fase_aprendizaje():
     """
-    Analiza las operaciones de los últimos 2 días y saca conclusiones.
-    Ajusta parámetros automáticamente.
+    Analiza las operaciones REALES usando el campo PROFIT de cada venta.
     """
     trades = st.session_state.trades
     if len(trades) < 3:
@@ -282,43 +281,60 @@ def analizar_fase_aprendizaje():
     
     ganancias = 0
     perdidas = 0
+    profits_totales = 0.0
     horarios_op = {}
-    simbolos = {"BTC": {"wins": 0, "losses": 0}, "ETH": {"wins": 0, "losses": 0}}
+    simbolos = {"BTC": {"wins": 0, "losses": 0, "profit": 0.0}, 
+                "ETH": {"wins": 0, "losses": 0, "profit": 0.0}}
     
     for v in ventas:
         msg = v["msg"]
         hora = v["ts"].hour
-        horarios_op.setdefault(hora, {"wins": 0, "losses": 0})
+        horarios_op.setdefault(hora, {"wins": 0, "losses": 0, "profit": 0.0})
         
-        es_ganancia = "GANANCIA" in msg.upper() or "PROFIT" in msg.upper() or "Neto" in msg
+        # Buscar el PROFIT en el mensaje: "PROFIT: +$15.50" o "PROFIT: -$10.20"
+        profit = 0.0
+        match = re.search(r"PROFIT:\s*([+-]?\$?[\d,]+\.?\d*)", msg)
+        if match:
+            profit_str = match.group(1).replace("$", "").replace(",", "")
+            try:
+                profit = float(profit_str)
+            except:
+                profit = 0.0
         
-        if es_ganancia:
+        profits_totales += profit
+        
+        if profit > 0:
             ganancias += 1
             horarios_op[hora]["wins"] += 1
+            horarios_op[hora]["profit"] += profit
             for sym in simbolos:
                 if sym in msg:
                     simbolos[sym]["wins"] += 1
+                    simbolos[sym]["profit"] += profit
         else:
             perdidas += 1
             horarios_op[hora]["losses"] += 1
+            horarios_op[hora]["profit"] += profit
             for sym in simbolos:
                 if sym in msg:
                     simbolos[sym]["losses"] += 1
+                    simbolos[sym]["profit"] += profit
     
     total_ventas = ganancias + perdidas
     win_rate = (ganancias / total_ventas * 100) if total_ventas > 0 else 0
+    profit_promedio = profits_totales / total_ventas if total_ventas > 0 else 0
     
+    # Mejor y peor hora (basado en PROFIT acumulado)
     mejor_hora = None
     peor_hora = None
-    mejor_score = -999
-    peor_score = 999
+    mejor_profit = -999999
+    peor_profit = 999999
     for h, d in horarios_op.items():
-        score = d["wins"] - d["losses"]
-        if score > mejor_score:
-            mejor_score = score
+        if d["profit"] > mejor_profit:
+            mejor_profit = d["profit"]
             mejor_hora = h
-        if score < peor_score:
-            peor_score = score
+        if d["profit"] < peor_profit:
+            peor_profit = d["profit"]
             peor_hora = h
     
     analisis = {
@@ -327,11 +343,15 @@ def analizar_fase_aprendizaje():
         "ganancias": ganancias,
         "perdidas": perdidas,
         "win_rate": win_rate,
+        "profit_total": profits_totales,
+        "profit_promedio": profit_promedio,
         "mejor_hora": mejor_hora,
         "peor_hora": peor_hora,
         "simbolos": simbolos,
         "ajustes_aplicados": []
     }
+    
+    # ==== AJUSTES AUTOMÁTICOS ====
     
     # Ajuste 1: Umbral según win rate
     if win_rate < 40:
@@ -347,19 +367,18 @@ def analizar_fase_aprendizaje():
         if total_sym >= 2:
             wr_sym = (stats["wins"] / total_sym * 100)
             if wr_sym < 30:
-                analisis["ajustes_aplicados"].append(f"{sym} rinde mal ({wr_sym:.0f}%)")
+                analisis["ajustes_aplicados"].append(f"{sym} rinde mal ({wr_sym:.0f}% | ${stats['profit']:.2f})")
             elif wr_sym > 70:
-                analisis["ajustes_aplicados"].append(f"{sym} rinde bien ({wr_sym:.0f}%)")
+                analisis["ajustes_aplicados"].append(f"{sym} rinde bien ({wr_sym:.0f}% | ${stats['profit']:.2f})")
     
-    # Ajuste 3: TP según win rate
-    if win_rate > 60:
+    # Ajuste 3: TP según profit promedio
+    if profit_promedio > 0:
         st.session_state.take_profit = min(0.5, st.session_state.take_profit * 1.1)
-        analisis["ajustes_aplicados"].append(f"TP aumentado a {st.session_state.take_profit:.3f}%")
-    elif win_rate < 40:
+        analisis["ajustes_aplicados"].append(f"TP aumentado a {st.session_state.take_profit:.3f}% (profit ${profit_promedio:.2f})")
+    elif profit_promedio < 0:
         st.session_state.take_profit = max(0.01, st.session_state.take_profit * 0.9)
-        analisis["ajustes_aplicados"].append(f"TP reducido a {st.session_state.take_profit:.3f}%")
         st.session_state.stop_loss = max(0.5, st.session_state.stop_loss * 0.9)
-        analisis["ajustes_aplicados"].append(f"SL ajustado a {st.session_state.stop_loss:.2f}%")
+        analisis["ajustes_aplicados"].append(f"TP/SL reducidos (profit ${profit_promedio:.2f})")
     
     return analisis
 
@@ -663,25 +682,33 @@ if st.sidebar.button("💸 Vender TODO"):
             vendido = False
             if st.session_state.positions.get("BTC", 0) > 0:
                 qty = st.session_state.positions["BTC"]
+                entry = st.session_state.entry_price["BTC"]
                 net = qty * btc_price * 0.999
+                profit = net - (qty * entry)
                 st.session_state.balance += net
                 st.session_state.positions["BTC"] = 0
                 st.session_state.entry_price["BTC"] = 0
                 st.session_state.highest_price["BTC"] = 0
                 st.session_state.daily_trades += 1
-                msg = f"🔴 VENTA FORZADA BTC | Neto: ${net:.2f}"
+                resultado = "GANANCIA" if profit > 0 else "PÉRDIDA"
+                signo = "+" if profit > 0 else ""
+                msg = f"🔴 VENTA FORZADA BTC | Neto: ${net:.2f} | PROFIT: {signo}${profit:.2f} ({resultado})"
                 send_telegram(msg)
                 st.session_state.trades.append((datetime.now(), msg))
                 vendido = True
             if st.session_state.positions.get("ETH", 0) > 0:
                 qty = st.session_state.positions["ETH"]
+                entry = st.session_state.entry_price["ETH"]
                 net = qty * eth_price * 0.999
+                profit = net - (qty * entry)
                 st.session_state.balance += net
                 st.session_state.positions["ETH"] = 0
                 st.session_state.entry_price["ETH"] = 0
                 st.session_state.highest_price["ETH"] = 0
                 st.session_state.daily_trades += 1
-                msg = f"🔴 VENTA FORZADA ETH | Neto: ${net:.2f}"
+                resultado = "GANANCIA" if profit > 0 else "PÉRDIDA"
+                signo = "+" if profit > 0 else ""
+                msg = f"🔴 VENTA FORZADA ETH | Neto: ${net:.2f} | PROFIT: {signo}${profit:.2f} ({resultado})"
                 send_telegram(msg)
                 st.session_state.trades.append((datetime.now(), msg))
                 vendido = True
@@ -771,7 +798,7 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
         return False
 
 # ==================== FIN PARTE 8 ====================
-# ==================== PARTE 9: BUCLE INFINITO CON FASE DE APRENDIZAJE ====================
+# ==================== PARTE 9: BUCLE INFINITO ====================
 st.sidebar.markdown("---")
 st.sidebar.markdown("**⏱️ Intervalo de actualización**")
 intervalo = st.sidebar.slider(
@@ -851,12 +878,10 @@ def ejecutar_ciclo():
     horas_transcurridas = (ahora - inicio_fase).total_seconds() / 3600
     horas_restantes = max(0, 48 - horas_transcurridas)
     
-    # Cambiar a fase "analizando" si pasaron 48h
     if horas_transcurridas >= 48 and st.session_state.fase_actual == "operando":
         st.session_state.fase_actual = "analizando"
-        send_telegram("🧠 **FASE DE ANÁLISIS INICIADA**\n\nHan pasado 48h. El bot está analizando sus operaciones para ajustar parámetros.")
+        send_telegram("🧠 **FASE DE ANÁLISIS INICIADA**\n\nHan pasado 48h. El bot analizará sus operaciones.")
     
-    # Ejecutar análisis
     if st.session_state.fase_actual == "analizando":
         resultado = analizar_fase_aprendizaje()
         
@@ -865,6 +890,7 @@ def ejecutar_ciclo():
             
             mejor_hora_str = f"{resultado['mejor_hora']}:00" if resultado['mejor_hora'] is not None else "N/A"
             peor_hora_str = f"{resultado['peor_hora']}:00" if resultado['peor_hora'] is not None else "N/A"
+            profit_signo = "+" if resultado.get('profit_total', 0) >= 0 else ""
             
             msg_analisis = (
                 f"📊 **ANÁLISIS DE FASE COMPLETADO**\n\n"
@@ -872,6 +898,8 @@ def ejecutar_ciclo():
                 f"✅ Ganancias: {resultado['ganancias']}\n"
                 f"❌ Pérdidas: {resultado['perdidas']}\n"
                 f"🎯 Win Rate: {resultado['win_rate']:.1f}%\n"
+                f"💰 Profit Total: {profit_signo}${resultado.get('profit_total', 0):.2f}\n"
+                f"📊 Profit Promedio: {profit_signo}${resultado.get('profit_promedio', 0):.2f}\n"
                 f"⏰ Mejor hora: {mejor_hora_str}\n"
                 f"⏰ Peor hora: {peor_hora_str}\n\n"
                 f"**Ajustes aplicados:**\n"
@@ -976,7 +1004,7 @@ def ejecutar_ciclo():
     if st.session_state.trades:
         txt = ""
         for ts, msg in reversed(st.session_state.trades[-10:]):
-            short_msg = msg.replace("\n", " | ")[:80]
+            short_msg = msg.replace("\n", " | ")[:90]
             txt += f"{ts.strftime('%H:%M:%S')} - {short_msg}\n"
         historial_placeholder.text(txt)
     else:
@@ -1013,7 +1041,6 @@ def ejecutar_ciclo():
             "tendencia_30d": tendencia_30d, "umbral": umbral_conf
         }
         
-        # Solo opera si: NO está en modo solo señales Y está en buen horario Y está en fase operativa
         if (not st.session_state.modo_solo_senales 
             and es_buen_horario 
             and st.session_state.fase_actual == "operando"):
@@ -1029,18 +1056,22 @@ def ejecutar_ciclo():
                 if st.session_state.positions.get(sym, 0) > 0:
                     if tendencia_30d != "ALCISTA":
                         qty = st.session_state.positions[sym]
+                        entry = st.session_state.entry_price[sym]
                         net = qty * precio * 0.999
+                        profit = net - (qty * entry)
                         st.session_state.balance += net
                         st.session_state.positions[sym] = 0
                         st.session_state.entry_price[sym] = 0
                         st.session_state.highest_price[sym] = 0
                         st.session_state.daily_trades += 1
                         prob = calcular_probabilidad(conf_senal)
-                        msg = f"🔴 VENTA {sym} | Neto: ${net:.2f} | Prob: {prob:.1f}%"
+                        resultado = "GANANCIA" if profit > 0 else "PÉRDIDA"
+                        signo = "+" if profit > 0 else ""
+                        msg = f"🔴 VENTA {sym} | Neto: ${net:.2f} | PROFIT: {signo}${profit:.2f} ({resultado}) | Prob: {prob:.1f}%"
                         send_telegram(msg)
                         st.session_state.trades.append((datetime.now(), msg))
                         save_data()
-                        st.sidebar.success(f"✅ Venta de {sym}")
+                        st.sidebar.success(f"✅ Venta {sym} | {resultado}: ${profit:.2f}")
         
         # Alertas Telegram
         if conf_senal > umbral_conf and senal != "HOLD":
