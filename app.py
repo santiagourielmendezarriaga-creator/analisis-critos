@@ -1165,7 +1165,7 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
         return False
 
 # ==================== FIN PARTE 8 ====================
-# ==================== PARTE 9: BUCLE INFINITO CON FILTRO DE VENTA ESTRICTO ====================
+# ==================== PARTE 9: BUCLE INFINITO CON BACKUP AUTOMÁTICO ====================
 st.sidebar.markdown("---")
 st.sidebar.markdown("**⏱️ Intervalo de actualización**")
 intervalo = st.sidebar.slider("Actualizar cada (segundos)", min_value=5, max_value=60, value=st.session_state.intervalo_actualizacion, step=5)
@@ -1190,6 +1190,32 @@ def ejecutar_ciclo():
     st.session_state.cycle += 1
     if st.session_state.cycle % 5 == 0:
         save_data()
+
+    # ⭐ BACKUP AUTOMÁTICO
+    # 1) Cada 24 horas
+    ahora_ts = time.time()
+    if "ultimo_backup_auto" not in st.session_state:
+        st.session_state.ultimo_backup_auto = ahora_ts
+    horas_desde_backup = (ahora_ts - st.session_state.ultimo_backup_auto) / 3600
+    if horas_desde_backup >= 24:
+        backup_key, msg = crear_backup()
+        if backup_key:
+            st.session_state.ultimo_backup_auto = ahora_ts
+            limpiar_backups_viejos(max_backups=10)
+            send_telegram(f"💾 **BACKUP AUTOMÁTICO (24h)**\n{backup_key}")
+            print(f"💾 Backup automático 24h: {backup_key}")
+    
+    # 2) Cada 100 operaciones
+    if "ultimo_backup_trades" not in st.session_state:
+        st.session_state.ultimo_backup_trades = 0
+    trades_actuales = len(st.session_state.trades)
+    if trades_actuales - st.session_state.ultimo_backup_trades >= 100:
+        backup_key, msg = crear_backup()
+        if backup_key:
+            st.session_state.ultimo_backup_trades = trades_actuales
+            limpiar_backups_viejos(max_backups=10)
+            send_telegram(f"💾 **BACKUP AUTOMÁTICO (100 ops)**\n{backup_key}")
+            print(f"💾 Backup automático 100 ops: {backup_key}")
 
     fng_value, fng_label = get_fear_greed()
     cambio_btc = (btc - st.session_state.ref_price["BTC"]) / st.session_state.ref_price["BTC"] * 100
@@ -1221,7 +1247,6 @@ def ejecutar_ciclo():
 
     estado_horario, emoji_horario, desc_horario, es_buen_horario = obtener_horario_operacion()
 
-    # Horario permitido si es bueno O si está activado el modo 24/7
     horario_para_operar = es_buen_horario or st.session_state.get("operar_24_7", False)
 
     # ===== VERIFICAR ÓRDENES MAKER PENDIENTES =====
@@ -1406,7 +1431,6 @@ def ejecutar_ciclo():
             and horario_para_operar
             and st.session_state.fase_actual == "operando"):
             
-            # ===== COMPRA =====
             if senal == "BUY" and prob_senal > prob_umbral_val:
                 if st.session_state.positions.get(sym, 0) == 0:
                     if tendencia_30d != "BAJISTA":
@@ -1414,19 +1438,12 @@ def ejecutar_ciclo():
                         if volumen is None or volumen >= 0.5:
                             ejecutar_compra_profesional(sym, precio, conf_senal, razon, tendencia_30d)
             
-            # ===== VENTA CON FILTRO ESTRICTO 2.5% =====
             elif senal == "SELL" and prob_senal > prob_umbral_val:
                 if st.session_state.positions.get(sym, 0) > 0:
                     if tendencia_30d != "ALCISTA":
                         qty = st.session_state.positions[sym]
                         entry = st.session_state.entry_price[sym]
-                        
-                        # ⭐ FILTRO ESTRICTO: solo vender si el precio subió >= 2.5%
-                        # Comisión Maker round-trip: 1.20%
-                        # Margen neto deseado: 1.30%
-                        # Total requerido: 2.50% sobre el precio de entrada
                         precio_minimo_venta = entry * 1.025
-                        
                         if precio < precio_minimo_venta:
                             ganancia_potencial_pct = ((precio / entry) - 1) * 100
                             st.sidebar.warning(
@@ -1459,7 +1476,6 @@ def ejecutar_ciclo():
                         save_data()
                         st.sidebar.success(f"✅ Venta Maker {sym}")
         
-        # Alertas Telegram
         if prob_senal > prob_umbral_val and senal != "HOLD":
             if not hasattr(st.session_state, f'ultima_senal_{sym}'):
                 setattr(st.session_state, f'ultima_senal_{sym}', 0)
