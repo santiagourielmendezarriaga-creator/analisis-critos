@@ -97,7 +97,7 @@ def init_new_user_state():
     st.session_state.price_history = {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)}
     st.session_state.umbral_caida = 0.005
     st.session_state.stop_loss = 1.5
-    st.session_state.take_profit = 0.02
+    st.session_state.take_profit = 2.0
     st.session_state.trailing = 0.5
     st.session_state.umbral_indicadores_activacion = 0.5
     st.session_state.expert_score = 30
@@ -122,7 +122,7 @@ def init_new_user_state():
         "ETH": {"valor": None, "timestamp": 0}
     }
     st.session_state.historical_trend = {"BTC": {}, "ETH": {}}
-    st.session_state.confianza_umbral = 20
+    st.session_state.confianza_umbral = 65
     st.session_state.intervalo_actualizacion = 5
     st.session_state.inicio_fase = datetime.now().isoformat()
     st.session_state.fase_actual = "operando"
@@ -156,7 +156,7 @@ def restore_from_file():
         st.session_state.cycle = data.get("cycle", 0)
         st.session_state.umbral_caida = data.get("umbral_caida", 0.005)
         st.session_state.stop_loss = data.get("stop_loss", 1.5)
-        st.session_state.take_profit = data.get("take_profit", 0.02)
+        st.session_state.take_profit = data.get("take_profit", 2.0)
         st.session_state.trailing = data.get("trailing", 0.5)
         st.session_state.umbral_indicadores_activacion = data.get("umbral_indicadores_activacion", 0.5)
         st.session_state.expert_score = data.get("expert_score", 30)
@@ -181,7 +181,7 @@ def restore_from_file():
             "ETH": {"valor": None, "timestamp": 0}
         })
         st.session_state.historical_trend = data.get("historical_trend", {"BTC": {}, "ETH": {}})
-        st.session_state.confianza_umbral = data.get("confianza_umbral", 20)
+        st.session_state.confianza_umbral = data.get("confianza_umbral", 65)
         st.session_state.intervalo_actualizacion = data.get("intervalo_actualizacion", 5)
         st.session_state.inicio_fase = data.get("inicio_fase", datetime.now().isoformat())
         st.session_state.fase_actual = data.get("fase_actual", "operando")
@@ -207,10 +207,8 @@ def send_telegram(msg):
     except:
         pass
 
-# ===== CONFIGURACIÓN BITSO =====
 BITSO_BASE_URL = "https://api.bitso.com/v3"
 
-# ⚠️ LAS LLAVES SE LEEN DESDE STREAMLIT SECRETS
 try:
     BITSO_API_KEY = st.secrets["BITSO_API_KEY"]
     BITSO_API_SECRET = st.secrets["BITSO_API_SECRET"]
@@ -356,7 +354,6 @@ def cancel_bitso_order(oid):
         return False
 
 def verificar_orden_pendiente(sym):
-    """Verifica si hay una orden pendiente para `sym`."""
     orden_key = f"orden_pendiente_{sym}"
     if orden_key not in st.session_state or not st.session_state[orden_key]:
         return "sin_orden", None
@@ -717,7 +714,7 @@ required_vars = {
     "cycle": 0,
     "price_history": {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)},
     "umbral_caida": 0.005,
-    "take_profit": 0.02,
+    "take_profit": 2.0,
     "stop_loss": 1.5,
     "trailing": 0.5,
     "umbral_indicadores_activacion": 0.5,
@@ -743,7 +740,7 @@ required_vars = {
         "ETH": {"valor": None, "timestamp": 0}
     },
     "historical_trend": {"BTC": {}, "ETH": {}},
-    "confianza_umbral": 20,
+    "confianza_umbral": 65,
     "intervalo_actualizacion": 5,
     "inicio_fase": datetime.now().isoformat(),
     "fase_actual": "operando",
@@ -771,7 +768,7 @@ else:
 # ===== SIDEBAR =====
 st.sidebar.header("⚙️ Configuración Principal")
 st.session_state.umbral_caida = st.sidebar.number_input("Caída para comprar (%)", min_value=0.001, max_value=50.0, step=0.001, value=float(st.session_state.umbral_caida))
-st.session_state.take_profit = st.sidebar.number_input("Take Profit (%)", min_value=0.01, max_value=50.0, step=0.01, value=float(st.session_state.take_profit))
+st.session_state.take_profit = st.sidebar.number_input("Take Profit (%)", min_value=0.5, max_value=50.0, step=0.1, value=float(st.session_state.take_profit))
 st.session_state.stop_loss = st.sidebar.number_input("Stop Loss (%)", min_value=0.5, max_value=20.0, value=float(st.session_state.stop_loss), step=0.5)
 st.session_state.trailing = st.sidebar.number_input("Trailing Stop (%)", min_value=0.2, max_value=5.0, value=float(st.session_state.trailing), step=0.1)
 st.session_state.umbral_indicadores_activacion = st.sidebar.number_input("Activar indicadores ±(%)", min_value=0.1, max_value=20.0, step=0.1, value=float(st.session_state.umbral_indicadores_activacion))
@@ -780,7 +777,11 @@ st.sidebar.header("🧠 Modo Aprendizaje")
 st.session_state.modo_aprendizaje = st.sidebar.checkbox("✅ Modo aprendizaje activado", value=st.session_state.modo_aprendizaje)
 
 st.sidebar.header("🎯 Probabilidad mínima")
-st.session_state.confianza_umbral = st.sidebar.slider("Probabilidad mínima para operar (%)", min_value=20, max_value=95, value=st.session_state.confianza_umbral, step=5)
+st.session_state.confianza_umbral = st.sidebar.slider(
+    "Probabilidad mínima para operar (%)",
+    min_value=50, max_value=95, value=st.session_state.confianza_umbral, step=5,
+    help="50% = señales débiles | 65% = balance | 80%+ = solo señales muy fuertes"
+)
 
 st.sidebar.header("🧠 Indicadores")
 st.session_state.rsi_os = st.sidebar.number_input("RSI sobreventa", 20, 40, int(st.session_state.rsi_os), 1)
@@ -888,7 +889,6 @@ if st.sidebar.button("💸 Vender TODO"):
         st.sidebar.error(f"❌ {e}")
 
 def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
-    """Compra con orden LÍMITE (Maker) para pagar 0.60% de comisión."""
     prob = calcular_probabilidad(confianza)
     volumen = get_onchain_volume(sym)
     if volumen and volumen < 0.5:
@@ -914,7 +914,6 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
     if monto_hoy + (monto * cant) > MONTO_MAXIMO_DIARIO:
         st.sidebar.warning(f"⚠️ Excede límite diario")
         return
-    # ⭐ PRECIO MAKER: 0.2% por debajo del mercado
     precio_maker = precio * 0.998
     if st.session_state.positions.get(sym, 0) > 0:
         return
@@ -925,7 +924,6 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
             if mxn_disponible < monto * cant:
                 st.sidebar.warning(f"⚠️ Saldo insuficiente: ${mxn_disponible:.2f}")
                 return
-    # MODO_REAL: colocar orden límite y guardarla como pendiente
     if MODO_REAL:
         book = "btc_mxn" if sym == "BTC" else "eth_mxn"
         qty = (monto * 0.999) / precio_maker
@@ -947,14 +945,13 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
         st.sidebar.info(f"⏳ Orden Maker colocada: {qty:.8f} {sym} a ${precio_maker:,.0f}")
         send_telegram(f"⏳ **ORDEN MAKER {sym}**\nPrecio: ${precio_maker:,.0f}\nEsperando ejecución (comisión 0.60%)")
         return
-    # MODO_SIMULADO
     ejecutadas = 0
     if st.session_state.balance >= monto:
         if st.session_state.balance < cant * monto:
             cant = int(st.session_state.balance // monto)
         for i in range(cant):
             if st.session_state.balance >= monto:
-                com = monto * 0.006  # 0.60% Maker
+                com = monto * 0.006
                 qty = (monto - com) / precio_maker
                 st.session_state.balance -= monto
                 st.session_state.positions[sym] += qty
@@ -1065,7 +1062,8 @@ def ejecutar_ciclo():
 
     prob_btc = calcular_probabilidad(conf_btc)
     prob_eth = calcular_probabilidad(conf_eth)
-    prob_umbral = calcular_probabilidad(st.session_state.confianza_umbral)
+    # ⭐ FIX: ahora el umbral se usa directo (ya no se multiplica por 2.5)
+    prob_umbral = st.session_state.confianza_umbral
 
     estado_horario, emoji_horario, desc_horario, es_buen_horario = obtener_horario_operacion()
 
@@ -1228,7 +1226,7 @@ def ejecutar_ciclo():
                 st.session_state.take_profit = min(0.10, st.session_state.take_profit * 1.1)
             elif eval_rend["accion"] == "REDUCIR_RIESGO":
                 st.session_state.umbral_caida = max(0.001, st.session_state.umbral_caida * 0.8)
-                st.session_state.take_profit = max(0.01, st.session_state.take_profit * 0.9)
+                st.session_state.take_profit = max(0.5, st.session_state.take_profit * 0.9)
 
     for sym, precio, senal, conf_senal, razon in [
         ("BTC", btc, senal_btc, conf_btc, razon_btc),
