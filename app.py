@@ -1076,7 +1076,6 @@ def ejecutar_ciclo():
 
     prob_btc = calcular_probabilidad(conf_btc)
     prob_eth = calcular_probabilidad(conf_eth)
-    # ⭐ FIX: ahora el umbral se usa directo (ya no se multiplica por 2.5)
     prob_umbral = st.session_state.confianza_umbral
 
     estado_horario, emoji_horario, desc_horario, es_buen_horario = obtener_horario_operacion()
@@ -1321,6 +1320,7 @@ def ejecutar_ciclo():
         estado_texto += " | ⏳ Orden ETH pendiente"
     estado_placeholder.info(estado_texto)
 
+# ===== PRIMER CICLO + BUCLE INFINITO =====
 ejecutar_ciclo()
 
 while True:
