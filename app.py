@@ -1165,7 +1165,7 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
         return False
 
 # ==================== FIN PARTE 8 ====================
-# ==================== PARTE 9: BUCLE INFINITO CON FILTRO DE VENTA ====================
+# ==================== PARTE 9: BUCLE INFINITO CON FILTRO DE VENTA ESTRICTO ====================
 st.sidebar.markdown("---")
 st.sidebar.markdown("**⏱️ Intervalo de actualización**")
 intervalo = st.sidebar.slider("Actualizar cada (segundos)", min_value=5, max_value=60, value=st.session_state.intervalo_actualizacion, step=5)
@@ -1315,7 +1315,6 @@ def ejecutar_ciclo():
         ]
     })
 
-    # ⭐ Mostrar horario con indicador 24/7
     horario_texto = f"{emoji_horario} **{estado_horario}** → {desc_horario}"
     if st.session_state.get("operar_24_7", False):
         horario_placeholder.info(f"🔥 **MODO 24/7 ACTIVADO** — Operando sin restricción de horario | Horario actual: {estado_horario}")
@@ -1415,23 +1414,25 @@ def ejecutar_ciclo():
                         if volumen is None or volumen >= 0.5:
                             ejecutar_compra_profesional(sym, precio, conf_senal, razon, tendencia_30d)
             
-            # ===== VENTA CON FILTRO DE GANANCIA MÍNIMA =====
+            # ===== VENTA CON FILTRO ESTRICTO 2.5% =====
             elif senal == "SELL" and prob_senal > prob_umbral_val:
                 if st.session_state.positions.get(sym, 0) > 0:
                     if tendencia_30d != "ALCISTA":
                         qty = st.session_state.positions[sym]
                         entry = st.session_state.entry_price[sym]
                         
-                        # ⭐ FILTRO: solo vender si el precio cubre comisiones + margen mínimo
-                        # Comisión round-trip Maker: 1.20%
-                        # Margen mínimo deseado: 0.30%
-                        # Total requerido: 1.50% sobre el precio de entrada
-                        precio_minimo_venta = entry * 1.015
+                        # ⭐ FILTRO ESTRICTO: solo vender si el precio subió >= 2.5%
+                        # Comisión Maker round-trip: 1.20%
+                        # Margen neto deseado: 1.30%
+                        # Total requerido: 2.50% sobre el precio de entrada
+                        precio_minimo_venta = entry * 1.025
                         
                         if precio < precio_minimo_venta:
                             ganancia_potencial_pct = ((precio / entry) - 1) * 100
-                            st.sidebar.info(f"⏸️ {sym} SELL bloqueada: precio +{ganancia_potencial_pct:.2f}% < 1.5% requerido")
-                            continue  # No vender, esperar mejor precio
+                            st.sidebar.warning(
+                                f"⏸️ {sym} SELL bloqueada: precio +{ganancia_potencial_pct:.2f}% < 2.5% requerido"
+                            )
+                            continue
                         
                         precio_maker_venta = precio * 1.002
                         if MODO_REAL:
