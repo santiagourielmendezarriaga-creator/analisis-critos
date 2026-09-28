@@ -1082,6 +1082,9 @@ def ejecutar_ciclo():
 
     estado_horario, emoji_horario, desc_horario, es_buen_horario = obtener_horario_operacion()
 
+    # ⭐ FIX 24/7: Horario permitido si es bueno O si está activado el modo 24/7
+    horario_para_operar = es_buen_horario or st.session_state.get("operar_24_7", False)
+
     # ===== VERIFICAR ÓRDENES MAKER PENDIENTES =====
     for sym_check in ["BTC", "ETH"]:
         estado, datos = verificar_orden_pendiente(sym_check)
@@ -1173,8 +1176,11 @@ def ejecutar_ciclo():
         ]
     })
 
+    # ⭐ Mostrar horario con indicador 24/7
     horario_texto = f"{emoji_horario} **{estado_horario}** → {desc_horario}"
-    if es_buen_horario:
+    if st.session_state.get("operar_24_7", False):
+        horario_placeholder.info(f"🔥 **MODO 24/7 ACTIVADO** — Operando sin restricción de horario | Horario actual: {estado_horario}")
+    elif es_buen_horario:
         horario_placeholder.success(horario_texto)
     else:
         horario_placeholder.warning(horario_texto)
@@ -1203,6 +1209,7 @@ def ejecutar_ciclo():
         f"F&G: {fng_value}/100 ({fng_label}) | "
         f"Aprendizaje: {'✅' if st.session_state.modo_aprendizaje else '❌'} | "
         f"Prob. mínima: {prob_umbral:.1f}% | "
+        f"Modo: {'🔥 24/7' if st.session_state.get('operar_24_7', False) else '⏰ Con horario'} | "
         f"Trades fase: {len(st.session_state.trades)}"
     )
     info_placeholder.caption(info_texto)
@@ -1256,8 +1263,9 @@ def ejecutar_ciclo():
             "timestamp": datetime.now().strftime("%H:%M:%S"),
             "tendencia_30d": tendencia_30d, "umbral": prob_umbral_val
         }
+        # ⭐ FIX 24/7: usa horario_para_operar
         if (not st.session_state.modo_solo_senales
-            and es_buen_horario
+            and horario_para_operar
             and st.session_state.fase_actual == "operando"):
             if senal == "BUY" and prob_senal > prob_umbral_val:
                 if st.session_state.positions.get(sym, 0) == 0:
@@ -1316,22 +1324,23 @@ def ejecutar_ciclo():
         f"Modo: {'🔇 Solo señales' if st.session_state.modo_solo_senales else '✅ Auto'} | "
         f"Fase: {st.session_state.fase_actual}"
     )
+    if st.session_state.get("operar_24_7", False):
+        estado_texto += " | 🔥 24/7"
     if st.session_state.get("orden_pendiente_BTC"):
         estado_texto += " | ⏳ Orden BTC pendiente"
     if st.session_state.get("orden_pendiente_ETH"):
         estado_texto += " | ⏳ Orden ETH pendiente"
     estado_placeholder.info(estado_texto)
 
-# ⭐ FIX: BOTÓN DESPUÉS DE LA DEFINICIÓN
+# Botón de actualización después de la definición
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🔄 Actualización**")
 if st.sidebar.button("🔄 Actualizar datos ahora"):
     ejecutar_ciclo()
 
-# ⭐ FIX: PRIMER CICLO AL FINAL
+# Primer ciclo + bucle infinito
 ejecutar_ciclo()
 
-# ⭐ FIX: BUCLE INFINITO
 while True:
     time.sleep(st.session_state.intervalo_actualizacion)
     ejecutar_ciclo()
