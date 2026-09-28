@@ -5,6 +5,8 @@ import time
 import json
 import os
 import re
+import hmac
+import hashlib
 import statistics
 from datetime import datetime, timedelta, timezone
 from collections import deque
@@ -14,7 +16,6 @@ from collections import deque
 FIREBASE_URL = "https://bot-cc6c4-default-rtdb.firebaseio.com"
 
 def save_data():
-    """Guarda los datos en Firebase. Retorna (éxito, mensaje)."""
     try:
         data = {
             "balance": st.session_state.balance,
@@ -24,6 +25,7 @@ def save_data():
             "last_action": st.session_state.last_action,
             "daily_trades": st.session_state.daily_trades,
             "last_day": st.session_state.last_day,
+            "monto_dia": st.session_state.get("monto_dia", 0.0),
             "ref_price": st.session_state.ref_price,
             "last_price": st.session_state.last_price,
             "entry_price": st.session_state.entry_price,
@@ -58,9 +60,8 @@ def save_data():
         }
         url = f"{FIREBASE_URL}/bot.json"
         resp = requests.put(url, json=data, timeout=10)
-        
         if resp.status_code == 200:
-            print(f"💾 Guardado. Ciclo: {st.session_state.cycle} | Trades: {len(st.session_state.trades)}")
+            print(f"💾 Guardado. Ciclo: {st.session_state.cycle}")
             return True, "Guardado exitoso"
         else:
             return False, f"Status {resp.status_code}"
@@ -87,6 +88,7 @@ def init_new_user_state():
     st.session_state.last_action = {"BTC": None, "ETH": None}
     st.session_state.daily_trades = 0
     st.session_state.last_day = datetime.now().day
+    st.session_state.monto_dia = 0.0
     st.session_state.ref_price = {"BTC": 0.0, "ETH": 0.0}
     st.session_state.last_price = {"BTC": 0.0, "ETH": 0.0}
     st.session_state.entry_price = {"BTC": 0.0, "ETH": 0.0}
@@ -125,6 +127,8 @@ def init_new_user_state():
     st.session_state.inicio_fase = datetime.now().isoformat()
     st.session_state.fase_actual = "operando"
     st.session_state.analisis_anterior = {}
+    st.session_state.orden_pendiente_BTC = None
+    st.session_state.orden_pendiente_ETH = None
 
 def restore_from_file():
     data = load_data()
@@ -138,13 +142,13 @@ def restore_from_file():
                 trades.append((datetime.fromisoformat(ts), msg))
             else:
                 trades.append((ts, msg))
-        
         st.session_state.balance = data.get("balance", 1000.0)
         st.session_state.positions = data.get("positions", {"BTC": 0.0, "ETH": 0.0})
         st.session_state.trades = trades
         st.session_state.last_action = data.get("last_action", {"BTC": None, "ETH": None})
         st.session_state.daily_trades = data.get("daily_trades", 0)
         st.session_state.last_day = data.get("last_day", datetime.now().day)
+        st.session_state.monto_dia = data.get("monto_dia", 0.0)
         st.session_state.ref_price = data.get("ref_price", {"BTC": 0.0, "ETH": 0.0})
         st.session_state.last_price = data.get("last_price", {"BTC": 0.0, "ETH": 0.0})
         st.session_state.entry_price = data.get("entry_price", {"BTC": 0.0, "ETH": 0.0})
@@ -182,10 +186,11 @@ def restore_from_file():
         st.session_state.inicio_fase = data.get("inicio_fase", datetime.now().isoformat())
         st.session_state.fase_actual = data.get("fase_actual", "operando")
         st.session_state.analisis_anterior = data.get("analisis_anterior", {})
-        
         ph = data.get("price_history", {"BTC": [], "ETH": []})
         st.session_state.price_history = {k: deque(v, maxlen=200) for k, v in ph.items()}
-        print(f"✅ Datos restaurados. Ciclo: {st.session_state.cycle} | Trades: {len(trades)}")
+        st.session_state.orden_pendiente_BTC = None
+        st.session_state.orden_pendiente_ETH = None
+        print(f"✅ Datos restaurados. Ciclo: {st.session_state.cycle}")
     except Exception as e:
         print(f"Error al restaurar: {e}")
         init_new_user_state()
@@ -202,9 +207,26 @@ def send_telegram(msg):
     except:
         pass
 
+# ===== CONFIGURACIÓN BITSO =====
+BITSO_BASE_URL = "https://api.bitso.com/v3"
+
+# ⚠️ LAS LLAVES SE LEEN DESDE STREAMLIT SECRETS
+try:
+    BITSO_API_KEY = st.secrets["BITSO_API_KEY"]
+    BITSO_API_SECRET = st.secrets["BITSO_API_SECRET"]
+    MODO_REAL = st.secrets.get("MODO_REAL", False)
+    MONTO_MAXIMO_POR_OPERACION = float(st.secrets.get("MONTO_MAXIMO_POR_OPERACION", 50.0))
+    MONTO_MAXIMO_DIARIO = float(st.secrets.get("MONTO_MAXIMO_DIARIO", 100.0))
+except:
+    BITSO_API_KEY = ""
+    BITSO_API_SECRET = ""
+    MODO_REAL = False
+    MONTO_MAXIMO_POR_OPERACION = 50.0
+    MONTO_MAXIMO_DIARIO = 100.0
+
 def get_bitso_price(book="btc_mxn"):
     try:
-        url = f"https://api.bitso.com/api/v3/ticker/?book={book}"
+        url = f"{BITSO_BASE_URL}/ticker/?book={book}"
         resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
@@ -214,6 +236,157 @@ def get_bitso_price(book="btc_mxn"):
     except:
         pass
     return None
+
+def _create_bitso_auth_header(method, path, json_payload=""):
+    if not BITSO_API_KEY or not BITSO_API_SECRET:
+        return None, None
+    nonce = str(int(time.time() * 1000))
+    message = nonce + method.upper() + path + json_payload
+    signature = hmac.new(
+        BITSO_API_SECRET.encode('utf-8'),
+        message.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    auth_header = f"Bitso {BITSO_API_KEY}:{nonce}:{signature}"
+    return auth_header, nonce
+
+def get_bitso_balance():
+    if not MODO_REAL:
+        return None
+    try:
+        path = "/balance/"
+        auth_header, _ = _create_bitso_auth_header("GET", path)
+        if not auth_header:
+            return None
+        headers = {"Authorization": auth_header}
+        url = BITSO_BASE_URL + path
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("success"):
+                balances = {}
+                for b in data["payload"]["balances"]:
+                    if float(b["available"]) > 0:
+                        balances[b["currency"]] = {
+                            "available": float(b["available"]),
+                            "total": float(b["total"])
+                        }
+                return balances
+        return None
+    except Exception as e:
+        print(f"Error consultando balance: {e}")
+        return None
+
+def place_bitso_order(book, side, amount_major, price):
+    if not MODO_REAL:
+        print("⚠️ MODO_REAL desactivado.")
+        return None
+    try:
+        path = "/orders/"
+        payload = {
+            "book": book,
+            "side": side,
+            "type": "limit",
+            "major": str(amount_major),
+            "price": str(price)
+        }
+        json_payload = json.dumps(payload, separators=(',', ':'))
+        auth_header, _ = _create_bitso_auth_header("POST", path, json_payload)
+        if not auth_header:
+            return None
+        headers = {
+            "Authorization": auth_header,
+            "Content-Type": "application/json"
+        }
+        url = BITSO_BASE_URL + path
+        resp = requests.post(url, data=json_payload, headers=headers, timeout=15)
+        data = resp.json()
+        if resp.status_code == 200 and data.get("success"):
+            order = data["payload"]
+            print(f"✅ Orden colocada: {order.get('oid')}")
+            return order
+        else:
+            error = data.get("error", {})
+            error_msg = error.get("message", "Error desconocido")
+            print(f"❌ Error al colocar orden: {error_msg}")
+            return {"error": error_msg}
+    except Exception as e:
+        print(f"❌ Excepción colocando orden: {e}")
+        return {"error": str(e)}
+
+def get_bitso_order_status(oid):
+    if not MODO_REAL:
+        return None
+    try:
+        path = f"/orders/{oid}/"
+        auth_header, _ = _create_bitso_auth_header("GET", path)
+        if not auth_header:
+            return None
+        headers = {"Authorization": auth_header}
+        url = BITSO_BASE_URL + path
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("success"):
+                return data["payload"]
+        return None
+    except Exception as e:
+        print(f"Error consultando orden {oid}: {e}")
+        return None
+
+def cancel_bitso_order(oid):
+    if not MODO_REAL:
+        return False
+    try:
+        path = f"/orders/{oid}/"
+        auth_header, _ = _create_bitso_auth_header("DELETE", path)
+        if not auth_header:
+            return False
+        headers = {"Authorization": auth_header}
+        url = BITSO_BASE_URL + path
+        resp = requests.delete(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("success"):
+                print(f"✅ Orden {oid} cancelada")
+                return True
+        return False
+    except Exception as e:
+        print(f"Error cancelando orden {oid}: {e}")
+        return False
+
+def verificar_orden_pendiente(sym):
+    """Verifica si hay una orden pendiente para `sym`."""
+    orden_key = f"orden_pendiente_{sym}"
+    if orden_key not in st.session_state or not st.session_state[orden_key]:
+        return "sin_orden", None
+    orden = st.session_state[orden_key]
+    oid = orden.get("oid")
+    if not oid:
+        st.session_state[orden_key] = None
+        return "sin_orden", None
+    if not MODO_REAL:
+        st.session_state[orden_key] = None
+        return "ejecutada", orden
+    status = get_bitso_order_status(oid)
+    if not status:
+        return "pendiente", orden
+    estado = status.get("status")
+    if estado in ["completed", "filled"]:
+        st.session_state[orden_key] = None
+        return "ejecutada", status
+    elif estado == "cancelled":
+        st.session_state[orden_key] = None
+        return "cancelada", None
+    elif estado in ["open", "partially_filled"]:
+        creada = orden.get("timestamp", time.time())
+        if time.time() - creada > 600:
+            cancel_bitso_order(oid)
+            st.session_state[orden_key] = None
+            return "cancelada", None
+        return "pendiente", orden
+    else:
+        return "pendiente", orden
 
 def get_fear_greed():
     try:
@@ -261,37 +434,25 @@ def evaluar_rendimiento(sym):
         return {"accion": "MANTENER"}
 
 def analizar_fase_aprendizaje():
-    """
-    Analiza las operaciones REALES usando el campo PROFIT de cada venta.
-    """
     trades = st.session_state.trades
     if len(trades) < 3:
-        return {
-            "suficiente": False,
-            "razon": f"Solo {len(trades)} operaciones. Se necesitan mínimo 3."
-        }
-    
+        return {"suficiente": False, "razon": f"Solo {len(trades)} operaciones."}
     ventas = []
     for ts, msg in trades:
         if "VENTA" in msg or "SELL" in msg:
             ventas.append({"ts": ts, "msg": msg})
-    
     if len(ventas) == 0:
-        return {"suficiente": False, "razon": "No hay ventas cerradas para analizar."}
-    
+        return {"suficiente": False, "razon": "No hay ventas cerradas."}
     ganancias = 0
     perdidas = 0
     profits_totales = 0.0
     horarios_op = {}
-    simbolos = {"BTC": {"wins": 0, "losses": 0, "profit": 0.0}, 
+    simbolos = {"BTC": {"wins": 0, "losses": 0, "profit": 0.0},
                 "ETH": {"wins": 0, "losses": 0, "profit": 0.0}}
-    
     for v in ventas:
         msg = v["msg"]
         hora = v["ts"].hour
         horarios_op.setdefault(hora, {"wins": 0, "losses": 0, "profit": 0.0})
-        
-        # Buscar el PROFIT en el mensaje: "PROFIT: +$15.50" o "PROFIT: -$10.20"
         profit = 0.0
         match = re.search(r"PROFIT:\s*([+-]?\$?[\d,]+\.?\d*)", msg)
         if match:
@@ -300,9 +461,7 @@ def analizar_fase_aprendizaje():
                 profit = float(profit_str)
             except:
                 profit = 0.0
-        
         profits_totales += profit
-        
         if profit > 0:
             ganancias += 1
             horarios_op[hora]["wins"] += 1
@@ -319,12 +478,9 @@ def analizar_fase_aprendizaje():
                 if sym in msg:
                     simbolos[sym]["losses"] += 1
                     simbolos[sym]["profit"] += profit
-    
     total_ventas = ganancias + perdidas
     win_rate = (ganancias / total_ventas * 100) if total_ventas > 0 else 0
     profit_promedio = profits_totales / total_ventas if total_ventas > 0 else 0
-    
-    # Mejor y peor hora (basado en PROFIT acumulado)
     mejor_hora = None
     peor_hora = None
     mejor_profit = -999999
@@ -336,7 +492,6 @@ def analizar_fase_aprendizaje():
         if d["profit"] < peor_profit:
             peor_profit = d["profit"]
             peor_hora = h
-    
     analisis = {
         "suficiente": True,
         "total_operaciones": total_ventas,
@@ -350,18 +505,12 @@ def analizar_fase_aprendizaje():
         "simbolos": simbolos,
         "ajustes_aplicados": []
     }
-    
-    # ==== AJUSTES AUTOMÁTICOS ====
-    
-    # Ajuste 1: Umbral según win rate
     if win_rate < 40:
         st.session_state.confianza_umbral = min(70, st.session_state.confianza_umbral + 5)
-        analisis["ajustes_aplicados"].append(f"Umbral subido a {st.session_state.confianza_umbral}% (win rate bajo)")
+        analisis["ajustes_aplicados"].append(f"Umbral subido a {st.session_state.confianza_umbral}%")
     elif win_rate > 65:
         st.session_state.confianza_umbral = max(20, st.session_state.confianza_umbral - 5)
-        analisis["ajustes_aplicados"].append(f"Umbral bajado a {st.session_state.confianza_umbral}% (win rate alto)")
-    
-    # Ajuste 2: BTC vs ETH
+        analisis["ajustes_aplicados"].append(f"Umbral bajado a {st.session_state.confianza_umbral}%")
     for sym, stats in simbolos.items():
         total_sym = stats["wins"] + stats["losses"]
         if total_sym >= 2:
@@ -370,16 +519,13 @@ def analizar_fase_aprendizaje():
                 analisis["ajustes_aplicados"].append(f"{sym} rinde mal ({wr_sym:.0f}% | ${stats['profit']:.2f})")
             elif wr_sym > 70:
                 analisis["ajustes_aplicados"].append(f"{sym} rinde bien ({wr_sym:.0f}% | ${stats['profit']:.2f})")
-    
-    # Ajuste 3: TP según profit promedio
     if profit_promedio > 0:
         st.session_state.take_profit = min(0.5, st.session_state.take_profit * 1.1)
-        analisis["ajustes_aplicados"].append(f"TP aumentado a {st.session_state.take_profit:.3f}% (profit ${profit_promedio:.2f})")
+        analisis["ajustes_aplicados"].append(f"TP aumentado a {st.session_state.take_profit:.3f}%")
     elif profit_promedio < 0:
         st.session_state.take_profit = max(0.01, st.session_state.take_profit * 0.9)
         st.session_state.stop_loss = max(0.5, st.session_state.stop_loss * 0.9)
-        analisis["ajustes_aplicados"].append(f"TP/SL reducidos (profit ${profit_promedio:.2f})")
-    
+        analisis["ajustes_aplicados"].append(f"TP/SL reducidos")
     return analisis
 
 # ==================== FIN PARTE 4 ====================
@@ -437,7 +583,7 @@ def get_onchain_volume(symbol="BTC"):
     return volume
 
 # ==================== FIN PARTE 5 ====================
-# ==================== PARTE 6: INDICADORES Y SEÑAL AVANZADA ====================
+# ==================== PARTE 6: INDICADORES Y HORARIOS ====================
 def compute_ema(prices, period):
     if len(prices) < period:
         return None
@@ -476,23 +622,21 @@ def calcular_probabilidad(confianza):
     return min(100, max(0, confianza * 2.5))
 
 def obtener_horario_operacion():
-    """Determina la calidad del horario actual (hora México)."""
     tz_mexico = timezone(timedelta(hours=-6))
     ahora = datetime.now(tz_mexico)
     hora = ahora.hour
     dia_semana = ahora.weekday()
-    
     if dia_semana >= 5:
-        return ("FIN DE SEMANA", "🛑", "Mercado con muy poca actividad. Evita operar.", False)
+        return ("FIN DE SEMANA", "🛑", "Mercado con muy poca actividad.", False)
     if 7 <= hora < 11:
-        return ("MEJOR HORARIO", "🔥", "Europa + USA activos. Mejores señales y liquidez.", True)
+        return ("MEJOR HORARIO", "🔥", "Europa + USA activos.", True)
     if (6 <= hora < 7) or (11 <= hora < 14):
-        return ("SESIÓN USA", "✅", "Sesión completa de EE.UU. Buen movimiento.", True)
+        return ("SESIÓN USA", "✅", "Sesión completa de EE.UU.", True)
     if 2 <= hora < 6:
-        return ("APERTURA EUROPA", "⚠️", "Europa abre: se define la tendencia del día.", True)
+        return ("APERTURA EUROPA", "⚠️", "Europa abre.", True)
     if hora >= 20 or hora < 2:
-        return ("SESIÓN ASIA", "🚫", "Solo Asia: poco movimiento. EVITAR operar.", False)
-    return ("TARDE / TRANSICIÓN", "🟡", "Entre USA y Asia. Movimiento moderado.", False)
+        return ("SESIÓN ASIA", "🚫", "Solo Asia. EVITAR operar.", False)
+    return ("TARDE / TRANSICIÓN", "🟡", "Entre USA y Asia.", False)
 
 def analisis_avanzado(sym, precio, fng_value):
     trend_data = st.session_state.historical_trend.get(sym, {})
@@ -502,10 +646,8 @@ def analisis_avanzado(sym, precio, fng_value):
     hist = list(st.session_state.price_history.get(sym, []))
     if len(hist) < 30:
         return "HOLD", 0, "Datos insuficientes", {}
-    
     rsi = compute_rsi(hist, 14)
     rsi_pond = 20 if rsi <= 30 else -20 if rsi >= 70 else (50 - rsi) * 0.5
-    
     ema_f = compute_ema(hist, st.session_state.ema_fast)
     ema_s = compute_ema(hist, st.session_state.ema_slow)
     ema_pond = 0
@@ -516,14 +658,12 @@ def analisis_avanzado(sym, precio, fng_value):
             ema_prev = compute_ema(hist[:-1], st.session_state.ema_fast)
             if ema_prev and ema_f > ema_prev * 1.001: ema_pond += 5
             elif ema_prev and ema_f < ema_prev * 0.999: ema_pond -= 5
-    
     bb_pond = 0
     if len(hist) >= 20:
         sma_20 = sum(hist[-20:]) / 20
         std_20 = statistics.stdev(hist[-20:]) if len(hist[-20:]) > 1 else 0
         if precio > sma_20 + 2*std_20: bb_pond = -15
         elif precio < sma_20 - 2*std_20: bb_pond = 15
-    
     macd_pond = 0
     if len(hist) >= 26:
         ema_12 = compute_ema(hist, 12)
@@ -540,12 +680,10 @@ def analisis_avanzado(sym, precio, fng_value):
                     signal = sum(macd_hist[-9:]) / 9
                     if macd > signal: macd_pond = 10
                     elif macd < signal: macd_pond = -10
-    
     vol_pond = 10 if volumen_onchain > 2.0 else -5 if volumen_onchain < 0.5 else 0
     tend_pond = 15 if tendencia_30d == "ALCISTA" else -15 if tendencia_30d == "BAJISTA" else 0
     if abs(cambio_30d) > 20: tend_pond *= 1.5
     fng_pond = 10 if fng_value <= 20 else -10 if fng_value >= 80 else (50 - fng_value) * 0.2
-    
     atr_pond = 0
     if len(hist) >= 14:
         atr = calcular_atr(hist, 14)
@@ -553,10 +691,8 @@ def analisis_avanzado(sym, precio, fng_value):
             vol_pct = (atr / precio) * 100
             if vol_pct > 3: atr_pond = -5
             elif vol_pct < 1: atr_pond = 5
-    
     puntuacion = rsi_pond + ema_pond + bb_pond + macd_pond + vol_pond + tend_pond + fng_pond + atr_pond
     confianza = abs(puntuacion)
-    
     if confianza < 20:
         return "HOLD", confianza, f"Puntuación baja ({confianza:.1f})", {}
     elif puntuacion > 0:
@@ -611,7 +747,10 @@ required_vars = {
     "intervalo_actualizacion": 5,
     "inicio_fase": datetime.now().isoformat(),
     "fase_actual": "operando",
-    "analisis_anterior": {}
+    "analisis_anterior": {},
+    "monto_dia": 0.0,
+    "orden_pendiente_BTC": None,
+    "orden_pendiente_ETH": None
 }
 
 for var_name, default_value in required_vars.items():
@@ -624,23 +763,24 @@ if "data_loaded" not in st.session_state:
 
 st.title("🧠 Scalping Extremo + Volumen + Tendencia 30d")
 
+if MODO_REAL:
+    st.error("🔴 **MODO REAL ACTIVADO** — Órdenes Maker con dinero real")
+else:
+    st.info("🟢 **MODO SIMULACIÓN** — Sin dinero real")
+
 # ===== SIDEBAR =====
 st.sidebar.header("⚙️ Configuración Principal")
 st.session_state.umbral_caida = st.sidebar.number_input("Caída para comprar (%)", min_value=0.001, max_value=50.0, step=0.001, value=float(st.session_state.umbral_caida))
 st.session_state.take_profit = st.sidebar.number_input("Take Profit (%)", min_value=0.01, max_value=50.0, step=0.01, value=float(st.session_state.take_profit))
 st.session_state.stop_loss = st.sidebar.number_input("Stop Loss (%)", min_value=0.5, max_value=20.0, value=float(st.session_state.stop_loss), step=0.5)
 st.session_state.trailing = st.sidebar.number_input("Trailing Stop (%)", min_value=0.2, max_value=5.0, value=float(st.session_state.trailing), step=0.1)
-st.session_state.umbral_indicadores_activacion = st.sidebar.number_input("Activar indicadores a partir de ±(%)", min_value=0.1, max_value=20.0, step=0.1, value=float(st.session_state.umbral_indicadores_activacion))
+st.session_state.umbral_indicadores_activacion = st.sidebar.number_input("Activar indicadores ±(%)", min_value=0.1, max_value=20.0, step=0.1, value=float(st.session_state.umbral_indicadores_activacion))
 
 st.sidebar.header("🧠 Modo Aprendizaje")
 st.session_state.modo_aprendizaje = st.sidebar.checkbox("✅ Modo aprendizaje activado", value=st.session_state.modo_aprendizaje)
 
 st.sidebar.header("🎯 Probabilidad mínima")
-st.session_state.confianza_umbral = st.sidebar.slider(
-    "Probabilidad mínima para operar (%)",
-    min_value=20, max_value=95, value=st.session_state.confianza_umbral, step=5,
-    help="20% = 50% de probabilidad. 40% = 100% de probabilidad."
-)
+st.session_state.confianza_umbral = st.sidebar.slider("Probabilidad mínima para operar (%)", min_value=20, max_value=95, value=st.session_state.confianza_umbral, step=5)
 
 st.sidebar.header("🧠 Indicadores")
 st.session_state.rsi_os = st.sidebar.number_input("RSI sobreventa", 20, 40, int(st.session_state.rsi_os), 1)
@@ -661,7 +801,7 @@ if st.sidebar.button("Reiniciar simulación"):
     save_data()
     st.rerun()
 if st.sidebar.button("📢 Prueba Telegram"):
-    send_telegram("🧠 Bot Scalping Extremo activo")
+    send_telegram("🧠 Bot activo")
     st.success("Enviado")
 if st.sidebar.button("💾 Guardar datos ahora"):
     exito, mensaje = save_data()
@@ -669,6 +809,16 @@ if st.sidebar.button("💾 Guardar datos ahora"):
         st.sidebar.success("✅ Datos guardados")
     else:
         st.sidebar.error(f"❌ Error: {mensaje}")
+
+if MODO_REAL:
+    if st.sidebar.button("🔍 Ver saldo real en Bitso"):
+        balance = get_bitso_balance()
+        if balance:
+            st.sidebar.success("💰 Saldo en Bitso:")
+            for cur, vals in balance.items():
+                st.sidebar.write(f"**{cur.upper()}**: {vals['available']:.8f}")
+        else:
+            st.sidebar.error("❌ No se pudo consultar el saldo")
 
 # ===== CONTROL MANUAL =====
 st.sidebar.markdown("---")
@@ -683,7 +833,15 @@ if st.sidebar.button("💸 Vender TODO"):
             if st.session_state.positions.get("BTC", 0) > 0:
                 qty = st.session_state.positions["BTC"]
                 entry = st.session_state.entry_price["BTC"]
-                net = qty * btc_price * 0.999
+                precio_maker_venta = btc_price * 1.002
+                if MODO_REAL:
+                    order = place_bitso_order("btc_mxn", "sell", f"{qty:.8f}", f"{precio_maker_venta:.2f}")
+                    if not order or order.get("error"):
+                        st.sidebar.error(f"❌ Orden BTC: {order.get('error', 'desconocido')}")
+                        st.stop()
+                    send_telegram(f"⏳ VENTA MAKER BTC colocada a ${precio_maker_venta:,.0f}")
+                    st.stop()
+                net = qty * precio_maker_venta * 0.994
                 profit = net - (qty * entry)
                 st.session_state.balance += net
                 st.session_state.positions["BTC"] = 0
@@ -692,14 +850,23 @@ if st.sidebar.button("💸 Vender TODO"):
                 st.session_state.daily_trades += 1
                 resultado = "GANANCIA" if profit > 0 else "PÉRDIDA"
                 signo = "+" if profit > 0 else ""
-                msg = f"🔴 VENTA FORZADA BTC | Neto: ${net:.2f} | PROFIT: {signo}${profit:.2f} ({resultado})"
+                modo = "REAL" if MODO_REAL else "SIM"
+                msg = f"🔴 VENTA [MAKER-{modo}] BTC | Neto: ${net:.2f} | PROFIT: {signo}${profit:.2f} ({resultado})"
                 send_telegram(msg)
                 st.session_state.trades.append((datetime.now(), msg))
                 vendido = True
             if st.session_state.positions.get("ETH", 0) > 0:
                 qty = st.session_state.positions["ETH"]
                 entry = st.session_state.entry_price["ETH"]
-                net = qty * eth_price * 0.999
+                precio_maker_venta = eth_price * 1.002
+                if MODO_REAL:
+                    order = place_bitso_order("eth_mxn", "sell", f"{qty:.8f}", f"{precio_maker_venta:.2f}")
+                    if not order or order.get("error"):
+                        st.sidebar.error(f"❌ Orden ETH: {order.get('error', 'desconocido')}")
+                        st.stop()
+                    send_telegram(f"⏳ VENTA MAKER ETH colocada a ${precio_maker_venta:,.0f}")
+                    st.stop()
+                net = qty * precio_maker_venta * 0.994
                 profit = net - (qty * entry)
                 st.session_state.balance += net
                 st.session_state.positions["ETH"] = 0
@@ -708,7 +875,8 @@ if st.sidebar.button("💸 Vender TODO"):
                 st.session_state.daily_trades += 1
                 resultado = "GANANCIA" if profit > 0 else "PÉRDIDA"
                 signo = "+" if profit > 0 else ""
-                msg = f"🔴 VENTA FORZADA ETH | Neto: ${net:.2f} | PROFIT: {signo}${profit:.2f} ({resultado})"
+                modo = "REAL" if MODO_REAL else "SIM"
+                msg = f"🔴 VENTA [MAKER-{modo}] ETH | Neto: ${net:.2f} | PROFIT: {signo}${profit:.2f} ({resultado})"
                 send_telegram(msg)
                 st.session_state.trades.append((datetime.now(), msg))
                 vendido = True
@@ -720,13 +888,16 @@ if st.sidebar.button("💸 Vender TODO"):
         st.sidebar.error(f"❌ {e}")
 
 def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
-    """Función de compra CORREGIDA. Convierte confianza a probabilidad."""
+    """Compra con orden LÍMITE (Maker) para pagar 0.60% de comisión."""
     prob = calcular_probabilidad(confianza)
     volumen = get_onchain_volume(sym)
     if volumen and volumen < 0.5:
         st.sidebar.warning(f"⚠️ Volumen bajo ({volumen:.2f}B)")
         return
-    
+    orden_key = f"orden_pendiente_{sym}"
+    if st.session_state.get(orden_key):
+        st.sidebar.info(f"⏳ Ya hay orden pendiente para {sym}")
+        return
     if prob >= 100:
         monto, cant = 100.0, 4
     elif prob >= 75:
@@ -736,32 +907,69 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
     else:
         st.sidebar.warning(f"⚠️ Probabilidad baja ({prob:.1f}%)")
         return
-    
-    precio_obj = precio * 0.995
+    if monto > MONTO_MAXIMO_POR_OPERACION:
+        st.sidebar.warning(f"⚠️ Monto excede límite por operación")
+        return
+    monto_hoy = st.session_state.get("monto_dia", 0)
+    if monto_hoy + (monto * cant) > MONTO_MAXIMO_DIARIO:
+        st.sidebar.warning(f"⚠️ Excede límite diario")
+        return
+    # ⭐ PRECIO MAKER: 0.2% por debajo del mercado
+    precio_maker = precio * 0.998
     if st.session_state.positions.get(sym, 0) > 0:
         return
-    
+    if MODO_REAL:
+        balance_real = get_bitso_balance()
+        if balance_real:
+            mxn_disponible = balance_real.get("mxn", {}).get("available", 0)
+            if mxn_disponible < monto * cant:
+                st.sidebar.warning(f"⚠️ Saldo insuficiente: ${mxn_disponible:.2f}")
+                return
+    # MODO_REAL: colocar orden límite y guardarla como pendiente
+    if MODO_REAL:
+        book = "btc_mxn" if sym == "BTC" else "eth_mxn"
+        qty = (monto * 0.999) / precio_maker
+        order = place_bitso_order(book, "buy", f"{qty:.8f}", f"{precio_maker:.2f}")
+        if not order or order.get("error"):
+            st.sidebar.error(f"❌ Orden Maker: {order.get('error', 'desconocido')}")
+            return
+        st.session_state[orden_key] = {
+            "oid": order.get("oid"),
+            "side": "buy",
+            "sym": sym,
+            "price": precio_maker,
+            "qty": qty,
+            "monto": monto,
+            "cant": cant,
+            "timestamp": time.time(),
+            "confianza": confianza
+        }
+        st.sidebar.info(f"⏳ Orden Maker colocada: {qty:.8f} {sym} a ${precio_maker:,.0f}")
+        send_telegram(f"⏳ **ORDEN MAKER {sym}**\nPrecio: ${precio_maker:,.0f}\nEsperando ejecución (comisión 0.60%)")
+        return
+    # MODO_SIMULADO
     ejecutadas = 0
     if st.session_state.balance >= monto:
         if st.session_state.balance < cant * monto:
             cant = int(st.session_state.balance // monto)
         for i in range(cant):
             if st.session_state.balance >= monto:
-                com = monto * 0.001
-                qty = (monto - com) / precio_obj
+                com = monto * 0.006  # 0.60% Maker
+                qty = (monto - com) / precio_maker
                 st.session_state.balance -= monto
                 st.session_state.positions[sym] += qty
                 if st.session_state.entry_price[sym] == 0:
-                    st.session_state.entry_price[sym] = precio_obj
-                st.session_state.highest_price[sym] = precio_obj
+                    st.session_state.entry_price[sym] = precio_maker
+                st.session_state.highest_price[sym] = precio_maker
                 st.session_state.daily_trades += 1
+                st.session_state.monto_dia = monto_hoy + monto
                 ejecutadas += 1
         if ejecutadas > 0:
             save_data()
-            msg = f"🟢 COMPRA {sym} | {ejecutadas}x${monto:.0f} | ${precio_obj:,.0f} | Prob: {prob:.1f}%"
+            msg = f"🟢 COMPRA [MAKER-SIM] {sym} | {ejecutadas}x${monto:.0f} | ${precio_maker:,.0f} | Prob: {prob:.1f}%"
             send_telegram(msg)
             st.session_state.trades.append((datetime.now(), msg))
-            st.sidebar.success(f"✅ {ejecutadas} compras de {sym}")
+            st.sidebar.success(f"✅ {ejecutadas} compras Maker simuladas")
             st.rerun()
 
 if st.sidebar.button("🟢 Comprar BTC AHORA"):
@@ -803,10 +1011,7 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
 # ==================== PARTE 9: BUCLE INFINITO ====================
 st.sidebar.markdown("---")
 st.sidebar.markdown("**⏱️ Intervalo de actualización**")
-intervalo = st.sidebar.slider(
-    "Actualizar cada (segundos)",
-    min_value=5, max_value=60, value=st.session_state.intervalo_actualizacion, step=5
-)
+intervalo = st.sidebar.slider("Actualizar cada (segundos)", min_value=5, max_value=60, value=st.session_state.intervalo_actualizacion, step=5)
 st.session_state.intervalo_actualizacion = intervalo
 
 st.sidebar.markdown("---")
@@ -815,7 +1020,6 @@ if st.sidebar.button("🔄 Actualizar datos ahora"):
     ejecutar_ciclo()
 
 def ejecutar_ciclo():
-    """Ciclo completo de análisis y operación."""
     btc = get_bitso_price("btc_mxn")
     eth = get_bitso_price("eth_mxn")
     if btc is None or eth is None:
@@ -832,12 +1036,10 @@ def ejecutar_ciclo():
         st.session_state.ref_price["ETH"] = eth
 
     st.session_state.cycle += 1
-    
     if st.session_state.cycle % 5 == 0:
         save_data()
 
     fng_value, fng_label = get_fear_greed()
-    
     cambio_btc = (btc - st.session_state.ref_price["BTC"]) / st.session_state.ref_price["BTC"] * 100
     cambio_eth = (eth - st.session_state.ref_price["ETH"]) / st.session_state.ref_price["ETH"] * 100
 
@@ -865,34 +1067,54 @@ def ejecutar_ciclo():
     prob_eth = calcular_probabilidad(conf_eth)
     prob_umbral = calcular_probabilidad(st.session_state.confianza_umbral)
 
-    # ===== HORARIO ACTUAL =====
     estado_horario, emoji_horario, desc_horario, es_buen_horario = obtener_horario_operacion()
 
-    # ===== CONTROL DE FASE DE APRENDIZAJE (2 DÍAS) =====
+    # ===== VERIFICAR ÓRDENES MAKER PENDIENTES =====
+    for sym_check in ["BTC", "ETH"]:
+        estado, datos = verificar_orden_pendiente(sym_check)
+        if estado == "ejecutada":
+            orden_key = f"orden_pendiente_{sym_check}"
+            orden_info = st.session_state.get(orden_key) or datos
+            if orden_info:
+                monto = orden_info.get("monto", 0)
+                precio_ej = orden_info.get("price", 0)
+                com = monto * 0.006
+                qty_real = (monto - com) / precio_ej
+                st.session_state.balance -= monto
+                st.session_state.positions[sym_check] += qty_real
+                if st.session_state.entry_price[sym_check] == 0:
+                    st.session_state.entry_price[sym_check] = precio_ej
+                st.session_state.highest_price[sym_check] = precio_ej
+                st.session_state.daily_trades += 1
+                st.session_state.monto_dia = st.session_state.get("monto_dia", 0) + monto
+                save_data()
+                msg = f"✅ ORDEN MAKER EJECUTADA {sym_check} | {qty_real:.8f} a ${precio_ej:,.0f} | Com: 0.60%"
+                send_telegram(msg)
+                st.session_state.trades.append((datetime.now(), msg))
+                st.sidebar.success(f"✅ Maker {sym_check} ejecutada")
+        elif estado == "cancelada":
+            st.sidebar.warning(f"⚠️ Orden Maker {sym_check} cancelada (timeout)")
+            send_telegram(f"⚠️ Orden Maker {sym_check} cancelada por timeout. Reintentando.")
+
+    # ===== FASE DE APRENDIZAJE =====
     ahora = datetime.now()
     try:
         inicio_fase = datetime.fromisoformat(st.session_state.inicio_fase)
     except:
         inicio_fase = ahora
         st.session_state.inicio_fase = ahora.isoformat()
-    
     horas_transcurridas = (ahora - inicio_fase).total_seconds() / 3600
     horas_restantes = max(0, 48 - horas_transcurridas)
-    
     if horas_transcurridas >= 48 and st.session_state.fase_actual == "operando":
         st.session_state.fase_actual = "analizando"
-        send_telegram("🧠 **FASE DE ANÁLISIS INICIADA**\n\nHan pasado 48h. El bot analizará sus operaciones.")
-    
+        send_telegram("🧠 **FASE DE ANÁLISIS INICIADA**")
     if st.session_state.fase_actual == "analizando":
         resultado = analizar_fase_aprendizaje()
-        
         if resultado.get("suficiente"):
             st.session_state.analisis_anterior = resultado
-            
             mejor_hora_str = f"{resultado['mejor_hora']}:00" if resultado['mejor_hora'] is not None else "N/A"
             peor_hora_str = f"{resultado['peor_hora']}:00" if resultado['peor_hora'] is not None else "N/A"
             profit_signo = "+" if resultado.get('profit_total', 0) >= 0 else ""
-            
             msg_analisis = (
                 f"📊 **ANÁLISIS DE FASE COMPLETADO**\n\n"
                 f"📈 Operaciones: {resultado['total_operaciones']}\n"
@@ -907,7 +1129,6 @@ def ejecutar_ciclo():
                 + "\n".join([f"• {a}" for a in resultado['ajustes_aplicados']])
             )
             send_telegram(msg_analisis)
-        
         st.session_state.inicio_fase = ahora.isoformat()
         st.session_state.fase_actual = "operando"
         st.session_state.trades = []
@@ -916,7 +1137,7 @@ def ejecutar_ciclo():
             "ETH": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []}
         }
         save_data()
-        send_telegram("🔄 **NUEVA FASE DE 2 DÍAS INICIADA**\nEl bot operará con los parámetros ajustados.")
+        send_telegram("🔄 **NUEVA FASE DE 2 DÍAS INICIADA**")
         st.rerun()
 
     # ===== TABLA =====
@@ -939,44 +1160,29 @@ def ejecutar_ciclo():
         ]
     })
 
-    # ===== HORARIO =====
     horario_texto = f"{emoji_horario} **{estado_horario}** → {desc_horario}"
     if es_buen_horario:
         horario_placeholder.success(horario_texto)
     else:
         horario_placeholder.warning(horario_texto)
 
-    # ===== FASE =====
     if st.session_state.fase_actual == "operando":
         fase_placeholder.info(f"📅 **FASE OPERATIVA** — Próximo análisis en {horas_restantes:.1f} horas")
     else:
         fase_placeholder.warning("🧠 **ANALIZANDO FASE**...")
 
-    # ===== ALERTA TELEGRAM CAMBIO DE SESIÓN =====
     if "ultimo_horario_alerta" not in st.session_state:
         st.session_state.ultimo_horario_alerta = None
-
     if st.session_state.ultimo_horario_alerta != estado_horario:
         tz_mexico = timezone(timedelta(hours=-6))
         hora_mx = datetime.now(tz_mexico).strftime('%H:%M')
         if es_buen_horario:
-            msg_horario = (
-                f"✅ **BUEN HORARIO PARA OPERAR**\n\n"
-                f"{emoji_horario} **{estado_horario}**\n"
-                f"{desc_horario}\n\n"
-                f"📍 Hora México: {hora_mx}"
-            )
+            msg_horario = f"✅ **BUEN HORARIO**\n\n{emoji_horario} **{estado_horario}**\n{desc_horario}\n\n📍 Hora México: {hora_mx}"
         else:
-            msg_horario = (
-                f"⚠️ **CAMBIO DE SESIÓN**\n\n"
-                f"{emoji_horario} **{estado_horario}**\n"
-                f"{desc_horario}\n\n"
-                f"📍 Hora México: {hora_mx}"
-            )
+            msg_horario = f"⚠️ **CAMBIO DE SESIÓN**\n\n{emoji_horario} **{estado_horario}**\n{desc_horario}\n\n📍 Hora México: {hora_mx}"
         send_telegram(msg_horario)
         st.session_state.ultimo_horario_alerta = estado_horario
 
-    # ===== INFO =====
     info_texto = (
         f"Ciclo: {st.session_state.cycle} | "
         f"Caída: {st.session_state.umbral_caida}% | "
@@ -988,7 +1194,6 @@ def ejecutar_ciclo():
     )
     info_placeholder.caption(info_texto)
 
-    # ===== CARTERA =====
     total_val = st.session_state.balance
     for s in ["BTC", "ETH"]:
         p = st.session_state.last_price.get(s, 0)
@@ -999,7 +1204,6 @@ def ejecutar_ciclo():
     total_placeholder.metric("Valor total", f"${total_val:,.2f}")
     ops_placeholder.metric("Ops hoy", st.session_state.daily_trades)
 
-    # ===== HISTORIAL =====
     historial_placeholder.subheader(f"📜 Historial (últimas 10 de {len(st.session_state.trades)})")
     if st.session_state.trades:
         txt = ""
@@ -1014,8 +1218,8 @@ def ejecutar_ciclo():
     if hoy != st.session_state.last_day:
         st.session_state.daily_trades = 0
         st.session_state.last_day = hoy
+        st.session_state.monto_dia = 0.0
 
-    # ===== APRENDIZAJE PARAMÉTRICO =====
     if st.session_state.cycle % 5 == 0 and st.session_state.modo_aprendizaje:
         for sym in ["BTC", "ETH"]:
             eval_rend = evaluar_rendimiento(sym)
@@ -1026,41 +1230,43 @@ def ejecutar_ciclo():
                 st.session_state.umbral_caida = max(0.001, st.session_state.umbral_caida * 0.8)
                 st.session_state.take_profit = max(0.01, st.session_state.take_profit * 0.9)
 
-    # ===== OPERACIONES (CORREGIDO) =====
     for sym, precio, senal, conf_senal, razon in [
         ("BTC", btc, senal_btc, conf_btc, razon_btc),
         ("ETH", eth, senal_eth, conf_eth, razon_eth)
     ]:
         tendencia_30d = st.session_state.historical_trend.get(sym, {}).get("tendencia", "NEUTRAL")
-        
         prob_senal = calcular_probabilidad(conf_senal)
         prob_umbral_val = st.session_state.confianza_umbral
-        
         st.session_state.ultima_senal = {
             "sym": sym, "accion": senal, "razon": razon,
             "confianza_senal": conf_senal, "precio": precio,
             "timestamp": datetime.now().strftime("%H:%M:%S"),
             "tendencia_30d": tendencia_30d, "umbral": prob_umbral_val
         }
-        
-        if (not st.session_state.modo_solo_senales 
-            and es_buen_horario 
+        if (not st.session_state.modo_solo_senales
+            and es_buen_horario
             and st.session_state.fase_actual == "operando"):
-            
-            # ✅ CORREGIDO: Compara probabilidad con probabilidad
             if senal == "BUY" and prob_senal > prob_umbral_val:
                 if st.session_state.positions.get(sym, 0) == 0:
                     if tendencia_30d != "BAJISTA":
                         volumen = onchain_vol_btc if sym == "BTC" else onchain_vol_eth
                         if volumen is None or volumen >= 0.5:
                             ejecutar_compra_profesional(sym, precio, conf_senal, razon, tendencia_30d)
-            
             elif senal == "SELL" and prob_senal > prob_umbral_val:
                 if st.session_state.positions.get(sym, 0) > 0:
                     if tendencia_30d != "ALCISTA":
                         qty = st.session_state.positions[sym]
                         entry = st.session_state.entry_price[sym]
-                        net = qty * precio * 0.999
+                        precio_maker_venta = precio * 1.002
+                        if MODO_REAL:
+                            book = "btc_mxn" if sym == "BTC" else "eth_mxn"
+                            order = place_bitso_order(book, "sell", f"{qty:.8f}", f"{precio_maker_venta:.2f}")
+                            if not order or order.get("error"):
+                                st.sidebar.error(f"❌ Venta Maker: {order.get('error', 'desconocido')}")
+                                continue
+                            send_telegram(f"⏳ **VENTA MAKER {sym}** a ${precio_maker_venta:,.0f}")
+                            continue
+                        net = qty * precio_maker_venta * 0.994
                         profit = net - (qty * entry)
                         st.session_state.balance += net
                         st.session_state.positions[sym] = 0
@@ -1069,13 +1275,11 @@ def ejecutar_ciclo():
                         st.session_state.daily_trades += 1
                         resultado = "GANANCIA" if profit > 0 else "PÉRDIDA"
                         signo = "+" if profit > 0 else ""
-                        msg = f"🔴 VENTA {sym} | Neto: ${net:.2f} | PROFIT: {signo}${profit:.2f} ({resultado}) | Prob: {prob_senal:.1f}%"
+                        msg = f"🔴 VENTA [MAKER-SIM] {sym} | Neto: ${net:.2f} | PROFIT: {signo}${profit:.2f} ({resultado})"
                         send_telegram(msg)
                         st.session_state.trades.append((datetime.now(), msg))
                         save_data()
-                        st.sidebar.success(f"✅ Venta {sym} | {resultado}: ${profit:.2f}")
-        
-        # Alertas Telegram
+                        st.sidebar.success(f"✅ Venta Maker {sym}")
         if prob_senal > prob_umbral_val and senal != "HOLD":
             if not hasattr(st.session_state, f'ultima_senal_{sym}'):
                 setattr(st.session_state, f'ultima_senal_{sym}', 0)
@@ -1085,7 +1289,6 @@ def ejecutar_ciclo():
                 send_signal_telegram_buttons(sym, senal, precio, razon, conf_senal, volumen_onchain, cambio_30d, tendencia_30d)
                 setattr(st.session_state, f'ultima_senal_{sym}', st.session_state.cycle)
 
-    # ===== ÚLTIMA SEÑAL =====
     if hasattr(st.session_state, 'ultima_senal'):
         s = st.session_state.ultima_senal
         prob = calcular_probabilidad(s.get('confianza_senal', 0))
@@ -1094,14 +1297,18 @@ def ejecutar_ciclo():
             f"Razón: {s['razon']} | Tend.30d: {s.get('tendencia_30d', 'N/A')}"
         )
 
-    estado_placeholder.info(
+    estado_texto = (
         f"🔹 Indicadores: BTC={st.session_state.indicadores_activados.get('BTC')} | "
         f"ETH={st.session_state.indicadores_activados.get('ETH')} | "
         f"Modo: {'🔇 Solo señales' if st.session_state.modo_solo_senales else '✅ Auto'} | "
         f"Fase: {st.session_state.fase_actual}"
     )
+    if st.session_state.get("orden_pendiente_BTC"):
+        estado_texto += " | ⏳ Orden BTC pendiente"
+    if st.session_state.get("orden_pendiente_ETH"):
+        estado_texto += " | ⏳ Orden ETH pendiente"
+    estado_placeholder.info(estado_texto)
 
-# ===== PRIMER CICLO + BUCLE INFINITO =====
 ejecutar_ciclo()
 
 while True:
