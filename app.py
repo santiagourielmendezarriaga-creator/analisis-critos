@@ -1025,11 +1025,6 @@ st.sidebar.markdown("**⏱️ Intervalo de actualización**")
 intervalo = st.sidebar.slider("Actualizar cada (segundos)", min_value=5, max_value=60, value=st.session_state.intervalo_actualizacion, step=5)
 st.session_state.intervalo_actualizacion = intervalo
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("**🔄 Actualización**")
-if st.sidebar.button("🔄 Actualizar datos ahora"):
-    ejecutar_ciclo()
-
 def ejecutar_ciclo():
     btc = get_bitso_price("btc_mxn")
     eth = get_bitso_price("eth_mxn")
@@ -1320,9 +1315,16 @@ def ejecutar_ciclo():
         estado_texto += " | ⏳ Orden ETH pendiente"
     estado_placeholder.info(estado_texto)
 
-# ===== PRIMER CICLO + BUCLE INFINITO =====
+# ⭐ FIX: BOTÓN DESPUÉS DE LA DEFINICIÓN
+st.sidebar.markdown("---")
+st.sidebar.markdown("**🔄 Actualización**")
+if st.sidebar.button("🔄 Actualizar datos ahora"):
+    ejecutar_ciclo()
+
+# ⭐ FIX: PRIMER CICLO AL FINAL
 ejecutar_ciclo()
 
+# ⭐ FIX: BUCLE INFINITO
 while True:
     time.sleep(st.session_state.intervalo_actualizacion)
     ejecutar_ciclo()
