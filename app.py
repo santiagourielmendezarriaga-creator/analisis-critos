@@ -56,7 +56,8 @@ def save_data():
             "intervalo_actualizacion": st.session_state.intervalo_actualizacion,
             "inicio_fase": st.session_state.inicio_fase,
             "fase_actual": st.session_state.fase_actual,
-            "analisis_anterior": st.session_state.analisis_anterior
+            "analisis_anterior": st.session_state.analisis_anterior,
+            "operar_24_7": st.session_state.get("operar_24_7", False)
         }
         url = f"{FIREBASE_URL}/bot.json"
         resp = requests.put(url, json=data, timeout=10)
@@ -129,6 +130,7 @@ def init_new_user_state():
     st.session_state.analisis_anterior = {}
     st.session_state.orden_pendiente_BTC = None
     st.session_state.orden_pendiente_ETH = None
+    st.session_state.operar_24_7 = False
 
 def restore_from_file():
     data = load_data()
@@ -156,7 +158,6 @@ def restore_from_file():
         st.session_state.cycle = data.get("cycle", 0)
         st.session_state.umbral_caida = data.get("umbral_caida", 0.005)
         st.session_state.stop_loss = data.get("stop_loss", 1.5)
-        # ⭐ FIX: Asegurar que take_profit sea >= 0.5
         tp_guardado = data.get("take_profit", 2.0)
         st.session_state.take_profit = max(0.5, tp_guardado)
         st.session_state.trailing = data.get("trailing", 0.5)
@@ -183,13 +184,13 @@ def restore_from_file():
             "ETH": {"valor": None, "timestamp": 0}
         })
         st.session_state.historical_trend = data.get("historical_trend", {"BTC": {}, "ETH": {}})
-        # ⭐ FIX: Asegurar que confianza_umbral esté entre 50 y 95
         cu_guardado = data.get("confianza_umbral", 65)
         st.session_state.confianza_umbral = min(95, max(50, cu_guardado))
         st.session_state.intervalo_actualizacion = data.get("intervalo_actualizacion", 5)
         st.session_state.inicio_fase = data.get("inicio_fase", datetime.now().isoformat())
         st.session_state.fase_actual = data.get("fase_actual", "operando")
         st.session_state.analisis_anterior = data.get("analisis_anterior", {})
+        st.session_state.operar_24_7 = data.get("operar_24_7", False)
         ph = data.get("price_history", {"BTC": [], "ETH": []})
         st.session_state.price_history = {k: deque(v, maxlen=200) for k, v in ph.items()}
         st.session_state.orden_pendiente_BTC = None
@@ -751,14 +752,14 @@ required_vars = {
     "analisis_anterior": {},
     "monto_dia": 0.0,
     "orden_pendiente_BTC": None,
-    "orden_pendiente_ETH": None
+    "orden_pendiente_ETH": None,
+    "operar_24_7": False
 }
 
 for var_name, default_value in required_vars.items():
     if var_name not in st.session_state:
         st.session_state[var_name] = default_value
 
-# ⭐ FIX: Sanitizar valores antes de usarlos en widgets
 st.session_state.take_profit = max(0.5, float(st.session_state.get("take_profit", 2.0)))
 st.session_state.confianza_umbral = min(95, max(50, int(st.session_state.get("confianza_umbral", 65))))
 
@@ -777,7 +778,6 @@ else:
 st.sidebar.header("⚙️ Configuración Principal")
 st.session_state.umbral_caida = st.sidebar.number_input("Caída para comprar (%)", min_value=0.001, max_value=50.0, step=0.001, value=float(st.session_state.umbral_caida))
 
-# ⭐ FIX: take_profit con valor seguro
 tp_valor_seguro = max(0.5, float(st.session_state.take_profit))
 st.session_state.take_profit = st.sidebar.number_input("Take Profit (%)", min_value=0.5, max_value=50.0, step=0.1, value=tp_valor_seguro)
 
@@ -789,12 +789,19 @@ st.sidebar.header("🧠 Modo Aprendizaje")
 st.session_state.modo_aprendizaje = st.sidebar.checkbox("✅ Modo aprendizaje activado", value=st.session_state.modo_aprendizaje)
 
 st.sidebar.header("🎯 Probabilidad mínima")
-# ⭐ FIX: confianza_umbral con valor seguro
 cu_valor_seguro = min(95, max(50, int(st.session_state.confianza_umbral)))
 st.session_state.confianza_umbral = st.sidebar.slider(
     "Probabilidad mínima para operar (%)",
     min_value=50, max_value=95, value=cu_valor_seguro, step=5,
     help="50% = señales débiles | 65% = balance | 80%+ = solo señales muy fuertes"
+)
+
+# ⭐ NUEVO: CHECKBOX 24/7
+st.sidebar.header("🌍 Horario de operación")
+st.session_state.operar_24_7 = st.sidebar.checkbox(
+    "🔥 Operar 24/7 (sin restricción de horario)",
+    value=st.session_state.operar_24_7,
+    help="Si lo activas, el bot operará a cualquier hora. Solo recomendado si el análisis dice que hay horas rentables fuera del horario habitual."
 )
 
 st.sidebar.header("🧠 Indicadores")
