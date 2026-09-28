@@ -875,7 +875,7 @@ st.sidebar.header("🌍 Horario de operación")
 st.session_state.operar_24_7 = st.sidebar.checkbox(
     "🔥 Operar 24/7 (sin restricción de horario)",
     value=st.session_state.operar_24_7,
-    help="Si lo activas, el bot operará a cualquier hora. Solo recomendado si el análisis dice que hay horas rentables fuera del horario habitual."
+    help="Si lo activas, el bot operará a cualquier hora."
 )
 
 st.sidebar.header("🧠 Indicadores")
@@ -1044,6 +1044,12 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
     if st.session_state.get(orden_key):
         st.sidebar.info(f"⏳ Ya hay orden pendiente para {sym}")
         return
+    
+    # ⭐ FIX: Bandera anti-duplicados por ciclo
+    compra_key = f"ultima_compra_{sym}"
+    if st.session_state.get(compra_key) == st.session_state.cycle:
+        return
+    
     if prob >= 100:
         monto, cant = 100.0, 4
     elif prob >= 75:
@@ -1088,9 +1094,12 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
             "timestamp": time.time(),
             "confianza": confianza
         }
+        st.session_state[compra_key] = st.session_state.cycle
         st.sidebar.info(f"⏳ Orden Maker colocada: {qty:.8f} {sym} a ${precio_maker:,.0f}")
         send_telegram(f"⏳ **ORDEN MAKER {sym}**\nPrecio: ${precio_maker:,.0f}\nEsperando ejecución (comisión 0.60%)")
         return
+    
+    # Modo simulado
     ejecutadas = 0
     if st.session_state.balance >= monto:
         if st.session_state.balance < cant * monto:
@@ -1108,21 +1117,26 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
                 st.session_state.monto_dia = monto_hoy + monto
                 ejecutadas += 1
         if ejecutadas > 0:
+            # ⭐ Marcar ciclo ANTES de enviar
+            st.session_state[compra_key] = st.session_state.cycle
             save_data()
             msg = f"🟢 COMPRA [MAKER-SIM] {sym} | {ejecutadas}x${monto:.0f} | ${precio_maker:,.0f} | Prob: {prob:.1f}%"
             send_telegram(msg)
             st.session_state.trades.append((datetime.now(), msg))
-            st.sidebar.success(f"✅ {ejecutadas} compras Maker simuladas")
-            st.rerun()
+            st.sidebar.success(f"✅ {ejecutadas} compras Maker simuladas de {sym}")
+            # ⭐ NO hacer st.rerun() para evitar duplicados
 
 if st.sidebar.button("🟢 Comprar BTC AHORA"):
     precio = get_bitso_price("btc_mxn")
     if precio and st.session_state.positions.get("BTC", 0) == 0:
+        # Reset bandera para forzar la compra manual
+        st.session_state["ultima_compra_BTC"] = -1
         ejecutar_compra_profesional("BTC", precio, 30, "Manual", "NEUTRAL")
 
 if st.sidebar.button("🟢 Comprar ETH AHORA"):
     precio = get_bitso_price("eth_mxn")
     if precio and st.session_state.positions.get("ETH", 0) == 0:
+        st.session_state["ultima_compra_ETH"] = -1
         ejecutar_compra_profesional("ETH", precio, 30, "Manual", "NEUTRAL")
 
 # ==================== FIN PARTE 7 ====================
