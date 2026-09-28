@@ -156,7 +156,9 @@ def restore_from_file():
         st.session_state.cycle = data.get("cycle", 0)
         st.session_state.umbral_caida = data.get("umbral_caida", 0.005)
         st.session_state.stop_loss = data.get("stop_loss", 1.5)
-        st.session_state.take_profit = data.get("take_profit", 2.0)
+        # ⭐ FIX: Asegurar que take_profit sea >= 0.5
+        tp_guardado = data.get("take_profit", 2.0)
+        st.session_state.take_profit = max(0.5, tp_guardado)
         st.session_state.trailing = data.get("trailing", 0.5)
         st.session_state.umbral_indicadores_activacion = data.get("umbral_indicadores_activacion", 0.5)
         st.session_state.expert_score = data.get("expert_score", 30)
@@ -181,7 +183,9 @@ def restore_from_file():
             "ETH": {"valor": None, "timestamp": 0}
         })
         st.session_state.historical_trend = data.get("historical_trend", {"BTC": {}, "ETH": {}})
-        st.session_state.confianza_umbral = data.get("confianza_umbral", 65)
+        # ⭐ FIX: Asegurar que confianza_umbral esté entre 50 y 95
+        cu_guardado = data.get("confianza_umbral", 65)
+        st.session_state.confianza_umbral = min(95, max(50, cu_guardado))
         st.session_state.intervalo_actualizacion = data.get("intervalo_actualizacion", 5)
         st.session_state.inicio_fase = data.get("inicio_fase", datetime.now().isoformat())
         st.session_state.fase_actual = data.get("fase_actual", "operando")
@@ -754,6 +758,10 @@ for var_name, default_value in required_vars.items():
     if var_name not in st.session_state:
         st.session_state[var_name] = default_value
 
+# ⭐ FIX: Sanitizar valores antes de usarlos en widgets
+st.session_state.take_profit = max(0.5, float(st.session_state.get("take_profit", 2.0)))
+st.session_state.confianza_umbral = min(95, max(50, int(st.session_state.get("confianza_umbral", 65))))
+
 if "data_loaded" not in st.session_state:
     restore_from_file()
     st.session_state.data_loaded = True
@@ -768,7 +776,11 @@ else:
 # ===== SIDEBAR =====
 st.sidebar.header("⚙️ Configuración Principal")
 st.session_state.umbral_caida = st.sidebar.number_input("Caída para comprar (%)", min_value=0.001, max_value=50.0, step=0.001, value=float(st.session_state.umbral_caida))
-st.session_state.take_profit = st.sidebar.number_input("Take Profit (%)", min_value=0.5, max_value=50.0, step=0.1, value=float(st.session_state.take_profit))
+
+# ⭐ FIX: take_profit con valor seguro
+tp_valor_seguro = max(0.5, float(st.session_state.take_profit))
+st.session_state.take_profit = st.sidebar.number_input("Take Profit (%)", min_value=0.5, max_value=50.0, step=0.1, value=tp_valor_seguro)
+
 st.session_state.stop_loss = st.sidebar.number_input("Stop Loss (%)", min_value=0.5, max_value=20.0, value=float(st.session_state.stop_loss), step=0.5)
 st.session_state.trailing = st.sidebar.number_input("Trailing Stop (%)", min_value=0.2, max_value=5.0, value=float(st.session_state.trailing), step=0.1)
 st.session_state.umbral_indicadores_activacion = st.sidebar.number_input("Activar indicadores ±(%)", min_value=0.1, max_value=20.0, step=0.1, value=float(st.session_state.umbral_indicadores_activacion))
@@ -777,9 +789,11 @@ st.sidebar.header("🧠 Modo Aprendizaje")
 st.session_state.modo_aprendizaje = st.sidebar.checkbox("✅ Modo aprendizaje activado", value=st.session_state.modo_aprendizaje)
 
 st.sidebar.header("🎯 Probabilidad mínima")
+# ⭐ FIX: confianza_umbral con valor seguro
+cu_valor_seguro = min(95, max(50, int(st.session_state.confianza_umbral)))
 st.session_state.confianza_umbral = st.sidebar.slider(
     "Probabilidad mínima para operar (%)",
-    min_value=50, max_value=95, value=st.session_state.confianza_umbral, step=5,
+    min_value=50, max_value=95, value=cu_valor_seguro, step=5,
     help="50% = señales débiles | 65% = balance | 80%+ = solo señales muy fuertes"
 )
 
