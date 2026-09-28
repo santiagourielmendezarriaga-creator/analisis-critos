@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from collections import deque
 
 # ==================== FIN PARTE 1 ====================
-# ==================== PARTE 2: PERSISTENCIA EN FIREBASE ====================
+# ==================== PARTE 2: PERSISTENCIA EN FIREBASE + BACKUPS ====================
 FIREBASE_URL = "https://bot-cc6c4-default-rtdb.firebaseio.com"
 
 def save_data():
@@ -199,6 +199,81 @@ def restore_from_file():
     except Exception as e:
         print(f"Error al restaurar: {e}")
         init_new_user_state()
+
+# ==================== FUNCIONES DE BACKUP ====================
+def crear_backup():
+    """Crea un backup del estado actual en Firebase con timestamp."""
+    try:
+        url = f"{FIREBASE_URL}/bot.json"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return None, "No hay datos para respaldar"
+        current_data = resp.json()
+        if not current_data or "balance" not in current_data:
+            return None, "Datos incompletos"
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        backup_key = f"backup_{timestamp}"
+        backup_url = f"{FIREBASE_URL}/backups/{backup_key}.json"
+        backup_data = {
+            "timestamp": timestamp,
+            "cycle": current_data.get("cycle", 0),
+            "balance": current_data.get("balance", 0),
+            "positions": current_data.get("positions", {}),
+            "trades_count": len(current_data.get("trades", [])),
+            "data": current_data
+        }
+        resp2 = requests.put(backup_url, json=backup_data, timeout=15)
+        if resp2.status_code == 200:
+            print(f"💾 Backup creado: {backup_key}")
+            return backup_key, "Backup creado exitosamente"
+        return None, "Error al crear backup en Firebase"
+    except Exception as e:
+        print(f"Error creando backup: {e}")
+        return None, str(e)
+
+def listar_backups():
+    """Lista todos los backups disponibles (más recientes primero)."""
+    try:
+        url = f"{FIREBASE_URL}/backups.json"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data:
+                return sorted(data.keys(), reverse=True)
+        return []
+    except Exception as e:
+        print(f"Error listando backups: {e}")
+        return []
+
+def restaurar_backup(backup_key):
+    """Restaura un backup específico al nodo principal."""
+    try:
+        url = f"{FIREBASE_URL}/backups/{backup_key}.json"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and "data" in data:
+                bot_url = f"{FIREBASE_URL}/bot.json"
+                resp2 = requests.put(bot_url, json=data["data"], timeout=15)
+                if resp2.status_code == 200:
+                    print(f"✅ Backup {backup_key} restaurado")
+                    return True
+        return False
+    except Exception as e:
+        print(f"Error restaurando backup: {e}")
+        return False
+
+def limpiar_backups_viejos(max_backups=10):
+    """Mantiene solo los últimos N backups."""
+    try:
+        backups = listar_backups()
+        if len(backups) > max_backups:
+            for backup_old in backups[max_backups:]:
+                delete_url = f"{FIREBASE_URL}/backups/{backup_old}.json"
+                requests.delete(delete_url, timeout=10)
+                print(f"🗑️ Backup viejo eliminado: {backup_old}")
+    except Exception as e:
+        print(f"Error limpiando backups: {e}")
 
 # ==================== FIN PARTE 2 ====================
 # ==================== PARTE 3: TELEGRAM Y BITSO API ====================
@@ -796,7 +871,6 @@ st.session_state.confianza_umbral = st.sidebar.slider(
     help="50% = señales débiles | 65% = balance | 80%+ = solo señales muy fuertes"
 )
 
-# ⭐ NUEVO: CHECKBOX 24/7
 st.sidebar.header("🌍 Horario de operación")
 st.session_state.operar_24_7 = st.sidebar.checkbox(
     "🔥 Operar 24/7 (sin restricción de horario)",
@@ -819,9 +893,17 @@ total_placeholder = st.sidebar.empty()
 ops_placeholder = st.sidebar.empty()
 
 if st.sidebar.button("Reiniciar simulación"):
+    with st.spinner("💾 Creando backup..."):
+        backup_key, msg = crear_backup()
+        if backup_key:
+            st.sidebar.success(f"✅ Backup: {backup_key[:25]}...")
+            limpiar_backups_viejos(max_backups=10)
+        else:
+            st.sidebar.warning(f"⚠️ Sin backup: {msg}")
     init_new_user_state()
     save_data()
     st.rerun()
+
 if st.sidebar.button("📢 Prueba Telegram"):
     send_telegram("🧠 Bot activo")
     st.success("Enviado")
@@ -841,6 +923,49 @@ if MODO_REAL:
                 st.sidebar.write(f"**{cur.upper()}**: {vals['available']:.8f}")
         else:
             st.sidebar.error("❌ No se pudo consultar el saldo")
+
+# ===== GESTIÓN DE BACKUPS =====
+st.sidebar.markdown("---")
+with st.sidebar.expander("💾 Gestionar Backups"):
+    st.markdown("**Backups disponibles:**")
+    backups = listar_backups()
+    if not backups:
+        st.info("No hay backups guardados")
+    else:
+        st.write(f"Total: **{len(backups)}** backups")
+        backup_seleccionado = st.selectbox(
+            "Selecciona un backup:",
+            options=backups,
+            format_func=lambda x: x.replace("backup_", "").replace("_", " ")
+        )
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("📥 Restaurar", key="btn_restore"):
+                if restaurar_backup(backup_seleccionado):
+                    st.success(f"✅ Restaurado")
+                    st.rerun()
+                else:
+                    st.error("❌ Error")
+        with col2:
+            if st.button("🗑️ Eliminar", key="btn_delete"):
+                try:
+                    delete_url = f"{FIREBASE_URL}/backups/{backup_seleccionado}.json"
+                    resp = requests.delete(delete_url, timeout=10)
+                    if resp.status_code == 200:
+                        st.success(f"🗑️ Eliminado")
+                        st.rerun()
+                    else:
+                        st.error("❌ Error")
+                except Exception as e:
+                    st.error(f"❌ {e}")
+        if st.button("💾 Crear backup manual", key="btn_manual_backup"):
+            with st.spinner("Creando backup..."):
+                key, msg = crear_backup()
+                if key:
+                    st.success(f"✅ {key}")
+                    st.rerun()
+                else:
+                    st.error(f"❌ {msg}")
 
 # ===== CONTROL MANUAL =====
 st.sidebar.markdown("---")
