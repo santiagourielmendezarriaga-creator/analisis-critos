@@ -272,7 +272,7 @@ def limpiar_backups_viejos(max_backups=10):
         print(f"Error limpiando backups: {e}")
 
 # ==================== FIN PARTE 2 ====================
-# ==================== PARTE 3: TELEGRAM Y BITSO API (CON FIX /v3/) ====================
+# ==================== PARTE 3: TELEGRAM Y BITSO API ====================
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
 TELEGRAM_CHAT_ID = "5835990242"
 
@@ -284,7 +284,6 @@ def send_telegram(msg):
         pass
 
 # ===== CONFIGURACIÓN BITSO =====
-# ⭐ BASE_URL SIN /v3 (el /v3 va en cada path)
 BITSO_BASE_URL = "https://api.bitso.com"
 
 try:
@@ -300,10 +299,8 @@ except:
     MONTO_MAXIMO_POR_OPERACION = 50.0
     MONTO_MAXIMO_DIARIO = 100.0
 
-# ===== API PÚBLICA (precios) =====
 def get_bitso_price(book="btc_mxn"):
     try:
-        # ⭐ /v3/ticker/
         url = f"{BITSO_BASE_URL}/v3/ticker/?book={book}"
         resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
@@ -315,7 +312,6 @@ def get_bitso_price(book="btc_mxn"):
         pass
     return None
 
-# ===== AUTENTICACIÓN HMAC =====
 def _create_bitso_auth_header(method, path, json_payload=""):
     if not BITSO_API_KEY or not BITSO_API_SECRET:
         return None, None
@@ -329,12 +325,10 @@ def _create_bitso_auth_header(method, path, json_payload=""):
     auth_header = f"Bitso {BITSO_API_KEY}:{nonce}:{signature}"
     return auth_header, nonce
 
-# ===== ENDPOINTS PRIVADOS =====
 def get_bitso_balance():
     if not MODO_REAL:
         return None
     try:
-        # ⭐ /v3/balance/
         path = "/v3/balance/"
         auth_header, _ = _create_bitso_auth_header("GET", path)
         if not auth_header:
@@ -344,9 +338,10 @@ def get_bitso_balance():
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
-            if data.get("success"):
+            if isinstance(data, dict) and data.get("success"):
                 balances = {}
-                for b in data["payload"]["balances"]:
+                payload = data.get("payload", {})
+                for b in payload.get("balances", []):
                     if float(b["available"]) > 0:
                         balances[b["currency"]] = {
                             "available": float(b["available"]),
@@ -363,7 +358,6 @@ def place_bitso_order(book, side, amount_major, price):
         print("⚠️ MODO_REAL desactivado.")
         return None
     try:
-        # ⭐ /v3/orders/
         path = "/v3/orders/"
         payload = {
             "book": book,
@@ -383,12 +377,12 @@ def place_bitso_order(book, side, amount_major, price):
         url = BITSO_BASE_URL + path
         resp = requests.post(url, data=json_payload, headers=headers, timeout=15)
         data = resp.json()
-        if resp.status_code == 200 and data.get("success"):
-            order = data["payload"]
+        if resp.status_code == 200 and isinstance(data, dict) and data.get("success"):
+            order = data.get("payload", {})
             print(f"✅ Orden colocada: {order.get('oid')}")
             return order
         else:
-            error = data.get("error", {})
+            error = data.get("error", {}) if isinstance(data, dict) else {}
             error_msg = error.get("message", "Error desconocido")
             print(f"❌ Error al colocar orden: {error_msg}")
             return {"error": error_msg}
@@ -397,10 +391,10 @@ def place_bitso_order(book, side, amount_major, price):
         return {"error": str(e)}
 
 def get_bitso_order_status(oid):
+    """Consulta el estado de una orden por su ID. VERSIÓN ROBUSTA."""
     if not MODO_REAL:
         return None
     try:
-        # ⭐ /v3/orders/{oid}/
         path = f"/v3/orders/{oid}/"
         auth_header, _ = _create_bitso_auth_header("GET", path)
         if not auth_header:
@@ -408,10 +402,15 @@ def get_bitso_order_status(oid):
         headers = {"Authorization": auth_header}
         url = BITSO_BASE_URL + path
         resp = requests.get(url, headers=headers, timeout=10)
+        
         if resp.status_code == 200:
             data = resp.json()
-            if data.get("success"):
-                return data["payload"]
+            # ⭐ VALIDACIÓN: data debe ser dict y success debe ser True
+            if isinstance(data, dict) and data.get("success"):
+                payload = data.get("payload")
+                # ⭐ VALIDACIÓN: payload debe ser dict
+                if isinstance(payload, dict):
+                    return payload
         return None
     except Exception as e:
         print(f"Error consultando orden {oid}: {e}")
@@ -421,7 +420,6 @@ def cancel_bitso_order(oid):
     if not MODO_REAL:
         return False
     try:
-        # ⭐ /v3/orders/{oid}/
         path = f"/v3/orders/{oid}/"
         auth_header, _ = _create_bitso_auth_header("DELETE", path)
         if not auth_header:
@@ -431,7 +429,7 @@ def cancel_bitso_order(oid):
         resp = requests.delete(url, headers=headers, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
-            if data.get("success"):
+            if isinstance(data, dict) and data.get("success"):
                 print(f"✅ Orden {oid} cancelada")
                 return True
         return False
@@ -440,21 +438,40 @@ def cancel_bitso_order(oid):
         return False
 
 def verificar_orden_pendiente(sym):
+    """Verifica si hay una orden pendiente para `sym`. VERSIÓN ROBUSTA."""
     orden_key = f"orden_pendiente_{sym}"
     if orden_key not in st.session_state or not st.session_state[orden_key]:
         return "sin_orden", None
+    
     orden = st.session_state[orden_key]
+    
+    # ⭐ VALIDACIÓN: orden debe ser dict
+    if not isinstance(orden, dict):
+        st.session_state[orden_key] = None
+        return "sin_orden", None
+    
     oid = orden.get("oid")
     if not oid:
         st.session_state[orden_key] = None
         return "sin_orden", None
+    
     if not MODO_REAL:
         st.session_state[orden_key] = None
         return "ejecutada", orden
-    status = get_bitso_order_status(oid)
-    if not status:
+    
+    # ⭐ Consultar estado con try/except
+    try:
+        status = get_bitso_order_status(oid)
+    except Exception as e:
+        print(f"Error consultando orden {oid}: {e}")
         return "pendiente", orden
+    
+    # ⭐ VALIDACIÓN: status debe ser dict
+    if not isinstance(status, dict):
+        return "pendiente", orden
+    
     estado = status.get("status")
+    
     if estado in ["completed", "filled"]:
         st.session_state[orden_key] = None
         return "ejecutada", status
@@ -464,11 +481,15 @@ def verificar_orden_pendiente(sym):
     elif estado in ["open", "partially_filled"]:
         creada = orden.get("timestamp", time.time())
         if time.time() - creada > 600:
-            cancel_bitso_order(oid)
+            try:
+                cancel_bitso_order(oid)
+            except:
+                pass
             st.session_state[orden_key] = None
             return "cancelada", None
         return "pendiente", orden
     else:
+        # Estado desconocido → dejar pendiente
         return "pendiente", orden
 
 def get_fear_greed():
@@ -1310,7 +1331,7 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
         return False
 
 # ==================== FIN PARTE 8 ====================
-# ==================== PARTE 9: BUCLE INFINITO ====================
+# ==================== PARTE 9: BUCLE INFINITO CON PROTECCIÓN DE ERRORES ====================
 st.sidebar.markdown("---")
 st.sidebar.markdown("**⏱️ Intervalo de actualización**")
 intervalo = st.sidebar.slider("Actualizar cada (segundos)", min_value=5, max_value=60, value=st.session_state.intervalo_actualizacion, step=5)
@@ -1336,28 +1357,34 @@ def ejecutar_ciclo():
     if st.session_state.cycle % 5 == 0:
         save_data()
 
-    # Backup automático 24h
+    # ⭐ BACKUP AUTOMÁTICO cada 24h
     ahora_ts = time.time()
     if "ultimo_backup_auto" not in st.session_state:
         st.session_state.ultimo_backup_auto = ahora_ts
     horas_desde_backup = (ahora_ts - st.session_state.ultimo_backup_auto) / 3600
     if horas_desde_backup >= 24:
-        backup_key, msg = crear_backup()
-        if backup_key:
-            st.session_state.ultimo_backup_auto = ahora_ts
-            limpiar_backups_viejos(max_backups=10)
-            send_telegram(f"💾 **BACKUP AUTOMÁTICO (24h)**\n{backup_key}")
+        try:
+            backup_key, msg = crear_backup()
+            if backup_key:
+                st.session_state.ultimo_backup_auto = ahora_ts
+                limpiar_backups_viejos(max_backups=10)
+                send_telegram(f"💾 **BACKUP AUTOMÁTICO (24h)**\n{backup_key}")
+        except:
+            pass
     
-    # Backup automático 100 ops
+    # ⭐ BACKUP AUTOMÁTICO cada 100 operaciones
     if "ultimo_backup_trades" not in st.session_state:
         st.session_state.ultimo_backup_trades = 0
     trades_actuales = len(st.session_state.trades)
     if trades_actuales - st.session_state.ultimo_backup_trades >= 100:
-        backup_key, msg = crear_backup()
-        if backup_key:
-            st.session_state.ultimo_backup_trades = trades_actuales
-            limpiar_backups_viejos(max_backups=10)
-            send_telegram(f"💾 **BACKUP AUTOMÁTICO (100 ops)**\n{backup_key}")
+        try:
+            backup_key, msg = crear_backup()
+            if backup_key:
+                st.session_state.ultimo_backup_trades = trades_actuales
+                limpiar_backups_viejos(max_backups=10)
+                send_telegram(f"💾 **BACKUP AUTOMÁTICO (100 ops)**\n{backup_key}")
+        except:
+            pass
 
     fng_value, fng_label = get_fear_greed()
     cambio_btc = (btc - st.session_state.ref_price["BTC"]) / st.session_state.ref_price["BTC"] * 100
@@ -1390,32 +1417,40 @@ def ejecutar_ciclo():
     estado_horario, emoji_horario, desc_horario, es_buen_horario = obtener_horario_operacion()
     horario_para_operar = es_buen_horario or st.session_state.get("operar_24_7", False)
 
-    # Verificar órdenes Maker pendientes
+    # ===== VERIFICAR ÓRDENES MAKER PENDIENTES =====
     for sym_check in ["BTC", "ETH"]:
-        estado, datos = verificar_orden_pendiente(sym_check)
-        if estado == "ejecutada":
-            orden_key = f"orden_pendiente_{sym_check}"
-            orden_info = st.session_state.get(orden_key) or datos
-            if orden_info:
-                monto = orden_info.get("monto", 0)
-                precio_ej = orden_info.get("price", 0)
-                com = monto * 0.006
-                qty_real = (monto - com) / precio_ej
-                st.session_state.balance -= monto
-                st.session_state.positions[sym_check] += qty_real
-                if st.session_state.entry_price[sym_check] == 0:
-                    st.session_state.entry_price[sym_check] = precio_ej
-                st.session_state.highest_price[sym_check] = precio_ej
-                st.session_state.daily_trades += 1
-                st.session_state.monto_dia = st.session_state.get("monto_dia", 0) + monto
-                save_data()
-                msg = f"✅ ORDEN MAKER EJECUTADA {sym_check} | {qty_real:.8f} a ${precio_ej:,.0f} | Com: 0.60%"
-                send_telegram(msg)
-                st.session_state.trades.append((datetime.now(), msg))
-        elif estado == "cancelada":
-            send_telegram(f"⚠️ Orden Maker {sym_check} cancelada por timeout. Reintentando.")
+        try:
+            estado, datos = verificar_orden_pendiente(sym_check)
+            
+            if estado == "ejecutada":
+                orden_key = f"orden_pendiente_{sym_check}"
+                orden_info = st.session_state.get(orden_key) or datos
+                if orden_info and isinstance(orden_info, dict):
+                    monto = orden_info.get("monto", 0)
+                    precio_ej = orden_info.get("price", 0)
+                    if monto > 0 and precio_ej > 0:
+                        com = monto * 0.006
+                        qty_real = (monto - com) / precio_ej
+                        st.session_state.balance -= monto
+                        st.session_state.positions[sym_check] += qty_real
+                        if st.session_state.entry_price[sym_check] == 0:
+                            st.session_state.entry_price[sym_check] = precio_ej
+                        st.session_state.highest_price[sym_check] = precio_ej
+                        st.session_state.daily_trades += 1
+                        st.session_state.monto_dia = st.session_state.get("monto_dia", 0) + monto
+                        save_data()
+                        msg = f"✅ ORDEN MAKER EJECUTADA {sym_check} | {qty_real:.8f} a ${precio_ej:,.0f} | Com: 0.60%"
+                        send_telegram(msg)
+                        st.session_state.trades.append((datetime.now(), msg))
+                        st.sidebar.success(f"✅ Maker {sym_check} ejecutada")
+            elif estado == "cancelada":
+                st.sidebar.warning(f"⚠️ Orden Maker {sym_check} cancelada (timeout)")
+                send_telegram(f"⚠️ Orden Maker {sym_check} cancelada por timeout. Reintentando.")
+        except Exception as e:
+            print(f"Error verificando orden {sym_check}: {e}")
+            continue
 
-    # Fase de aprendizaje
+    # ===== FASE DE APRENDIZAJE =====
     ahora = datetime.now()
     try:
         inicio_fase = datetime.fromisoformat(st.session_state.inicio_fase)
@@ -1459,7 +1494,7 @@ def ejecutar_ciclo():
         send_telegram("🔄 **NUEVA FASE DE 2 DÍAS INICIADA**")
         st.rerun()
 
-    # Tabla
+    # ===== TABLA =====
     tabla_placeholder.subheader("📊 Señales + Volumen + Tendencia 30d")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
@@ -1547,7 +1582,7 @@ def ejecutar_ciclo():
             eval_rend = evaluar_rendimiento(sym)
             if eval_rend["accion"] == "AUMENTAR_RIESGO":
                 st.session_state.umbral_caida = min(0.05, st.session_state.umbral_caida * 1.2)
-                st.session_state.take_profit = min(0.10, st.session_state.take_profit * 1.1)
+                st.session_state.take_profit = min(10.0, st.session_state.take_profit * 1.1)
             elif eval_rend["accion"] == "REDUCIR_RIESGO":
                 st.session_state.umbral_caida = max(0.001, st.session_state.umbral_caida * 0.8)
                 st.session_state.take_profit = max(0.5, st.session_state.take_profit * 0.9)
@@ -1575,29 +1610,37 @@ def ejecutar_ciclo():
                     if tendencia_30d != "BAJISTA":
                         volumen = onchain_vol_btc if sym == "BTC" else onchain_vol_eth
                         if volumen is None or volumen >= 0.5:
-                            ejecutar_compra_profesional(sym, precio, conf_senal, razon, tendencia_30d)
+                            try:
+                                ejecutar_compra_profesional(sym, precio, conf_senal, razon, tendencia_30d)
+                            except Exception as e:
+                                print(f"Error en compra {sym}: {e}")
             
             elif senal == "SELL" and prob_senal > prob_umbral_val:
                 if st.session_state.positions.get(sym, 0) > 0:
                     if tendencia_30d != "ALCISTA":
                         qty = st.session_state.positions[sym]
                         entry = st.session_state.entry_price[sym]
-                        # ⭐ FILTRO ESTRICTO 2.5%
                         precio_minimo_venta = entry * 1.025
                         if precio < precio_minimo_venta:
                             ganancia_potencial_pct = ((precio / entry) - 1) * 100
-                            st.sidebar.warning(f"⏸️ {sym} SELL bloqueada: precio +{ganancia_potencial_pct:.2f}% < 2.5% requerido")
+                            st.sidebar.warning(
+                                f"⏸️ {sym} SELL bloqueada: precio +{ganancia_potencial_pct:.2f}% < 2.5% requerido"
+                            )
                             continue
                         
                         precio_maker_venta = precio * 1.002
                         if MODO_REAL:
-                            book = "btc_mxn" if sym == "BTC" else "eth_mxn"
-                            order = place_bitso_order(book, "sell", f"{qty:.8f}", f"{precio_maker_venta:.2f}")
-                            if not order or order.get("error"):
-                                st.sidebar.error(f"❌ Venta Maker: {order.get('error', 'desconocido')}")
+                            try:
+                                book = "btc_mxn" if sym == "BTC" else "eth_mxn"
+                                order = place_bitso_order(book, "sell", f"{qty:.8f}", f"{precio_maker_venta:.2f}")
+                                if not order or order.get("error"):
+                                    st.sidebar.error(f"❌ Venta Maker: {order.get('error', 'desconocido')}")
+                                    continue
+                                send_telegram(f"⏳ **VENTA MAKER {sym}** a ${precio_maker_venta:,.0f}")
                                 continue
-                            send_telegram(f"⏳ **VENTA MAKER {sym}** a ${precio_maker_venta:,.0f}")
-                            continue
+                            except Exception as e:
+                                print(f"Error en venta real {sym}: {e}")
+                                continue
                         
                         net = qty * precio_maker_venta * 0.994
                         profit = net - (qty * entry)
@@ -1612,15 +1655,19 @@ def ejecutar_ciclo():
                         send_telegram(msg)
                         st.session_state.trades.append((datetime.now(), msg))
                         save_data()
+                        st.sidebar.success(f"✅ Venta Maker {sym}")
         
         if prob_senal > prob_umbral_val and senal != "HOLD":
             if not hasattr(st.session_state, f'ultima_senal_{sym}'):
                 setattr(st.session_state, f'ultima_senal_{sym}', 0)
             if st.session_state.cycle - getattr(st.session_state, f'ultima_senal_{sym}', 0) > 10:
-                volumen_onchain = onchain_vol_btc if sym == "BTC" else onchain_vol_eth
-                cambio_30d = st.session_state.historical_trend.get(sym, {}).get("cambio_porcentual", 0)
-                send_signal_telegram_buttons(sym, senal, precio, razon, conf_senal, volumen_onchain, cambio_30d, tendencia_30d)
-                setattr(st.session_state, f'ultima_senal_{sym}', st.session_state.cycle)
+                try:
+                    volumen_onchain = onchain_vol_btc if sym == "BTC" else onchain_vol_eth
+                    cambio_30d = st.session_state.historical_trend.get(sym, {}).get("cambio_porcentual", 0)
+                    send_signal_telegram_buttons(sym, senal, precio, razon, conf_senal, volumen_onchain, cambio_30d, tendencia_30d)
+                    setattr(st.session_state, f'ultima_senal_{sym}', st.session_state.cycle)
+                except:
+                    pass
 
     if hasattr(st.session_state, 'ultima_senal'):
         s = st.session_state.ultima_senal
@@ -1644,17 +1691,27 @@ def ejecutar_ciclo():
         estado_texto += " | ⏳ Orden ETH pendiente"
     estado_placeholder.info(estado_texto)
 
-# Botón de actualización
+# Botón de actualización después de la definición
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🔄 Actualización**")
 if st.sidebar.button("🔄 Actualizar datos ahora"):
-    ejecutar_ciclo()
+    try:
+        ejecutar_ciclo()
+    except Exception as e:
+        st.sidebar.error(f"❌ Error: {e}")
 
-# Primer ciclo + bucle infinito
-ejecutar_ciclo()
+# Primer ciclo + bucle infinito CON PROTECCIÓN DE ERRORES
+try:
+    ejecutar_ciclo()
+except Exception as e:
+    print(f"Error en primer ciclo: {e}")
 
 while True:
     time.sleep(st.session_state.intervalo_actualizacion)
-    ejecutar_ciclo()
+    try:
+        ejecutar_ciclo()
+    except Exception as e:
+        print(f"Error en ciclo: {e}")
+        time.sleep(5)
 
 # ==================== FIN PARTE 9 ====================
