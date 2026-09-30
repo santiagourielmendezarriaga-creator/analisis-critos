@@ -476,7 +476,7 @@ def get_fear_greed():
     return 50, "Neutral"
 
 # ==================== FIN PARTE 3 ====================
-# ==================== PARTE 4: ANÁLISIS Y APRENDIZAJE ====================
+# ==================== PARTE 4: ANÁLISIS Y APRENDIZAJE (CORREGIDO) ====================
 def analizar_tendencia(historial, periodo=20):
     if len(historial) < periodo:
         return "NEUTRAL"
@@ -511,25 +511,40 @@ def evaluar_rendimiento(sym):
         return {"accion": "MANTENER"}
 
 def analizar_fase_aprendizaje():
+    """
+    Analiza las operaciones REALES usando el campo PROFIT de cada venta.
+    Ajusta parámetros automáticamente según el rendimiento.
+    """
     trades = st.session_state.trades
     if len(trades) < 3:
-        return {"suficiente": False, "razon": f"Solo {len(trades)} operaciones."}
+        return {
+            "suficiente": False,
+            "razon": f"Solo {len(trades)} operaciones. Se necesitan mínimo 3."
+        }
+    
     ventas = []
     for ts, msg in trades:
         if "VENTA" in msg or "SELL" in msg:
             ventas.append({"ts": ts, "msg": msg})
+    
     if len(ventas) == 0:
-        return {"suficiente": False, "razon": "No hay ventas cerradas."}
+        return {"suficiente": False, "razon": "No hay ventas cerradas para analizar."}
+    
     ganancias = 0
     perdidas = 0
     profits_totales = 0.0
     horarios_op = {}
-    simbolos = {"BTC": {"wins": 0, "losses": 0, "profit": 0.0},
-                "ETH": {"wins": 0, "losses": 0, "profit": 0.0}}
+    simbolos = {
+        "BTC": {"wins": 0, "losses": 0, "profit": 0.0},
+        "ETH": {"wins": 0, "losses": 0, "profit": 0.0}
+    }
+    
     for v in ventas:
         msg = v["msg"]
         hora = v["ts"].hour
         horarios_op.setdefault(hora, {"wins": 0, "losses": 0, "profit": 0.0})
+        
+        # Buscar el PROFIT en el mensaje: "PROFIT: +$0.83" o "PROFIT: -$0.43"
         profit = 0.0
         match = re.search(r"PROFIT:\s*([+-]?\$?[\d,]+\.?\d*)", msg)
         if match:
@@ -538,7 +553,9 @@ def analizar_fase_aprendizaje():
                 profit = float(profit_str)
             except:
                 profit = 0.0
+        
         profits_totales += profit
+        
         if profit > 0:
             ganancias += 1
             horarios_op[hora]["wins"] += 1
@@ -555,9 +572,12 @@ def analizar_fase_aprendizaje():
                 if sym in msg:
                     simbolos[sym]["losses"] += 1
                     simbolos[sym]["profit"] += profit
+    
     total_ventas = ganancias + perdidas
     win_rate = (ganancias / total_ventas * 100) if total_ventas > 0 else 0
     profit_promedio = profits_totales / total_ventas if total_ventas > 0 else 0
+    
+    # Mejor y peor hora (basado en PROFIT, no en conteo)
     mejor_hora = None
     peor_hora = None
     mejor_profit = -999999
@@ -569,6 +589,7 @@ def analizar_fase_aprendizaje():
         if d["profit"] < peor_profit:
             peor_profit = d["profit"]
             peor_hora = h
+    
     analisis = {
         "suficiente": True,
         "total_operaciones": total_ventas,
@@ -582,27 +603,56 @@ def analizar_fase_aprendizaje():
         "simbolos": simbolos,
         "ajustes_aplicados": []
     }
+    
+    # ===== AJUSTES AUTOMÁTICOS (CORREGIDOS) =====
+    
+    # Ajuste 1: Umbral según win rate
+    # ⭐ FIX: min(95) y max(50) en lugar de min(70) y max(20)
     if win_rate < 40:
-        st.session_state.confianza_umbral = min(70, st.session_state.confianza_umbral + 5)
-        analisis["ajustes_aplicados"].append(f"Umbral subido a {st.session_state.confianza_umbral}%")
+        st.session_state.confianza_umbral = min(95, st.session_state.confianza_umbral + 5)
+        analisis["ajustes_aplicados"].append(
+            f"Umbral subido a {st.session_state.confianza_umbral}% (win rate bajo)"
+        )
     elif win_rate > 65:
-        st.session_state.confianza_umbral = max(20, st.session_state.confianza_umbral - 5)
-        analisis["ajustes_aplicados"].append(f"Umbral bajado a {st.session_state.confianza_umbral}%")
+        st.session_state.confianza_umbral = max(50, st.session_state.confianza_umbral - 5)
+        analisis["ajustes_aplicados"].append(
+            f"Umbral bajado a {st.session_state.confianza_umbral}% (win rate alto)"
+        )
+    else:
+        analisis["ajustes_aplicados"].append(
+            f"Umbral mantenido en {st.session_state.confianza_umbral}% (win rate estable)"
+        )
+    
+    # Ajuste 2: BTC vs ETH (solo informativo)
     for sym, stats in simbolos.items():
         total_sym = stats["wins"] + stats["losses"]
         if total_sym >= 2:
             wr_sym = (stats["wins"] / total_sym * 100)
             if wr_sym < 30:
-                analisis["ajustes_aplicados"].append(f"{sym} rinde mal ({wr_sym:.0f}% | ${stats['profit']:.2f})")
+                analisis["ajustes_aplicados"].append(
+                    f"{sym} rinde mal ({wr_sym:.0f}% | ${stats['profit']:.2f})"
+                )
             elif wr_sym > 70:
-                analisis["ajustes_aplicados"].append(f"{sym} rinde bien ({wr_sym:.0f}% | ${stats['profit']:.2f})")
+                analisis["ajustes_aplicados"].append(
+                    f"{sym} rinde bien ({wr_sym:.0f}% | ${stats['profit']:.2f})"
+                )
+    
+    # Ajuste 3: TP según profit promedio
+    # ⭐ FIX: min(10.0) y max(0.5) en lugar de min(0.5) y max(0.01)
     if profit_promedio > 0:
-        st.session_state.take_profit = min(0.5, st.session_state.take_profit * 1.1)
-        analisis["ajustes_aplicados"].append(f"TP aumentado a {st.session_state.take_profit:.3f}%")
+        st.session_state.take_profit = min(10.0, st.session_state.take_profit * 1.1)
+        analisis["ajustes_aplicados"].append(
+            f"TP aumentado a {st.session_state.take_profit:.3f}% (profit ${profit_promedio:.2f})"
+        )
     elif profit_promedio < 0:
-        st.session_state.take_profit = max(0.01, st.session_state.take_profit * 0.9)
+        st.session_state.take_profit = max(0.5, st.session_state.take_profit * 0.9)
         st.session_state.stop_loss = max(0.5, st.session_state.stop_loss * 0.9)
-        analisis["ajustes_aplicados"].append(f"TP/SL reducidos")
+        analisis["ajustes_aplicados"].append(
+            f"TP/SL reducidos (profit ${profit_promedio:.2f})"
+        )
+    else:
+        analisis["ajustes_aplicados"].append("TP/SL sin cambios (profit break-even)")
+    
     return analisis
 
 # ==================== FIN PARTE 4 ====================
