@@ -808,7 +808,7 @@ required_vars = {
     "cycle": 0,
     "price_history": {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)},
     "umbral_caida": 0.005,
-    "take_profit": 2.5,
+    "take_profit": 2.0,
     "stop_loss": 1.5,
     "trailing": 0.5,
     "umbral_indicadores_activacion": 0.5,
@@ -849,7 +849,7 @@ for var_name, default_value in required_vars.items():
     if var_name not in st.session_state:
         st.session_state[var_name] = default_value
 
-st.session_state.take_profit = max(0.5, float(st.session_state.get("take_profit", 2.5)))
+st.session_state.take_profit = max(0.5, float(st.session_state.get("take_profit", 2.0)))
 st.session_state.confianza_umbral = min(95, max(50, int(st.session_state.get("confianza_umbral", 65))))
 
 if "data_loaded" not in st.session_state:
@@ -939,7 +939,7 @@ if MODO_REAL:
             st.write(f"**MODO_REAL:** {MODO_REAL}")
             
             if not BITSO_API_KEY or not BITSO_API_SECRET:
-                st.error("❌ Las llaves NO se cargan desde Secrets.")
+                st.error("❌ Las llaves NO se cargan desde Secrets. Revisa Streamlit Secrets.")
                 st.stop()
             
             try:
@@ -1099,9 +1099,11 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
     if st.session_state.get(orden_key):
         st.sidebar.info(f"⏳ Ya hay orden pendiente para {sym}")
         return
+    
     compra_key = f"ultima_compra_{sym}"
     if st.session_state.get(compra_key) == st.session_state.cycle:
         return
+    
     if prob >= 100:
         monto, cant = 100.0, 4
     elif prob >= 75:
@@ -1150,6 +1152,8 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
         st.sidebar.info(f"⏳ Orden Maker colocada: {qty:.8f} {sym} a ${precio_maker:,.0f}")
         send_telegram(f"⏳ **ORDEN MAKER {sym}**\nPrecio: ${precio_maker:,.0f}\nEsperando ejecución (comisión 0.60%)")
         return
+    
+    # Modo simulado
     ejecutadas = 0
     if st.session_state.balance >= monto:
         if st.session_state.balance < cant * monto:
@@ -1174,19 +1178,70 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
             st.session_state.trades.append((datetime.now(), msg))
             st.sidebar.success(f"✅ {ejecutadas} compras Maker simuladas de {sym}")
 
+# ===== BOTÓN DE COMPRA BTC CON DIAGNÓSTICO =====
 if st.sidebar.button("🟢 Comprar BTC AHORA"):
-    precio = get_bitso_price("btc_mxn")
-    if precio and st.session_state.positions.get("BTC", 0) == 0:
-        st.session_state["ultima_compra_BTC"] = -1
-        ejecutar_compra_profesional("BTC", precio, 30, "Manual", "NEUTRAL")
+    with st.sidebar.expander("🔍 Diagnóstico de compra", expanded=True):
+        st.write("**1. Obteniendo precio...**")
+        precio = get_bitso_price("btc_mxn")
+        st.write(f"Precio: {precio}")
+        
+        st.write("**2. Verificando posición actual...**")
+        pos_actual = st.session_state.positions.get("BTC", 0)
+        st.write(f"Posición actual: {pos_actual}")
+        
+        st.write("**3. Verificando MODO_REAL...**")
+        st.write(f"MODO_REAL: {MODO_REAL}")
+        
+        st.write("**4. Verificando límites...**")
+        st.write(f"Máx por operación: ${MONTO_MAXIMO_POR_OPERACION}")
+        st.write(f"Máx por día: ${MONTO_MAXIMO_DIARIO}")
+        st.write(f"Monto usado hoy: ${st.session_state.get('monto_dia', 0)}")
+        
+        if not precio:
+            st.error("❌ No se pudo obtener el precio")
+        elif pos_actual > 0:
+            st.warning(f"⚠️ Ya tienes posición: {pos_actual}")
+        elif not MODO_REAL:
+            st.error("❌ MODO_REAL está en FALSE. Actívalo en Secrets.")
+        else:
+            st.success("✅ Todo bien. Intentando comprar...")
+            
+            # Intentar orden directa de prueba ($50 MXN)
+            monto = 50.0
+            precio_obj = precio * 0.998
+            qty = (monto * 0.999) / precio_obj
+            
+            st.write(f"**Monto:** ${monto}")
+            st.write(f"**Precio objetivo:** ${precio_obj:,.0f}")
+            st.write(f"**Cantidad:** {qty:.8f} BTC")
+            
+            with st.spinner("Enviando orden a Bitso..."):
+                order = place_bitso_order("btc_mxn", "buy", f"{qty:.8f}", f"{precio_obj:.2f}")
+            
+            st.write(f"**Respuesta de Bitso:**")
+            if order and not order.get("error"):
+                st.success(f"✅ Orden colocada: {order.get('oid')}")
+                st.json(order)
+                # Registrar en historial
+                msg = f"🟢 ORDEN MAKER [REAL] BTC | {qty:.8f} BTC a ${precio_obj:,.0f} | OID: {order.get('oid')}"
+                send_telegram(msg)
+                st.session_state.trades.append((datetime.now(), msg))
+                st.session_state[f"ultima_compra_BTC"] = st.session_state.cycle
+                save_data()
+            else:
+                st.error(f"❌ Error: {order.get('error', 'desconocido') if order else 'sin respuesta'}")
+                st.json(order)
 
+# ===== BOTÓN DE COMPRA ETH CON DIAGNÓSTICO =====
 if st.sidebar.button("🟢 Comprar ETH AHORA"):
-    precio = get_bitso_price("eth_mxn")
-    if precio and st.session_state.positions.get("ETH", 0) == 0:
-        st.session_state["ultima_compra_ETH"] = -1
-        ejecutar_compra_profesional("ETH", precio, 30, "Manual", "NEUTRAL")
-
-# ==================== FIN PARTE 7 ====================
+    with st.sidebar.expander("🔍 Diagnóstico de compra ETH", expanded=True):
+        st.write("**1. Obteniendo precio...**")
+        precio = get_bitso_price("eth_mxn")
+        st.write(f"Precio: {precio}")
+        
+        st.write("**2. Verificando posición actual...**")
+        pos_actual = st.session_state.positions.get("ETH", 0)
+        st.write(f"Posición actu
 # ==================== PARTE 8: PLACEHOLDERS ====================
 tabla_placeholder = st.empty()
 info_placeholder = st.empty()
