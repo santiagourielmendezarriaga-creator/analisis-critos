@@ -276,7 +276,7 @@ def limpiar_backups_viejos(max_backups=10):
         print(f"Error limpiando backups: {e}")
 
 # ==================== FIN PARTE 2 ====================
-# ==================== PARTE 3: TELEGRAM Y BITSO API ====================
+# ==================== PARTE 3: TELEGRAM Y BITSO API (CON FIX HMAC) ====================
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
 TELEGRAM_CHAT_ID = "5835990242"
 
@@ -287,7 +287,9 @@ def send_telegram(msg):
     except:
         pass
 
-BITSO_BASE_URL = "https://api.bitso.com/v3"
+# ===== CONFIGURACIÓN BITSO =====
+# ⭐ FIX: BASE_URL sin /v3 y paths con /v3/
+BITSO_BASE_URL = "https://api.bitso.com"
 
 try:
     BITSO_API_KEY = st.secrets["BITSO_API_KEY"]
@@ -302,9 +304,11 @@ except:
     MONTO_MAXIMO_POR_OPERACION = 50.0
     MONTO_MAXIMO_DIARIO = 100.0
 
+# ===== API PÚBLICA (precios) =====
 def get_bitso_price(book="btc_mxn"):
     try:
-        url = f"{BITSO_BASE_URL}/ticker/?book={book}"
+        # ⭐ FIX: /v3/ticker/
+        url = f"{BITSO_BASE_URL}/v3/ticker/?book={book}"
         resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
@@ -315,24 +319,35 @@ def get_bitso_price(book="btc_mxn"):
         pass
     return None
 
+# ===== AUTENTICACIÓN HMAC (API PRIVADA) =====
 def _create_bitso_auth_header(method, path, json_payload=""):
+    """
+    Genera el header de autorización para la API privada de Bitso.
+    ⭐ FIX: el path debe incluir /v3/ para que la firma coincida.
+    """
     if not BITSO_API_KEY or not BITSO_API_SECRET:
         return None, None
+    
     nonce = str(int(time.time() * 1000))
     message = nonce + method.upper() + path + json_payload
+    
     signature = hmac.new(
         BITSO_API_SECRET.encode('utf-8'),
         message.encode('utf-8'),
         hashlib.sha256
     ).hexdigest()
+    
     auth_header = f"Bitso {BITSO_API_KEY}:{nonce}:{signature}"
     return auth_header, nonce
 
+# ===== ENDPOINTS PRIVADOS =====
 def get_bitso_balance():
+    """Consulta el saldo REAL en tu cuenta de Bitso."""
     if not MODO_REAL:
         return None
     try:
-        path = "/balance/"
+        # ⭐ FIX: /v3/balance/
+        path = "/v3/balance/"
         auth_header, _ = _create_bitso_auth_header("GET", path)
         if not auth_header:
             return None
@@ -356,11 +371,16 @@ def get_bitso_balance():
         return None
 
 def place_bitso_order(book, side, amount_major, price):
+    """
+    Coloca una orden limitada REAL en Bitso.
+    Retorna el diccionario de la orden si tuvo éxito, None si falló.
+    """
     if not MODO_REAL:
         print("⚠️ MODO_REAL desactivado.")
         return None
     try:
-        path = "/orders/"
+        # ⭐ FIX: /v3/orders/
+        path = "/v3/orders/"
         payload = {
             "book": book,
             "side": side,
@@ -393,10 +413,12 @@ def place_bitso_order(book, side, amount_major, price):
         return {"error": str(e)}
 
 def get_bitso_order_status(oid):
+    """Consulta el estado de una orden por su ID."""
     if not MODO_REAL:
         return None
     try:
-        path = f"/orders/{oid}/"
+        # ⭐ FIX: /v3/orders/{oid}/
+        path = f"/v3/orders/{oid}/"
         auth_header, _ = _create_bitso_auth_header("GET", path)
         if not auth_header:
             return None
@@ -413,10 +435,12 @@ def get_bitso_order_status(oid):
         return None
 
 def cancel_bitso_order(oid):
+    """Cancela una orden abierta por su ID. Retorna True si tuvo éxito."""
     if not MODO_REAL:
         return False
     try:
-        path = f"/orders/{oid}/"
+        # ⭐ FIX: /v3/orders/{oid}/
+        path = f"/v3/orders/{oid}/"
         auth_header, _ = _create_bitso_auth_header("DELETE", path)
         if not auth_header:
             return False
@@ -434,20 +458,25 @@ def cancel_bitso_order(oid):
         return False
 
 def verificar_orden_pendiente(sym):
+    """Verifica si hay una orden pendiente para `sym`."""
     orden_key = f"orden_pendiente_{sym}"
     if orden_key not in st.session_state or not st.session_state[orden_key]:
         return "sin_orden", None
+    
     orden = st.session_state[orden_key]
     oid = orden.get("oid")
     if not oid:
         st.session_state[orden_key] = None
         return "sin_orden", None
+    
     if not MODO_REAL:
         st.session_state[orden_key] = None
         return "ejecutada", orden
+    
     status = get_bitso_order_status(oid)
     if not status:
         return "pendiente", orden
+    
     estado = status.get("status")
     if estado in ["completed", "filled"]:
         st.session_state[orden_key] = None
