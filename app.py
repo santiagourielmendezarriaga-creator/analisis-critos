@@ -276,7 +276,7 @@ def limpiar_backups_viejos(max_backups=10):
         print(f"Error limpiando backups: {e}")
 
 # ==================== FIN PARTE 2 ====================
-# ==================== PARTE 3: TELEGRAM Y BITSO API (CON FIX HMAC) ====================
+# ==================== PARTE 3: TELEGRAM Y BITSO API (CON FIX /v3/) ====================
 TELEGRAM_TOKEN = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
 TELEGRAM_CHAT_ID = "5835990242"
 
@@ -288,7 +288,7 @@ def send_telegram(msg):
         pass
 
 # ===== CONFIGURACIÓN BITSO =====
-# ⭐ FIX: BASE_URL sin /v3 y paths con /v3/
+# ⭐ BASE_URL SIN /v3 (el /v3 va en cada path)
 BITSO_BASE_URL = "https://api.bitso.com"
 
 try:
@@ -307,7 +307,7 @@ except:
 # ===== API PÚBLICA (precios) =====
 def get_bitso_price(book="btc_mxn"):
     try:
-        # ⭐ FIX: /v3/ticker/
+        # ⭐ /v3/ticker/
         url = f"{BITSO_BASE_URL}/v3/ticker/?book={book}"
         resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
@@ -319,11 +319,11 @@ def get_bitso_price(book="btc_mxn"):
         pass
     return None
 
-# ===== AUTENTICACIÓN HMAC (API PRIVADA) =====
+# ===== AUTENTICACIÓN HMAC =====
 def _create_bitso_auth_header(method, path, json_payload=""):
     """
-    Genera el header de autorización para la API privada de Bitso.
-    ⭐ FIX: el path debe incluir /v3/ para que la firma coincida.
+    Genera el header de autorización.
+    ⭐ El path DEBE incluir /v3/ para que la firma coincida.
     """
     if not BITSO_API_KEY or not BITSO_API_SECRET:
         return None, None
@@ -342,11 +342,11 @@ def _create_bitso_auth_header(method, path, json_payload=""):
 
 # ===== ENDPOINTS PRIVADOS =====
 def get_bitso_balance():
-    """Consulta el saldo REAL en tu cuenta de Bitso."""
+    """Consulta el saldo REAL en Bitso."""
     if not MODO_REAL:
         return None
     try:
-        # ⭐ FIX: /v3/balance/
+        # ⭐ /v3/balance/
         path = "/v3/balance/"
         auth_header, _ = _create_bitso_auth_header("GET", path)
         if not auth_header:
@@ -371,15 +371,12 @@ def get_bitso_balance():
         return None
 
 def place_bitso_order(book, side, amount_major, price):
-    """
-    Coloca una orden limitada REAL en Bitso.
-    Retorna el diccionario de la orden si tuvo éxito, None si falló.
-    """
+    """Coloca una orden limitada REAL en Bitso."""
     if not MODO_REAL:
         print("⚠️ MODO_REAL desactivado.")
         return None
     try:
-        # ⭐ FIX: /v3/orders/
+        # ⭐ /v3/orders/
         path = "/v3/orders/"
         payload = {
             "book": book,
@@ -417,7 +414,7 @@ def get_bitso_order_status(oid):
     if not MODO_REAL:
         return None
     try:
-        # ⭐ FIX: /v3/orders/{oid}/
+        # ⭐ /v3/orders/{oid}/
         path = f"/v3/orders/{oid}/"
         auth_header, _ = _create_bitso_auth_header("GET", path)
         if not auth_header:
@@ -435,11 +432,11 @@ def get_bitso_order_status(oid):
         return None
 
 def cancel_bitso_order(oid):
-    """Cancela una orden abierta por su ID. Retorna True si tuvo éxito."""
+    """Cancela una orden abierta por su ID."""
     if not MODO_REAL:
         return False
     try:
-        # ⭐ FIX: /v3/orders/{oid}/
+        # ⭐ /v3/orders/{oid}/
         path = f"/v3/orders/{oid}/"
         auth_header, _ = _create_bitso_auth_header("DELETE", path)
         if not auth_header:
