@@ -964,15 +964,56 @@ if st.sidebar.button("💾 Guardar datos ahora"):
     else:
         st.sidebar.error(f"❌ Error: {mensaje}")
 
+# ===== DIAGNÓSTICO DE BITSO =====
 if MODO_REAL:
     if st.sidebar.button("🔍 Ver saldo real en Bitso"):
-        balance = get_bitso_balance()
-        if balance:
-            st.sidebar.success("💰 Saldo en Bitso:")
-            for cur, vals in balance.items():
-                st.sidebar.write(f"**{cur.upper()}**: {vals['available']:.8f}")
-        else:
-            st.sidebar.error("❌ No se pudo consultar el saldo")
+        with st.sidebar.expander("🔍 Diagnóstico completo", expanded=True):
+            st.write(f"**API Key cargada:** {'✅' if BITSO_API_KEY else '❌'}")
+            st.write(f"**Longitud API Key:** {len(BITSO_API_KEY)} caracteres")
+            st.write(f"**Secret cargada:** {'✅' if BITSO_API_SECRET else '❌'}")
+            st.write(f"**Longitud Secret:** {len(BITSO_API_SECRET)} caracteres")
+            st.write(f"**MODO_REAL:** {MODO_REAL}")
+            
+            if not BITSO_API_KEY or not BITSO_API_SECRET:
+                st.error("❌ Las llaves NO se cargan desde Secrets. Revisa Streamlit Secrets.")
+                st.stop()
+            
+            try:
+                path = "/balance/"
+                auth_header, nonce = _create_bitso_auth_header("GET", path)
+                st.write(f"**Auth header generado:** {'✅' if auth_header else '❌'}")
+                st.write(f"**Nonce:** {nonce}")
+                
+                headers = {"Authorization": auth_header}
+                url = BITSO_BASE_URL + path
+                st.write(f"**URL:** {url}")
+                
+                resp = requests.get(url, headers=headers, timeout=10)
+                st.write(f"**Status Code:** {resp.status_code}")
+                st.write(f"**Respuesta RAW:**")
+                st.code(resp.text[:500])
+                
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("success"):
+                        balances = {}
+                        for b in data["payload"]["balances"]:
+                            if float(b["available"]) > 0:
+                                balances[b["currency"]] = {
+                                    "available": float(b["available"]),
+                                    "total": float(b["total"])
+                                }
+                        st.success("💰 Saldo en Bitso:")
+                        for cur, vals in balances.items():
+                            st.write(f"**{cur.upper()}**: {vals['available']:.8f}")
+                    else:
+                        st.error(f"API respondió sin success: {data}")
+                else:
+                    st.error(f"HTTP {resp.status_code}")
+            except Exception as e:
+                st.error(f"Excepción: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
 
 # ===== GESTIÓN DE BACKUPS =====
 st.sidebar.markdown("---")
@@ -1095,7 +1136,6 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
         st.sidebar.info(f"⏳ Ya hay orden pendiente para {sym}")
         return
     
-    # ⭐ FIX: Bandera anti-duplicados por ciclo
     compra_key = f"ultima_compra_{sym}"
     if st.session_state.get(compra_key) == st.session_state.cycle:
         return
@@ -1167,19 +1207,16 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
                 st.session_state.monto_dia = monto_hoy + monto
                 ejecutadas += 1
         if ejecutadas > 0:
-            # ⭐ Marcar ciclo ANTES de enviar
             st.session_state[compra_key] = st.session_state.cycle
             save_data()
             msg = f"🟢 COMPRA [MAKER-SIM] {sym} | {ejecutadas}x${monto:.0f} | ${precio_maker:,.0f} | Prob: {prob:.1f}%"
             send_telegram(msg)
             st.session_state.trades.append((datetime.now(), msg))
             st.sidebar.success(f"✅ {ejecutadas} compras Maker simuladas de {sym}")
-            # ⭐ NO hacer st.rerun() para evitar duplicados
 
 if st.sidebar.button("🟢 Comprar BTC AHORA"):
     precio = get_bitso_price("btc_mxn")
     if precio and st.session_state.positions.get("BTC", 0) == 0:
-        # Reset bandera para forzar la compra manual
         st.session_state["ultima_compra_BTC"] = -1
         ejecutar_compra_profesional("BTC", precio, 30, "Manual", "NEUTRAL")
 
