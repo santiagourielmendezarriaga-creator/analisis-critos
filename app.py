@@ -98,7 +98,7 @@ def init_new_user_state():
     st.session_state.price_history = {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)}
     st.session_state.umbral_caida = 0.005
     st.session_state.stop_loss = 1.5
-    st.session_state.take_profit = 2.0
+    st.session_state.take_profit = 2.5
     st.session_state.trailing = 0.5
     st.session_state.umbral_indicadores_activacion = 0.5
     st.session_state.expert_score = 30
@@ -158,7 +158,7 @@ def restore_from_file():
         st.session_state.cycle = data.get("cycle", 0)
         st.session_state.umbral_caida = data.get("umbral_caida", 0.005)
         st.session_state.stop_loss = data.get("stop_loss", 1.5)
-        tp_guardado = data.get("take_profit", 2.0)
+        tp_guardado = data.get("take_profit", 2.5)
         st.session_state.take_profit = max(0.5, tp_guardado)
         st.session_state.trailing = data.get("trailing", 0.5)
         st.session_state.umbral_indicadores_activacion = data.get("umbral_indicadores_activacion", 0.5)
@@ -202,7 +202,6 @@ def restore_from_file():
 
 # ==================== FUNCIONES DE BACKUP ====================
 def crear_backup():
-    """Crea un backup del estado actual en Firebase con timestamp."""
     try:
         url = f"{FIREBASE_URL}/bot.json"
         resp = requests.get(url, timeout=10)
@@ -232,7 +231,6 @@ def crear_backup():
         return None, str(e)
 
 def listar_backups():
-    """Lista todos los backups disponibles (más recientes primero)."""
     try:
         url = f"{FIREBASE_URL}/backups.json"
         resp = requests.get(url, timeout=10)
@@ -246,7 +244,6 @@ def listar_backups():
         return []
 
 def restaurar_backup(backup_key):
-    """Restaura un backup específico al nodo principal."""
     try:
         url = f"{FIREBASE_URL}/backups/{backup_key}.json"
         resp = requests.get(url, timeout=10)
@@ -264,7 +261,6 @@ def restaurar_backup(backup_key):
         return False
 
 def limpiar_backups_viejos(max_backups=10):
-    """Mantiene solo los últimos N backups."""
     try:
         backups = listar_backups()
         if len(backups) > max_backups:
@@ -321,28 +317,20 @@ def get_bitso_price(book="btc_mxn"):
 
 # ===== AUTENTICACIÓN HMAC =====
 def _create_bitso_auth_header(method, path, json_payload=""):
-    """
-    Genera el header de autorización.
-    ⭐ El path DEBE incluir /v3/ para que la firma coincida.
-    """
     if not BITSO_API_KEY or not BITSO_API_SECRET:
         return None, None
-    
     nonce = str(int(time.time() * 1000))
     message = nonce + method.upper() + path + json_payload
-    
     signature = hmac.new(
         BITSO_API_SECRET.encode('utf-8'),
         message.encode('utf-8'),
         hashlib.sha256
     ).hexdigest()
-    
     auth_header = f"Bitso {BITSO_API_KEY}:{nonce}:{signature}"
     return auth_header, nonce
 
 # ===== ENDPOINTS PRIVADOS =====
 def get_bitso_balance():
-    """Consulta el saldo REAL en Bitso."""
     if not MODO_REAL:
         return None
     try:
@@ -371,7 +359,6 @@ def get_bitso_balance():
         return None
 
 def place_bitso_order(book, side, amount_major, price):
-    """Coloca una orden limitada REAL en Bitso."""
     if not MODO_REAL:
         print("⚠️ MODO_REAL desactivado.")
         return None
@@ -410,7 +397,6 @@ def place_bitso_order(book, side, amount_major, price):
         return {"error": str(e)}
 
 def get_bitso_order_status(oid):
-    """Consulta el estado de una orden por su ID."""
     if not MODO_REAL:
         return None
     try:
@@ -432,7 +418,6 @@ def get_bitso_order_status(oid):
         return None
 
 def cancel_bitso_order(oid):
-    """Cancela una orden abierta por su ID."""
     if not MODO_REAL:
         return False
     try:
@@ -455,25 +440,20 @@ def cancel_bitso_order(oid):
         return False
 
 def verificar_orden_pendiente(sym):
-    """Verifica si hay una orden pendiente para `sym`."""
     orden_key = f"orden_pendiente_{sym}"
     if orden_key not in st.session_state or not st.session_state[orden_key]:
         return "sin_orden", None
-    
     orden = st.session_state[orden_key]
     oid = orden.get("oid")
     if not oid:
         st.session_state[orden_key] = None
         return "sin_orden", None
-    
     if not MODO_REAL:
         st.session_state[orden_key] = None
         return "ejecutada", orden
-    
     status = get_bitso_order_status(oid)
     if not status:
         return "pendiente", orden
-    
     estado = status.get("status")
     if estado in ["completed", "filled"]:
         st.session_state[orden_key] = None
@@ -537,25 +517,15 @@ def evaluar_rendimiento(sym):
         return {"accion": "MANTENER"}
 
 def analizar_fase_aprendizaje():
-    """
-    Analiza las operaciones REALES usando el campo PROFIT de cada venta.
-    Ajusta parámetros automáticamente según el rendimiento.
-    """
     trades = st.session_state.trades
     if len(trades) < 3:
-        return {
-            "suficiente": False,
-            "razon": f"Solo {len(trades)} operaciones. Se necesitan mínimo 3."
-        }
-    
+        return {"suficiente": False, "razon": f"Solo {len(trades)} operaciones."}
     ventas = []
     for ts, msg in trades:
         if "VENTA" in msg or "SELL" in msg:
             ventas.append({"ts": ts, "msg": msg})
-    
     if len(ventas) == 0:
-        return {"suficiente": False, "razon": "No hay ventas cerradas para analizar."}
-    
+        return {"suficiente": False, "razon": "No hay ventas cerradas."}
     ganancias = 0
     perdidas = 0
     profits_totales = 0.0
@@ -564,13 +534,10 @@ def analizar_fase_aprendizaje():
         "BTC": {"wins": 0, "losses": 0, "profit": 0.0},
         "ETH": {"wins": 0, "losses": 0, "profit": 0.0}
     }
-    
     for v in ventas:
         msg = v["msg"]
         hora = v["ts"].hour
         horarios_op.setdefault(hora, {"wins": 0, "losses": 0, "profit": 0.0})
-        
-        # Buscar el PROFIT en el mensaje: "PROFIT: +$0.83" o "PROFIT: -$0.43"
         profit = 0.0
         match = re.search(r"PROFIT:\s*([+-]?\$?[\d,]+\.?\d*)", msg)
         if match:
@@ -579,9 +546,7 @@ def analizar_fase_aprendizaje():
                 profit = float(profit_str)
             except:
                 profit = 0.0
-        
         profits_totales += profit
-        
         if profit > 0:
             ganancias += 1
             horarios_op[hora]["wins"] += 1
@@ -598,12 +563,9 @@ def analizar_fase_aprendizaje():
                 if sym in msg:
                     simbolos[sym]["losses"] += 1
                     simbolos[sym]["profit"] += profit
-    
     total_ventas = ganancias + perdidas
     win_rate = (ganancias / total_ventas * 100) if total_ventas > 0 else 0
     profit_promedio = profits_totales / total_ventas if total_ventas > 0 else 0
-    
-    # Mejor y peor hora (basado en PROFIT, no en conteo)
     mejor_hora = None
     peor_hora = None
     mejor_profit = -999999
@@ -615,7 +577,6 @@ def analizar_fase_aprendizaje():
         if d["profit"] < peor_profit:
             peor_profit = d["profit"]
             peor_hora = h
-    
     analisis = {
         "suficiente": True,
         "total_operaciones": total_ventas,
@@ -629,56 +590,33 @@ def analizar_fase_aprendizaje():
         "simbolos": simbolos,
         "ajustes_aplicados": []
     }
-    
-    # ===== AJUSTES AUTOMÁTICOS (CORREGIDOS) =====
-    
-    # Ajuste 1: Umbral según win rate
-    # ⭐ FIX: min(95) y max(50) en lugar de min(70) y max(20)
+    # ⭐ FIX: Límites correctos (95/50 en lugar de 70/20)
     if win_rate < 40:
         st.session_state.confianza_umbral = min(95, st.session_state.confianza_umbral + 5)
-        analisis["ajustes_aplicados"].append(
-            f"Umbral subido a {st.session_state.confianza_umbral}% (win rate bajo)"
-        )
+        analisis["ajustes_aplicados"].append(f"Umbral subido a {st.session_state.confianza_umbral}% (win rate bajo)")
     elif win_rate > 65:
         st.session_state.confianza_umbral = max(50, st.session_state.confianza_umbral - 5)
-        analisis["ajustes_aplicados"].append(
-            f"Umbral bajado a {st.session_state.confianza_umbral}% (win rate alto)"
-        )
+        analisis["ajustes_aplicados"].append(f"Umbral bajado a {st.session_state.confianza_umbral}% (win rate alto)")
     else:
-        analisis["ajustes_aplicados"].append(
-            f"Umbral mantenido en {st.session_state.confianza_umbral}% (win rate estable)"
-        )
-    
-    # Ajuste 2: BTC vs ETH (solo informativo)
+        analisis["ajustes_aplicados"].append(f"Umbral mantenido en {st.session_state.confianza_umbral}%")
     for sym, stats in simbolos.items():
         total_sym = stats["wins"] + stats["losses"]
         if total_sym >= 2:
             wr_sym = (stats["wins"] / total_sym * 100)
             if wr_sym < 30:
-                analisis["ajustes_aplicados"].append(
-                    f"{sym} rinde mal ({wr_sym:.0f}% | ${stats['profit']:.2f})"
-                )
+                analisis["ajustes_aplicados"].append(f"{sym} rinde mal ({wr_sym:.0f}% | ${stats['profit']:.2f})")
             elif wr_sym > 70:
-                analisis["ajustes_aplicados"].append(
-                    f"{sym} rinde bien ({wr_sym:.0f}% | ${stats['profit']:.2f})"
-                )
-    
-    # Ajuste 3: TP según profit promedio
-    # ⭐ FIX: min(10.0) y max(0.5) en lugar de min(0.5) y max(0.01)
+                analisis["ajustes_aplicados"].append(f"{sym} rinde bien ({wr_sym:.0f}% | ${stats['profit']:.2f})")
+    # ⭐ FIX: Límites correctos (10.0/0.5 en lugar de 0.5/0.01)
     if profit_promedio > 0:
         st.session_state.take_profit = min(10.0, st.session_state.take_profit * 1.1)
-        analisis["ajustes_aplicados"].append(
-            f"TP aumentado a {st.session_state.take_profit:.3f}% (profit ${profit_promedio:.2f})"
-        )
+        analisis["ajustes_aplicados"].append(f"TP aumentado a {st.session_state.take_profit:.3f}% (profit ${profit_promedio:.2f})")
     elif profit_promedio < 0:
         st.session_state.take_profit = max(0.5, st.session_state.take_profit * 0.9)
         st.session_state.stop_loss = max(0.5, st.session_state.stop_loss * 0.9)
-        analisis["ajustes_aplicados"].append(
-            f"TP/SL reducidos (profit ${profit_promedio:.2f})"
-        )
+        analisis["ajustes_aplicados"].append(f"TP/SL reducidos (profit ${profit_promedio:.2f})")
     else:
-        analisis["ajustes_aplicados"].append("TP/SL sin cambios (profit break-even)")
-    
+        analisis["ajustes_aplicados"].append("TP/SL sin cambios")
     return analisis
 
 # ==================== FIN PARTE 4 ====================
@@ -870,7 +808,7 @@ required_vars = {
     "cycle": 0,
     "price_history": {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)},
     "umbral_caida": 0.005,
-    "take_profit": 2.0,
+    "take_profit": 2.5,
     "stop_loss": 1.5,
     "trailing": 0.5,
     "umbral_indicadores_activacion": 0.5,
@@ -911,7 +849,7 @@ for var_name, default_value in required_vars.items():
     if var_name not in st.session_state:
         st.session_state[var_name] = default_value
 
-st.session_state.take_profit = max(0.5, float(st.session_state.get("take_profit", 2.0)))
+st.session_state.take_profit = max(0.5, float(st.session_state.get("take_profit", 2.5)))
 st.session_state.confianza_umbral = min(95, max(50, int(st.session_state.get("confianza_umbral", 65))))
 
 if "data_loaded" not in st.session_state:
@@ -1001,11 +939,11 @@ if MODO_REAL:
             st.write(f"**MODO_REAL:** {MODO_REAL}")
             
             if not BITSO_API_KEY or not BITSO_API_SECRET:
-                st.error("❌ Las llaves NO se cargan desde Secrets. Revisa Streamlit Secrets.")
+                st.error("❌ Las llaves NO se cargan desde Secrets.")
                 st.stop()
             
             try:
-                path = "/balance/"
+                path = "/v3/balance/"
                 auth_header, nonce = _create_bitso_auth_header("GET", path)
                 st.write(f"**Auth header generado:** {'✅' if auth_header else '❌'}")
                 st.write(f"**Nonce:** {nonce}")
@@ -1161,11 +1099,9 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
     if st.session_state.get(orden_key):
         st.sidebar.info(f"⏳ Ya hay orden pendiente para {sym}")
         return
-    
     compra_key = f"ultima_compra_{sym}"
     if st.session_state.get(compra_key) == st.session_state.cycle:
         return
-    
     if prob >= 100:
         monto, cant = 100.0, 4
     elif prob >= 75:
@@ -1214,8 +1150,6 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
         st.sidebar.info(f"⏳ Orden Maker colocada: {qty:.8f} {sym} a ${precio_maker:,.0f}")
         send_telegram(f"⏳ **ORDEN MAKER {sym}**\nPrecio: ${precio_maker:,.0f}\nEsperando ejecución (comisión 0.60%)")
         return
-    
-    # Modo simulado
     ejecutadas = 0
     if st.session_state.balance >= monto:
         if st.session_state.balance < cant * monto:
@@ -1278,7 +1212,7 @@ def send_signal_telegram_buttons(sym, tipo, precio, razon, confianza, volumen_on
         return False
 
 # ==================== FIN PARTE 8 ====================
-# ==================== PARTE 9: BUCLE INFINITO CON BACKUP AUTOMÁTICO ====================
+# ==================== PARTE 9: BUCLE INFINITO ====================
 st.sidebar.markdown("---")
 st.sidebar.markdown("**⏱️ Intervalo de actualización**")
 intervalo = st.sidebar.slider("Actualizar cada (segundos)", min_value=5, max_value=60, value=st.session_state.intervalo_actualizacion, step=5)
@@ -1304,8 +1238,7 @@ def ejecutar_ciclo():
     if st.session_state.cycle % 5 == 0:
         save_data()
 
-    # ⭐ BACKUP AUTOMÁTICO
-    # 1) Cada 24 horas
+    # Backup automático 24h
     ahora_ts = time.time()
     if "ultimo_backup_auto" not in st.session_state:
         st.session_state.ultimo_backup_auto = ahora_ts
@@ -1316,9 +1249,8 @@ def ejecutar_ciclo():
             st.session_state.ultimo_backup_auto = ahora_ts
             limpiar_backups_viejos(max_backups=10)
             send_telegram(f"💾 **BACKUP AUTOMÁTICO (24h)**\n{backup_key}")
-            print(f"💾 Backup automático 24h: {backup_key}")
     
-    # 2) Cada 100 operaciones
+    # Backup automático 100 ops
     if "ultimo_backup_trades" not in st.session_state:
         st.session_state.ultimo_backup_trades = 0
     trades_actuales = len(st.session_state.trades)
@@ -1328,7 +1260,6 @@ def ejecutar_ciclo():
             st.session_state.ultimo_backup_trades = trades_actuales
             limpiar_backups_viejos(max_backups=10)
             send_telegram(f"💾 **BACKUP AUTOMÁTICO (100 ops)**\n{backup_key}")
-            print(f"💾 Backup automático 100 ops: {backup_key}")
 
     fng_value, fng_label = get_fear_greed()
     cambio_btc = (btc - st.session_state.ref_price["BTC"]) / st.session_state.ref_price["BTC"] * 100
@@ -1359,10 +1290,9 @@ def ejecutar_ciclo():
     prob_umbral = st.session_state.confianza_umbral
 
     estado_horario, emoji_horario, desc_horario, es_buen_horario = obtener_horario_operacion()
-
     horario_para_operar = es_buen_horario or st.session_state.get("operar_24_7", False)
 
-    # ===== VERIFICAR ÓRDENES MAKER PENDIENTES =====
+    # Verificar órdenes Maker pendientes
     for sym_check in ["BTC", "ETH"]:
         estado, datos = verificar_orden_pendiente(sym_check)
         if estado == "ejecutada":
@@ -1384,12 +1314,10 @@ def ejecutar_ciclo():
                 msg = f"✅ ORDEN MAKER EJECUTADA {sym_check} | {qty_real:.8f} a ${precio_ej:,.0f} | Com: 0.60%"
                 send_telegram(msg)
                 st.session_state.trades.append((datetime.now(), msg))
-                st.sidebar.success(f"✅ Maker {sym_check} ejecutada")
         elif estado == "cancelada":
-            st.sidebar.warning(f"⚠️ Orden Maker {sym_check} cancelada (timeout)")
             send_telegram(f"⚠️ Orden Maker {sym_check} cancelada por timeout. Reintentando.")
 
-    # ===== FASE DE APRENDIZAJE =====
+    # Fase de aprendizaje
     ahora = datetime.now()
     try:
         inicio_fase = datetime.fromisoformat(st.session_state.inicio_fase)
@@ -1433,7 +1361,7 @@ def ejecutar_ciclo():
         send_telegram("🔄 **NUEVA FASE DE 2 DÍAS INICIADA**")
         st.rerun()
 
-    # ===== TABLA =====
+    # Tabla
     tabla_placeholder.subheader("📊 Señales + Volumen + Tendencia 30d")
     tabla_placeholder.table({
         "Moneda": ["Bitcoin", "Ethereum"],
@@ -1556,12 +1484,11 @@ def ejecutar_ciclo():
                     if tendencia_30d != "ALCISTA":
                         qty = st.session_state.positions[sym]
                         entry = st.session_state.entry_price[sym]
+                        # ⭐ FILTRO ESTRICTO 2.5%
                         precio_minimo_venta = entry * 1.025
                         if precio < precio_minimo_venta:
                             ganancia_potencial_pct = ((precio / entry) - 1) * 100
-                            st.sidebar.warning(
-                                f"⏸️ {sym} SELL bloqueada: precio +{ganancia_potencial_pct:.2f}% < 2.5% requerido"
-                            )
+                            st.sidebar.warning(f"⏸️ {sym} SELL bloqueada: precio +{ganancia_potencial_pct:.2f}% < 2.5% requerido")
                             continue
                         
                         precio_maker_venta = precio * 1.002
@@ -1587,7 +1514,6 @@ def ejecutar_ciclo():
                         send_telegram(msg)
                         st.session_state.trades.append((datetime.now(), msg))
                         save_data()
-                        st.sidebar.success(f"✅ Venta Maker {sym}")
         
         if prob_senal > prob_umbral_val and senal != "HOLD":
             if not hasattr(st.session_state, f'ultima_senal_{sym}'):
@@ -1620,7 +1546,7 @@ def ejecutar_ciclo():
         estado_texto += " | ⏳ Orden ETH pendiente"
     estado_placeholder.info(estado_texto)
 
-# Botón de actualización después de la definición
+# Botón de actualización
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🔄 Actualización**")
 if st.sidebar.button("🔄 Actualizar datos ahora"):
@@ -1634,4 +1560,3 @@ while True:
     ejecutar_ciclo()
 
 # ==================== FIN PARTE 9 ====================
-
