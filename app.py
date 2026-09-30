@@ -792,7 +792,7 @@ def analisis_avanzado(sym, precio, fng_value):
         return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
 
 # ==================== FIN PARTE 6 ====================
-# ==================== PARTE 7: INTERFAZ DE USUARIO ====================
+# ==================== PARTE 7A: INTERFAZ DE USUARIO - SETUP Y SIDEBAR ====================
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
 required_vars = {
@@ -888,8 +888,7 @@ st.session_state.confianza_umbral = st.sidebar.slider(
 st.sidebar.header("🌍 Horario de operación")
 st.session_state.operar_24_7 = st.sidebar.checkbox(
     "🔥 Operar 24/7 (sin restricción de horario)",
-    value=st.session_state.operar_24_7,
-    help="Si lo activas, el bot operará a cualquier hora."
+    value=st.session_state.operar_24_7
 )
 
 st.sidebar.header("🧠 Indicadores")
@@ -910,10 +909,10 @@ if st.sidebar.button("Reiniciar simulación"):
     with st.spinner("💾 Creando backup..."):
         backup_key, msg = crear_backup()
         if backup_key:
-            st.sidebar.success(f"✅ Backup: {backup_key[:25]}...")
+            st.sidebar.success("✅ Backup: " + str(backup_key[:25]))
             limpiar_backups_viejos(max_backups=10)
         else:
-            st.sidebar.warning(f"⚠️ Sin backup: {msg}")
+            st.sidebar.warning("⚠️ Sin backup: " + str(msg))
     init_new_user_state()
     save_data()
     st.rerun()
@@ -921,40 +920,41 @@ if st.sidebar.button("Reiniciar simulación"):
 if st.sidebar.button("📢 Prueba Telegram"):
     send_telegram("🧠 Bot activo")
     st.success("Enviado")
+
 if st.sidebar.button("💾 Guardar datos ahora"):
     exito, mensaje = save_data()
     if exito:
         st.sidebar.success("✅ Datos guardados")
     else:
-        st.sidebar.error(f"❌ Error: {mensaje}")
+        st.sidebar.error("❌ Error: " + str(mensaje))
 
 # ===== DIAGNÓSTICO DE BITSO =====
 if MODO_REAL:
     if st.sidebar.button("🔍 Ver saldo real en Bitso"):
         with st.sidebar.expander("🔍 Diagnóstico completo", expanded=True):
-            st.write(f"**API Key cargada:** {'✅' if BITSO_API_KEY else '❌'}")
-            st.write(f"**Longitud API Key:** {len(BITSO_API_KEY)} caracteres")
-            st.write(f"**Secret cargada:** {'✅' if BITSO_API_SECRET else '❌'}")
-            st.write(f"**Longitud Secret:** {len(BITSO_API_SECRET)} caracteres")
-            st.write(f"**MODO_REAL:** {MODO_REAL}")
+            st.write("**API Key cargada:** " + ("✅" if BITSO_API_KEY else "❌"))
+            st.write("**Longitud API Key:** " + str(len(BITSO_API_KEY)) + " caracteres")
+            st.write("**Secret cargada:** " + ("✅" if BITSO_API_SECRET else "❌"))
+            st.write("**Longitud Secret:** " + str(len(BITSO_API_SECRET)) + " caracteres")
+            st.write("**MODO_REAL:** " + str(MODO_REAL))
             
             if not BITSO_API_KEY or not BITSO_API_SECRET:
-                st.error("❌ Las llaves NO se cargan desde Secrets. Revisa Streamlit Secrets.")
+                st.error("❌ Las llaves NO se cargan desde Secrets.")
                 st.stop()
             
             try:
                 path = "/v3/balance/"
                 auth_header, nonce = _create_bitso_auth_header("GET", path)
-                st.write(f"**Auth header generado:** {'✅' if auth_header else '❌'}")
-                st.write(f"**Nonce:** {nonce}")
+                st.write("**Auth header generado:** " + ("✅" if auth_header else "❌"))
+                st.write("**Nonce:** " + str(nonce))
                 
                 headers = {"Authorization": auth_header}
                 url = BITSO_BASE_URL + path
-                st.write(f"**URL:** {url}")
+                st.write("**URL:** " + url)
                 
                 resp = requests.get(url, headers=headers, timeout=10)
-                st.write(f"**Status Code:** {resp.status_code}")
-                st.write(f"**Respuesta RAW:**")
+                st.write("**Status Code:** " + str(resp.status_code))
+                st.write("**Respuesta RAW:**")
                 st.code(resp.text[:500])
                 
                 if resp.status_code == 200:
@@ -969,15 +969,13 @@ if MODO_REAL:
                                 }
                         st.success("💰 Saldo en Bitso:")
                         for cur, vals in balances.items():
-                            st.write(f"**{cur.upper()}**: {vals['available']:.8f}")
+                            st.write("**" + cur.upper() + "**: " + str(vals['available']))
                     else:
-                        st.error(f"API respondió sin success: {data}")
+                        st.error("API respondió sin success")
                 else:
-                    st.error(f"HTTP {resp.status_code}")
+                    st.error("HTTP " + str(resp.status_code))
             except Exception as e:
-                st.error(f"Excepción: {str(e)}")
-                import traceback
-                st.code(traceback.format_exc())
+                st.error("Excepción: " + str(e))
 
 # ===== GESTIÓN DE BACKUPS =====
 st.sidebar.markdown("---")
@@ -987,7 +985,7 @@ with st.sidebar.expander("💾 Gestionar Backups"):
     if not backups:
         st.info("No hay backups guardados")
     else:
-        st.write(f"Total: **{len(backups)}** backups")
+        st.write("Total: " + str(len(backups)) + " backups")
         backup_seleccionado = st.selectbox(
             "Selecciona un backup:",
             options=backups,
@@ -997,32 +995,32 @@ with st.sidebar.expander("💾 Gestionar Backups"):
         with col1:
             if st.button("📥 Restaurar", key="btn_restore"):
                 if restaurar_backup(backup_seleccionado):
-                    st.success(f"✅ Restaurado")
+                    st.success("✅ Restaurado")
                     st.rerun()
                 else:
                     st.error("❌ Error")
         with col2:
             if st.button("🗑️ Eliminar", key="btn_delete"):
                 try:
-                    delete_url = f"{FIREBASE_URL}/backups/{backup_seleccionado}.json"
+                    delete_url = FIREBASE_URL + "/backups/" + backup_seleccionado + ".json"
                     resp = requests.delete(delete_url, timeout=10)
                     if resp.status_code == 200:
-                        st.success(f"🗑️ Eliminado")
+                        st.success("🗑️ Eliminado")
                         st.rerun()
                     else:
                         st.error("❌ Error")
                 except Exception as e:
-                    st.error(f"❌ {e}")
+                    st.error("❌ " + str(e))
         if st.button("💾 Crear backup manual", key="btn_manual_backup"):
             with st.spinner("Creando backup..."):
                 key, msg = crear_backup()
                 if key:
-                    st.success(f"✅ {key}")
+                    st.success("✅ " + str(key))
                     st.rerun()
                 else:
-                    st.error(f"❌ {msg}")
+                    st.error("❌ " + str(msg))
 
-# ===== CONTROL MANUAL =====
+# ===== CONTROL MANUAL - VENTA =====
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🎮 Control Manual**")
 
@@ -1039,9 +1037,9 @@ if st.sidebar.button("💸 Vender TODO"):
                 if MODO_REAL:
                     order = place_bitso_order("btc_mxn", "sell", f"{qty:.8f}", f"{precio_maker_venta:.2f}")
                     if not order or order.get("error"):
-                        st.sidebar.error(f"❌ Orden BTC: {order.get('error', 'desconocido')}")
+                        st.sidebar.error("❌ Orden BTC falló")
                         st.stop()
-                    send_telegram(f"⏳ VENTA MAKER BTC colocada a ${precio_maker_venta:,.0f}")
+                    send_telegram("⏳ VENTA MAKER BTC colocada")
                     st.stop()
                 net = qty * precio_maker_venta * 0.994
                 profit = net - (qty * entry)
@@ -1053,7 +1051,7 @@ if st.sidebar.button("💸 Vender TODO"):
                 resultado = "GANANCIA" if profit > 0 else "PÉRDIDA"
                 signo = "+" if profit > 0 else ""
                 modo = "REAL" if MODO_REAL else "SIM"
-                msg = f"🔴 VENTA [MAKER-{modo}] BTC | Neto: ${net:.2f} | PROFIT: {signo}${profit:.2f} ({resultado})"
+                msg = "🔴 VENTA [MAKER-" + modo + "] BTC | Neto: $" + str(round(net, 2)) + " | PROFIT: " + signo + "$" + str(round(profit, 2)) + " (" + resultado + ")"
                 send_telegram(msg)
                 st.session_state.trades.append((datetime.now(), msg))
                 vendido = True
@@ -1064,9 +1062,9 @@ if st.sidebar.button("💸 Vender TODO"):
                 if MODO_REAL:
                     order = place_bitso_order("eth_mxn", "sell", f"{qty:.8f}", f"{precio_maker_venta:.2f}")
                     if not order or order.get("error"):
-                        st.sidebar.error(f"❌ Orden ETH: {order.get('error', 'desconocido')}")
+                        st.sidebar.error("❌ Orden ETH falló")
                         st.stop()
-                    send_telegram(f"⏳ VENTA MAKER ETH colocada a ${precio_maker_venta:,.0f}")
+                    send_telegram("⏳ VENTA MAKER ETH colocada")
                     st.stop()
                 net = qty * precio_maker_venta * 0.994
                 profit = net - (qty * entry)
@@ -1078,7 +1076,7 @@ if st.sidebar.button("💸 Vender TODO"):
                 resultado = "GANANCIA" if profit > 0 else "PÉRDIDA"
                 signo = "+" if profit > 0 else ""
                 modo = "REAL" if MODO_REAL else "SIM"
-                msg = f"🔴 VENTA [MAKER-{modo}] ETH | Neto: ${net:.2f} | PROFIT: {signo}${profit:.2f} ({resultado})"
+                msg = "🔴 VENTA [MAKER-" + modo + "] ETH | Neto: $" + str(round(net, 2)) + " | PROFIT: " + signo + "$" + str(round(profit, 2)) + " (" + resultado + ")"
                 send_telegram(msg)
                 st.session_state.trades.append((datetime.now(), msg))
                 vendido = True
@@ -1087,20 +1085,20 @@ if st.sidebar.button("💸 Vender TODO"):
                 st.sidebar.success("✅ Posiciones vendidas")
                 st.rerun()
     except Exception as e:
-        st.sidebar.error(f"❌ {e}")
+        st.sidebar.error("❌ " + str(e))
 
 def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
     prob = calcular_probabilidad(confianza)
     volumen = get_onchain_volume(sym)
     if volumen and volumen < 0.5:
-        st.sidebar.warning(f"⚠️ Volumen bajo ({volumen:.2f}B)")
+        st.sidebar.warning("⚠️ Volumen bajo")
         return
-    orden_key = f"orden_pendiente_{sym}"
+    orden_key = "orden_pendiente_" + sym
     if st.session_state.get(orden_key):
-        st.sidebar.info(f"⏳ Ya hay orden pendiente para {sym}")
+        st.sidebar.info("⏳ Ya hay orden pendiente para " + sym)
         return
     
-    compra_key = f"ultima_compra_{sym}"
+    compra_key = "ultima_compra_" + sym
     if st.session_state.get(compra_key) == st.session_state.cycle:
         return
     
@@ -1111,14 +1109,14 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
     elif prob >= 50:
         monto, cant = 50.0, 2
     else:
-        st.sidebar.warning(f"⚠️ Probabilidad baja ({prob:.1f}%)")
+        st.sidebar.warning("⚠️ Probabilidad baja")
         return
     if monto > MONTO_MAXIMO_POR_OPERACION:
-        st.sidebar.warning(f"⚠️ Monto excede límite por operación")
+        st.sidebar.warning("⚠️ Monto excede límite por operación")
         return
     monto_hoy = st.session_state.get("monto_dia", 0)
     if monto_hoy + (monto * cant) > MONTO_MAXIMO_DIARIO:
-        st.sidebar.warning(f"⚠️ Excede límite diario")
+        st.sidebar.warning("⚠️ Excede límite diario")
         return
     precio_maker = precio * 0.998
     if st.session_state.positions.get(sym, 0) > 0:
@@ -1128,14 +1126,14 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
         if balance_real:
             mxn_disponible = balance_real.get("mxn", {}).get("available", 0)
             if mxn_disponible < monto * cant:
-                st.sidebar.warning(f"⚠️ Saldo insuficiente: ${mxn_disponible:.2f}")
+                st.sidebar.warning("⚠️ Saldo insuficiente: $" + str(round(mxn_disponible, 2)))
                 return
     if MODO_REAL:
         book = "btc_mxn" if sym == "BTC" else "eth_mxn"
         qty = (monto * 0.999) / precio_maker
         order = place_bitso_order(book, "buy", f"{qty:.8f}", f"{precio_maker:.2f}")
         if not order or order.get("error"):
-            st.sidebar.error(f"❌ Orden Maker: {order.get('error', 'desconocido')}")
+            st.sidebar.error("❌ Orden Maker falló")
             return
         st.session_state[orden_key] = {
             "oid": order.get("oid"),
@@ -1149,11 +1147,10 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
             "confianza": confianza
         }
         st.session_state[compra_key] = st.session_state.cycle
-        st.sidebar.info(f"⏳ Orden Maker colocada: {qty:.8f} {sym} a ${precio_maker:,.0f}")
-        send_telegram(f"⏳ **ORDEN MAKER {sym}**\nPrecio: ${precio_maker:,.0f}\nEsperando ejecución (comisión 0.60%)")
+        st.sidebar.info("⏳ Orden Maker colocada")
+        send_telegram("⏳ ORDEN MAKER " + sym + " | Precio: $" + str(round(precio_maker, 2)))
         return
     
-    # Modo simulado
     ejecutadas = 0
     if st.session_state.balance >= monto:
         if st.session_state.balance < cant * monto:
@@ -1173,63 +1170,65 @@ def ejecutar_compra_profesional(sym, precio, confianza, razon, tendencia_30d):
         if ejecutadas > 0:
             st.session_state[compra_key] = st.session_state.cycle
             save_data()
-            msg = f"🟢 COMPRA [MAKER-SIM] {sym} | {ejecutadas}x${monto:.0f} | ${precio_maker:,.0f} | Prob: {prob:.1f}%"
+            msg = "🟢 COMPRA [MAKER-SIM] " + sym + " | " + str(ejecutadas) + "x$" + str(monto) + " | Prob: " + str(round(prob, 1)) + "%"
             send_telegram(msg)
             st.session_state.trades.append((datetime.now(), msg))
-            st.sidebar.success(f"✅ {ejecutadas} compras Maker simuladas de {sym}")
+            st.sidebar.success("✅ " + str(ejecutadas) + " compras Maker simuladas")
+
+# ==================== FIN PARTE 7A ====================
+# ==================== PARTE 7B: BOTONES DE COMPRA CON DIAGNÓSTICO ====================
 
 # ===== BOTÓN DE COMPRA BTC CON DIAGNÓSTICO =====
 if st.sidebar.button("🟢 Comprar BTC AHORA"):
-    with st.sidebar.expander("🔍 Diagnóstico de compra", expanded=True):
+    with st.sidebar.expander("🔍 Diagnóstico de compra BTC", expanded=True):
         st.write("**1. Obteniendo precio...**")
         precio = get_bitso_price("btc_mxn")
-        st.write(f"Precio: {precio}")
+        st.write("Precio: " + str(precio))
         
         st.write("**2. Verificando posición actual...**")
         pos_actual = st.session_state.positions.get("BTC", 0)
-        st.write(f"Posición actual: {pos_actual}")
+        st.write("Posición actual: " + str(pos_actual))
         
         st.write("**3. Verificando MODO_REAL...**")
-        st.write(f"MODO_REAL: {MODO_REAL}")
+        st.write("MODO_REAL: " + str(MODO_REAL))
         
         st.write("**4. Verificando límites...**")
-        st.write(f"Máx por operación: ${MONTO_MAXIMO_POR_OPERACION}")
-        st.write(f"Máx por día: ${MONTO_MAXIMO_DIARIO}")
-        st.write(f"Monto usado hoy: ${st.session_state.get('monto_dia', 0)}")
+        st.write("Máx por operación: $" + str(MONTO_MAXIMO_POR_OPERACION))
+        st.write("Máx por día: $" + str(MONTO_MAXIMO_DIARIO))
+        st.write("Monto usado hoy: $" + str(st.session_state.get("monto_dia", 0)))
         
         if not precio:
             st.error("❌ No se pudo obtener el precio")
         elif pos_actual > 0:
-            st.warning(f"⚠️ Ya tienes posición: {pos_actual}")
+            st.warning("⚠️ Ya tienes posición: " + str(pos_actual))
         elif not MODO_REAL:
             st.error("❌ MODO_REAL está en FALSE. Actívalo en Secrets.")
         else:
             st.success("✅ Todo bien. Intentando comprar...")
             
-            # Intentar orden directa de prueba ($50 MXN)
             monto = 50.0
             precio_obj = precio * 0.998
             qty = (monto * 0.999) / precio_obj
             
-            st.write(f"**Monto:** ${monto}")
-            st.write(f"**Precio objetivo:** ${precio_obj:,.0f}")
-            st.write(f"**Cantidad:** {qty:.8f} BTC")
+            st.write("**Monto:** $" + str(monto))
+            st.write("**Precio objetivo:** $" + str(round(precio_obj, 2)))
+            st.write("**Cantidad:** " + str(round(qty, 8)) + " BTC")
             
             with st.spinner("Enviando orden a Bitso..."):
-                order = place_bitso_order("btc_mxn", "buy", f"{qty:.8f}", f"{precio_obj:.2f}")
+                order = place_bitso_order("btc_mxn", "buy", str(round(qty, 8)), str(round(precio_obj, 2)))
             
-            st.write(f"**Respuesta de Bitso:**")
+            st.write("**Respuesta de Bitso:**")
             if order and not order.get("error"):
-                st.success(f"✅ Orden colocada: {order.get('oid')}")
+                st.success("✅ Orden colocada: " + str(order.get("oid")))
                 st.json(order)
-                # Registrar en historial
-                msg = f"🟢 ORDEN MAKER [REAL] BTC | {qty:.8f} BTC a ${precio_obj:,.0f} | OID: {order.get('oid')}"
+                msg = "🟢 ORDEN MAKER [REAL] BTC | " + str(round(qty, 8)) + " BTC a $" + str(round(precio_obj, 2))
                 send_telegram(msg)
                 st.session_state.trades.append((datetime.now(), msg))
-                st.session_state[f"ultima_compra_BTC"] = st.session_state.cycle
+                st.session_state["ultima_compra_BTC"] = st.session_state.cycle
                 save_data()
             else:
-                st.error(f"❌ Error: {order.get('error', 'desconocido') if order else 'sin respuesta'}")
+                error_txt = order.get("error", "desconocido") if order else "sin respuesta"
+                st.error("❌ Error: " + str(error_txt))
                 st.json(order)
 
 # ===== BOTÓN DE COMPRA ETH CON DIAGNÓSTICO =====
@@ -1237,11 +1236,55 @@ if st.sidebar.button("🟢 Comprar ETH AHORA"):
     with st.sidebar.expander("🔍 Diagnóstico de compra ETH", expanded=True):
         st.write("**1. Obteniendo precio...**")
         precio = get_bitso_price("eth_mxn")
-        st.write(f"Precio: {precio}")
+        st.write("Precio: " + str(precio))
         
         st.write("**2. Verificando posición actual...**")
         pos_actual = st.session_state.positions.get("ETH", 0)
-        st.write(f"Posición actu
+        st.write("Posición actual: " + str(pos_actual))
+        
+        st.write("**3. Verificando MODO_REAL...**")
+        st.write("MODO_REAL: " + str(MODO_REAL))
+        
+        st.write("**4. Verificando límites...**")
+        st.write("Máx por operación: $" + str(MONTO_MAXIMO_POR_OPERACION))
+        st.write("Máx por día: $" + str(MONTO_MAXIMO_DIARIO))
+        st.write("Monto usado hoy: $" + str(st.session_state.get("monto_dia", 0)))
+        
+        if not precio:
+            st.error("❌ No se pudo obtener el precio")
+        elif pos_actual > 0:
+            st.warning("⚠️ Ya tienes posición: " + str(pos_actual))
+        elif not MODO_REAL:
+            st.error("❌ MODO_REAL está en FALSE. Actívalo en Secrets.")
+        else:
+            st.success("✅ Todo bien. Intentando comprar...")
+            
+            monto = 50.0
+            precio_obj = precio * 0.998
+            qty = (monto * 0.999) / precio_obj
+            
+            st.write("**Monto:** $" + str(monto))
+            st.write("**Precio objetivo:** $" + str(round(precio_obj, 2)))
+            st.write("**Cantidad:** " + str(round(qty, 8)) + " ETH")
+            
+            with st.spinner("Enviando orden a Bitso..."):
+                order = place_bitso_order("eth_mxn", "buy", str(round(qty, 8)), str(round(precio_obj, 2)))
+            
+            st.write("**Respuesta de Bitso:**")
+            if order and not order.get("error"):
+                st.success("✅ Orden colocada: " + str(order.get("oid")))
+                st.json(order)
+                msg = "🟢 ORDEN MAKER [REAL] ETH | " + str(round(qty, 8)) + " ETH a $" + str(round(precio_obj, 2))
+                send_telegram(msg)
+                st.session_state.trades.append((datetime.now(), msg))
+                st.session_state["ultima_compra_ETH"] = st.session_state.cycle
+                save_data()
+            else:
+                error_txt = order.get("error", "desconocido") if order else "sin respuesta"
+                st.error("❌ Error: " + str(error_txt))
+                st.json(order)
+
+# ==================== FIN PARTE 7B ====================
 # ==================== PARTE 8: PLACEHOLDERS ====================
 tabla_placeholder = st.empty()
 info_placeholder = st.empty()
