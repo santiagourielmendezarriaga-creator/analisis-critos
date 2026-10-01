@@ -1499,7 +1499,7 @@ st.sidebar.caption("📌 Las salidas de riesgo se aplican siempre, sin depender 
                    "de la fase. El límite de pérdida sale a mercado y protege incluso con "
                    "'solo señales' activado; la toma de ganancia usa orden Maker.")
 
-    # ══════════════════ BLOQUE 9/10: botones, cartera real y control manual ══════════════════
+# ══════════════════ BLOQUE 9/10: botones, cartera real y control manual ══════════════════
 
 if st.sidebar.button("Reiniciar simulación"):
     with st.spinner("💾 Creando respaldo..."):
@@ -1552,6 +1552,19 @@ if st.sidebar.button("🧹 Liberar órdenes pendientes"):
         )
     guardar_datos()
     st.sidebar.success("✅ Órdenes pendientes liberadas")
+    st.rerun()
+
+# ===== OLVIDAR BTC (NO VENDERLO) =====
+st.sidebar.markdown("**🗑️ Quitar BTC del bot**")
+
+if st.sidebar.button("🗑️ Olvidar BTC (dejar de venderlo)"):
+    st.session_state.posiciones["BTC"] = 0.0
+    st.session_state.precio_entrada["BTC"] = 0.0
+    st.session_state.precio_maximo["BTC"] = 0.0
+    st.session_state["venta_fallida_BTC"] = 0.0
+    st.session_state["orden_pendiente_BTC"] = None
+    guardar_datos()
+    st.sidebar.success("✅ BTC olvidado. El bot ya no intentará venderlo. Sigue en tu Bitso.")
     st.rerun()
 
 # ===== CARTERA REAL DE BITSO =====
@@ -1764,7 +1777,7 @@ def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_oncha
         enviar_telegram(msg)
         return True
     except Exception:
-        return False 
+        return False
 # ══════════════════ BLOQUE 10/10: ciclo, panel, contador y refresco automático ══════════════════
 
 def _ejecutar_ordenes_pendientes():
