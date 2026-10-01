@@ -25,6 +25,9 @@ GANANCIA_MINIMA_VENTA_PCT = 0.0
 # ⭐ NUEVO: True  = vende justo al alcanzar la toma de ganancia (simple y predecible)
 #            False = deja correr la ganancia y sale con la detención móvil
 TOMA_GANANCIA_FIJA = True
+# ⭐ NUEVO: cómo se ejecutan las salidas
+SALIDA_A_MERCADO = True      # el límite de pérdida y la detención móvil salen a mercado
+MARGEN_AGRESIVO_PCT = 0.5    # si el mercado es rechazado: límite 0.5% por DEBAJO del mercado
 MENSAJES = deque(maxlen=30)            # avisos del ciclo (antes iban a la barra lateral)
 
 def avisar(mensaje, nivel="info"):
@@ -459,21 +462,23 @@ def obtener_saldo_bitso(usar_cache=True):
         st.session_state["error_saldo_bitso"] = f"Excepción consultando el saldo: {e}"
         print(f"Error consultando saldo: {e}")
         return None
-        # ══════════════════ BLOQUE 5/10: órdenes de Bitso ══════════════════
+       # ══════════════════ BLOQUE 5/10: órdenes de Bitso ══════════════════
 
-def colocar_orden_bitso(libro, lado, cantidad_mayor, precio):
+def colocar_orden_bitso(libro, lado, cantidad_mayor, precio, tipo="limit"):
+    """
+    Coloca una orden en Bitso.
+      tipo="limit"  → orden Maker con precio (la de siempre, mejor precio)
+      tipo="market" → orden a mercado, sin precio (llenado inmediato)
+    ⭐ NUEVO: las salidas de pánico (límite de pérdida y detención móvil) usan mercado.
+    """
     if not MODO_REAL:
         print("⚠️ MODO_REAL desactivado.")
         return None
     try:
         ruta = "/v3/orders/"
-        cuerpo = {
-            "book": libro,
-            "side": lado,
-            "type": "limit",
-            "major": str(cantidad_mayor),
-            "price": str(precio)
-        }
+        cuerpo = {"book": libro, "side": lado, "type": tipo, "major": str(cantidad_mayor)}
+        if tipo != "market":
+            cuerpo["price"] = str(precio)
         cuerpo_json = json.dumps(cuerpo, separators=(',', ':'))
         cabecera, _ = _crear_cabecera_autenticacion("POST", ruta, cuerpo_json)
         if not cabecera:
@@ -487,11 +492,11 @@ def colocar_orden_bitso(libro, lado, cantidad_mayor, precio):
         datos = respuesta.json()
         if respuesta.status_code == 200 and isinstance(datos, dict) and datos.get("success"):
             orden = datos.get("payload", {})
-            print(f"✅ Orden colocada: {orden.get('oid')}")
+            print(f"✅ Orden {tipo} colocada: {orden.get('oid')}")
             return orden
         error = datos.get("error", {}) if isinstance(datos, dict) else {}
-        mensaje_error = error.get("message", "Error desconocido")
-        print(f"❌ Error al colocar la orden: {mensaje_error}")
+        mensaje_error = error.get("message") or str(datos)[:200] or "Error desconocido"
+        print(f"❌ Error al colocar la orden {tipo}: {mensaje_error}")
         return {"error": mensaje_error}
     except Exception as e:
         print(f"❌ Excepción colocando la orden: {e}")
@@ -1060,10 +1065,18 @@ def _aplicar_venta(simbolo, precio, cantidad_forzada=None):
     st.session_state.ops_del_dia += 1
     return neto, ganancia
 
-def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0.0):
+def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0.0,
+                     salida_rapida=False, forzar=False):
     """
     ⭐ NUEVO: cierra la posición (real o simulada) dejando consistentes el registro,
     Telegram y el respaldo. Devuelve True si la venta se envió.
+
+    salida_rapida=True  → límite de pérdida y detención móvil: sale a MERCADO para
+                          garantizar el llenado (si Bitso lo rechaza, usa un límite
+                          agresivo por debajo del mercado).
+    salida_rapida=False → toma de ganancia y señal: orden Maker por encima del mercado,
+                          para cobrar un precio algo mejor.
+    forzar=True         → vende aunque esté en pérdida (venta manual).
     """
     # Nunca duplicar una venta que ya está en camino al exchange
     if st.session_state.get(f"orden_pendiente_{simbolo}"):
@@ -1078,55 +1091,73 @@ def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0
 
     # La señal de venta solo cierra si no se está en pérdida. Quien corta las pérdidas
     # es el límite de pérdida de _revisar_salidas().
-    if entrada > 0 and precio < entrada * (1 + minima_ganancia_pct / 100.0):
+    if not forzar and entrada > 0 and precio < entrada * (1 + minima_ganancia_pct / 100.0):
         ganancia_potencial = ((precio / entrada) - 1) * 100
         avisar(f"⏸️ {simbolo}: venta por {motivo} frenada; está en {ganancia_potencial:+.2f}% "
                f"(mínimo {minima_ganancia_pct:.2f}%). Esperando al límite de pérdida.", "warning")
         return False
 
-    precio_maker_venta = precio * 1.002
     libro = "btc_mxn" if simbolo == "BTC" else "eth_mxn"
     # Evita recomprar el mismo símbolo en el mismo ciclo tras una salida
     st.session_state[f"ultima_compra_{simbolo}"] = st.session_state.ciclo
 
+    etiqueta_salida = "mercado" if (salida_rapida and SALIDA_A_MERCADO) else "maker"
+    motivo_completo = f"{motivo} [{etiqueta_salida}]"
+
     if MODO_REAL:
-        try:
-            orden = colocar_orden_bitso(libro, "sell", f"{cantidad:.8f}", f"{precio_maker_venta:.2f}")
-        except Exception as e:
-            avisar(f"❌ Error enviando la venta de {simbolo}: {e}", "error")
-            return False
+        if salida_rapida and SALIDA_A_MERCADO:
+            # 1) intento a mercado: llenado inmediato
+            orden = colocar_orden_bitso(libro, "sell", f"{cantidad:.8f}", "0", tipo="market")
+            precio_envio = precio
+            if not orden or orden.get("error"):
+                # 2) respaldo: límite AGRESIVO por debajo del mercado (cruza el libro)
+                avisar(f"⚠️ La orden a mercado de {simbolo} fue rechazada; "
+                       f"reintentando con límite agresivo -{MARGEN_AGRESIVO_PCT}%", "warning")
+                precio_envio = precio * (1 - MARGEN_AGRESIVO_PCT / 100.0)
+                orden = colocar_orden_bitso(libro, "sell", f"{cantidad:.8f}",
+                                            f"{precio_envio:.2f}", tipo="limit")
+        else:
+            precio_envio = precio * 1.002
+            orden = colocar_orden_bitso(libro, "sell", f"{cantidad:.8f}",
+                                        f"{precio_envio:.2f}", tipo="limit")
+
         if not orden or orden.get("error"):
-            avisar(f"❌ Venta Maker {simbolo} falló: "
+            avisar(f"❌ Venta {simbolo} falló: "
                    f"{orden.get('error') if orden else 'sin respuesta'}", "error")
             return False
+
         st.session_state[f"orden_pendiente_{simbolo}"] = {
             "oid": orden.get("oid"), "side": "sell", "sym": simbolo,
-            "price": precio_maker_venta, "qty": cantidad, "monto": 0.0,
-            "timestamp": time.time(), "confianza": confianza, "motivo": motivo,
+            "price": precio_envio, "qty": cantidad, "monto": 0.0,
+            "timestamp": time.time(), "confianza": confianza, "motivo": motivo_completo,
         }
         guardar_datos()
-        enviar_telegram(f"⏳ **VENTA MAKER {simbolo}** ({motivo}) a ${precio_maker_venta:,.0f}")
-        avisar(f"⏳ Venta Maker {simbolo} enviada ({motivo})", "info")
+        enviar_telegram(f"⏳ **VENTA {simbolo}** ({motivo_completo})")
+        avisar(f"⏳ Venta {simbolo} enviada ({motivo_completo})", "info")
         return True
 
-    neto, ganancia = _aplicar_venta(simbolo, precio_maker_venta)
-    porcentaje = ((precio_maker_venta / entrada) - 1) * 100 if entrada else 0.0
+    # --- simulación ---
+    # a mercado se asume el precio actual (sin la bonificación del Maker)
+    precio_sim = precio if etiqueta_salida == "mercado" else precio * 1.002
+    neto, ganancia = _aplicar_venta(simbolo, precio_sim)
+    porcentaje = ((precio_sim / entrada) - 1) * 100 if entrada else 0.0
     signo = "+" if ganancia > 0 else ""
     resultado = "GANANCIA" if ganancia > 0 else "PÉRDIDA"
     # el texto "PROFIT:" se mantiene porque el análisis de aprendizaje lo lee con regex
-    msg = (f"🔴 VENTA [MAKER-SIM] {simbolo} | {motivo} | Neto: ${neto:.2f} | "
+    msg = (f"🔴 VENTA [MAKER-SIM] {simbolo} | {motivo_completo} | Neto: ${neto:.2f} | "
            f"PROFIT: {signo}${ganancia:.2f} ({signo}{porcentaje:.2f}%) ({resultado})")
     enviar_telegram(msg)
     st.session_state.operaciones.append((datetime.now(), msg))
     guardar_datos()
-    avisar(f"✅ Venta {simbolo} ({motivo}): {signo}${ganancia:.2f}", "success")
+    avisar(f"✅ Venta {simbolo} ({motivo_completo}): {signo}${ganancia:.2f}", "success")
     return True
 
 def _revisar_salidas(simbolo, precio):
     """
     ⭐ NUEVO: salidas de riesgo, en orden de prioridad:
-      1. Límite de pérdida  (protege el capital)
-      2. Toma de ganancia   (asegura la ganancia), o detención móvil si TOMA_GANANCIA_FIJA = False
+      1. Límite de pérdida  → salida A MERCADO (garantiza el corte)
+      2. Toma de ganancia   → salida Maker (cobra mejor precio), o detención móvil
+                              (a mercado) si TOMA_GANANCIA_FIJA = False
     No dependen del horario ni de la fase: si hay que salir, se sale.
     """
     cantidad = float(st.session_state.posiciones.get(simbolo, 0.0))
@@ -1164,16 +1195,19 @@ def _revisar_salidas(simbolo, precio):
 
     if precio <= umbral_perdida:
         return _cerrar_posicion(simbolo, precio,
-                                f"límite de pérdida {st.session_state.limite_perdida}%")
+                                f"límite de pérdida {st.session_state.limite_perdida}%",
+                                salida_rapida=True)
 
     if TOMA_GANANCIA_FIJA:
         if precio >= umbral_ganancia:
             return _cerrar_posicion(simbolo, precio,
-                                    f"toma de ganancia {st.session_state.toma_ganancia}%")
+                                    f"toma de ganancia {st.session_state.toma_ganancia}%",
+                                    salida_rapida=False)
     elif maximo >= umbral_ganancia and precio <= umbral_movil:
         return _cerrar_posicion(
             simbolo, precio,
-            f"detención móvil {st.session_state.seguimiento}% desde ${maximo:,.0f}")
+            f"detención móvil {st.session_state.seguimiento}% desde ${maximo:,.0f}",
+            salida_rapida=True)
 
     return False
 
@@ -1321,7 +1355,8 @@ st.session_state.modo_solo_senales = st.sidebar.checkbox(
 
 st.sidebar.caption("💰 La cartera se muestra en el panel principal (se refresca en cada ciclo).")
 st.sidebar.caption("📌 Las salidas de riesgo (límite de pérdida y toma de ganancia) se aplican "
-                   "siempre, sin depender del horario ni de la fase.")
+                   "siempre, sin depender del horario ni de la fase. El límite de pérdida sale "
+                   "a mercado; la toma de ganancia, con orden Maker.")
 # ══════════════════ BLOQUE 9/10: botones, cartera real y control manual ══════════════════
 
 if st.sidebar.button("Reiniciar simulación"):
@@ -1386,12 +1421,17 @@ if st.sidebar.button("🔄 Sincronizar cartera con Bitso"):
         st.session_state.saldo = mxn
         st.session_state.posiciones["BTC"] = cantidad_btc
         st.session_state.posiciones["ETH"] = cantidad_eth
-        # Si no sabemos a qué precio compraste, usamos el precio actual para que las
-        # salidas por reglas tengan una referencia válida. Cámbialo por tu costo real.
-        st.session_state.precio_entrada["BTC"] = precio_btc if cantidad_btc > 0 else 0.0
-        st.session_state.precio_entrada["ETH"] = precio_eth if cantidad_eth > 0 else 0.0
-        st.session_state.precio_maximo["BTC"] = precio_btc if cantidad_btc > 0 else 0.0
-        st.session_state.precio_maximo["ETH"] = precio_eth if cantidad_eth > 0 else 0.0
+
+        # ⭐ Conserva el precio de entrada si ya existe, así no pisa tu TP/SL actuales.
+        for simbolo_sync, cantidad_sync, precio_sync in [
+            ("BTC", cantidad_btc, precio_btc), ("ETH", cantidad_eth, precio_eth)
+        ]:
+            if cantidad_sync <= 0:
+                st.session_state.precio_entrada[simbolo_sync] = 0.0
+                st.session_state.precio_maximo[simbolo_sync] = 0.0
+            elif float(st.session_state.precio_entrada.get(simbolo_sync, 0.0) or 0.0) <= 0:
+                st.session_state.precio_entrada[simbolo_sync] = precio_sync
+                st.session_state.precio_maximo[simbolo_sync] = precio_sync
 
         guardar_datos()
         st.sidebar.success(
@@ -1456,48 +1496,19 @@ if st.sidebar.button("💸 Vender TODO"):
             precio = precios.get(simbolo)
             if cantidad <= 0:
                 continue
-            # ⭐ NUEVO: si ya hay una venta en camino, no mandar otra
-            if st.session_state.get(f"orden_pendiente_{simbolo}"):
-                st.sidebar.warning(f"⏳ Ya hay una orden pendiente para {simbolo}; se omite")
-                continue
             if not precio:
                 st.sidebar.error(f"❌ Sin precio para {simbolo}")
                 continue
-            precio_maker_venta = precio * 1.002
-            libro = "btc_mxn" if simbolo == "BTC" else "eth_mxn"
-            if MODO_REAL:
-                # ⭐ FIX: antes hacía st.stop() (abortaba todo) y no guardaba la orden
-                orden = colocar_orden_bitso(libro, "sell", f"{cantidad:.8f}", f"{precio_maker_venta:.2f}")
-                if not orden or orden.get("error"):
-                    st.sidebar.error(f"❌ La orden de venta {simbolo} falló")
-                    continue
-                st.session_state[f"orden_pendiente_{simbolo}"] = {
-                    "oid": orden.get("oid"),
-                    "side": "sell",
-                    "sym": simbolo,
-                    "price": precio_maker_venta,
-                    "qty": cantidad,
-                    "monto": 0.0,
-                    "timestamp": time.time(),
-                    "motivo": "venta manual (Vender TODO)",
-                }
-                enviar_telegram(f"⏳ VENTA MAKER {simbolo} | {cantidad:.8f} a ${precio_maker_venta:,.0f}")
+            # ⭐ NUEVO: venta manual = salida A MERCADO y sin condición de ganancia.
+            # _cerrar_posicion ya guarda los datos y evita duplicar órdenes pendientes.
+            if _cerrar_posicion(simbolo, precio, "venta manual (Vender TODO)",
+                                salida_rapida=True, forzar=True):
                 vendido = True
-                continue
-            neto, ganancia = _aplicar_venta(simbolo, precio_maker_venta)
-            resultado = "GANANCIA" if ganancia > 0 else "PÉRDIDA"
-            signo = "+" if ganancia > 0 else ""
-            msg = (f"🔴 VENTA [MAKER-SIM] {simbolo} | venta manual | Neto: ${neto:.2f} | "
-                   f"PROFIT: {signo}${ganancia:.2f} ({resultado})")
-            enviar_telegram(msg)
-            st.session_state.operaciones.append((datetime.now(), msg))
-            vendido = True
         if vendido:
-            guardar_datos()
             st.sidebar.success("✅ Venta(s) procesada(s)")
             st.rerun()
         else:
-            st.sidebar.info("No hay posiciones abiertas")
+            st.sidebar.info("No hay posiciones abiertas (o ya había órdenes pendientes)")
     except Exception as e:
         st.sidebar.error("❌ " + str(e))
 
