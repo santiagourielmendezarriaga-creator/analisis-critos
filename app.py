@@ -1707,7 +1707,8 @@ def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_oncha
         return True
     except Exception:
         return False
-      # ══════════════════ BLOQUE 10/10: ciclo, panel, contador y refresco automático ══════════════════
+     
+# ══════════════════ BLOQUE 10/10: ciclo, panel, contador y refresco automático ══════════════════
 
 def _ejecutar_ordenes_pendientes():
     """Resuelve las órdenes Maker pendientes y las aplica al registro contable."""
@@ -1962,11 +1963,18 @@ def ejecutar_ciclo(interfaz):
 
     if saldo_real:
         mxn_real = float(saldo_real.get("mxn", {}).get("available", 0.0))
+        # ⭐ NUEVO: el total incluye lo reservado en órdenes abiertas
+        mxn_total_real = float(saldo_real.get("mxn", {}).get("total", 0.0))
+        reservado = max(0.0, mxn_total_real - mxn_real)
         btc_real = float(saldo_real.get("btc", {}).get("available", 0.0))
         eth_real = float(saldo_real.get("eth", {}).get("available", 0.0))
         valor_total_real = mxn_real + (btc_real * btc) + (eth_real * eth)
 
-        columnas[0].metric("Saldo MXN (Bitso)", f"${mxn_real:,.2f}")
+        columnas[0].metric(
+            "Saldo MXN (Bitso)", f"${mxn_real:,.2f}",
+            help=f"Disponible para operar. El total de tu cuenta (incluido lo reservado "
+                 f"en órdenes abiertas) es ${mxn_total_real:,.2f}."
+                 + (f" Diferencia reservada: ${reservado:,.2f}." if reservado > 0.01 else ""))
         columnas[1].metric("Valor total (Bitso)", f"${valor_total_real:,.2f}")
         columnas[2].metric("BTC / ETH (Bitso)", f"{btc_real:.6f} / {eth_real:.6f}")
         columnas[3].metric("Operaciones hoy", st.session_state.ops_del_dia)
@@ -1975,6 +1983,9 @@ def ejecutar_ciclo(interfaz):
             f"📋 Registro interno del bot: ${st.session_state.saldo:,.2f} "
             f"({st.session_state.posiciones.get('BTC', 0):.6f} BTC / "
             f"{st.session_state.posiciones.get('ETH', 0):.6f} ETH)"
+            # ⭐ NUEVO: explica la diferencia entre disponible y total
+            + (f" | 🔒 Reservado en órdenes abiertas: ${reservado:,.2f}"
+               if reservado > 0.01 else "")
         )
     else:
         valor_total_simulado = st.session_state.saldo
@@ -2162,7 +2173,7 @@ def _panel():
         "cartera": st.empty(),
         "posiciones": st.empty(),
         "historial": st.container(),
-        "aciertos": st.container(),    # ⭐ NUEVO: contador aciertos vs fallos
+        "aciertos": st.container(),
         "ultima_senal": st.empty(),
         "estado": st.empty(),
         "mensajes": st.empty(),
