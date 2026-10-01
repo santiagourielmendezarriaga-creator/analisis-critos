@@ -987,7 +987,7 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
         return "BUY", confianza, f"Señal de compra ({puntuacion:.1f})", {}
     else:
         return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
-    # ══════════════════ BLOQUE 8/10: interfaz, cartera, compra automática y salidas ══════════════════
+    # ══════════════════ BLOQUE 8/10: interfaz, cartera, compra automática, salidas y contador ══════════════════
 
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
@@ -1107,8 +1107,8 @@ def _aplicar_venta(simbolo, precio, cantidad_forzada=None):
 def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0.0,
                      salida_rapida=False, forzar=False):
     """
-    ⭐ NUEVO: cierra la posición (real o simulada) dejando consistentes el registro,
-    Telegram y el respaldo. Devuelve True si la venta se envió.
+    Cierra la posición (real o simulada) dejando consistentes el registro, Telegram y
+    el respaldo. Devuelve True si la venta se envió.
 
     salida_rapida=True  → límite de pérdida y detención móvil: sale a MERCADO para
                           garantizar el llenado (si Bitso lo rechaza, usa un límite
@@ -1182,7 +1182,7 @@ def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0
     porcentaje = ((precio_sim / entrada) - 1) * 100 if entrada else 0.0
     signo = "+" if ganancia > 0 else ""
     resultado = "GANANCIA" if ganancia > 0 else "PÉRDIDA"
-    # el texto "PROFIT:" se mantiene porque el análisis de aprendizaje lo lee con regex
+    # el texto "PROFIT:" se mantiene porque el análisis de aprendizaje y el contador lo leen
     msg = (f"🔴 VENTA [MAKER-SIM] {simbolo} | {motivo_completo} | Neto: ${neto:.2f} | "
            f"PROFIT: {signo}${ganancia:.2f} ({signo}{porcentaje:.2f}%) ({resultado})")
     enviar_telegram(msg)
@@ -1193,7 +1193,7 @@ def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0
 
 def _revisar_salidas(simbolo, precio):
     """
-    ⭐ NUEVO: salidas de riesgo, en orden de prioridad:
+    Salidas de riesgo, en orden de prioridad:
       1. Límite de pérdida  → salida A MERCADO (garantiza el corte)
       2. Toma de ganancia   → salida Maker (cobra mejor precio), o detención móvil
                               (a mercado) si TOMA_GANANCIA_FIJA = False
@@ -1216,8 +1216,8 @@ def _revisar_salidas(simbolo, precio):
     umbral_ganancia = entrada * (1 + st.session_state.toma_ganancia / 100.0)
     umbral_movil = maximo * (1 - st.session_state.seguimiento / 100.0)
 
-    # ⭐ NUEVO: con "solo señales" se respeta el modo... salvo el límite de pérdida,
-    # que siempre protege el capital (si no, te quedas sin red de seguridad).
+    # Con "solo señales" se respeta el modo... salvo el límite de pérdida, que
+    # siempre protege el capital.
     if st.session_state.modo_solo_senales and not (
             SALIDAS_IGNORAN_SOLO_SENALES and precio <= umbral_perdida):
         # No ejecuta nada, pero avisa por Telegram para que decidas tú
@@ -1252,6 +1252,80 @@ def _revisar_salidas(simbolo, precio):
             salida_rapida=True)
 
     return False
+
+def _resumen_aciertos():
+    """
+    ⭐ NUEVO: cuenta aciertos y fallos de la FASE ACTUAL leyendo el historial, y
+    calcula el punto de equilibrio según tu TP, tu SL y las comisiones.
+    """
+    try:
+        inicio_fase = datetime.fromisoformat(st.session_state.inicio_fase)
+    except Exception:
+        inicio_fase = None
+
+    aciertos = 0
+    fallos = 0
+    ganado = 0.0
+    perdido = 0.0
+    porcentajes = []
+
+    for marca, msg in st.session_state.operaciones:
+        # solo la fase actual
+        if inicio_fase is not None and isinstance(marca, datetime) and marca < inicio_fase:
+            continue
+        if "VENTA" not in msg:
+            continue
+        coincidencia = re.search(r"PROFIT:\s*([+-]?\$?[\d,]+\.?\d*)", msg)
+        if not coincidencia:
+            continue
+        try:
+            ganancia = float(coincidencia.group(1).replace("$", "").replace(",", ""))
+        except (TypeError, ValueError):
+            continue
+
+        if ganancia > 0:
+            aciertos += 1
+            ganado += ganancia
+        else:
+            fallos += 1
+            perdido += abs(ganancia)
+
+        # el porcentaje solo viene en las ventas simuladas: es opcional
+        porcentaje = re.search(r"PROFIT:[^(]*\(([+-]?[\d.]+)%\)", msg)
+        if porcentaje:
+            try:
+                porcentajes.append(float(porcentaje.group(1)))
+            except (TypeError, ValueError):
+                pass
+
+    cerradas = aciertos + fallos
+    tasa = (aciertos / cerradas * 100) if cerradas else 0.0
+
+    # Punto de equilibrio: cuántos aciertos necesitas para no perder
+    comision_ida_vuelta = COMISION * 100 * 2          # 1.2% con COMISION = 0.006
+    acierto_neto = st.session_state.toma_ganancia - comision_ida_vuelta
+    fallo_neto = st.session_state.limite_perdida + comision_ida_vuelta
+    equilibrio = (fallo_neto / (acierto_neto + fallo_neto) * 100
+                  if (acierto_neto + fallo_neto) > 0 else 100.0)
+
+    esperanza = 0.0
+    if cerradas:
+        esperanza = (tasa / 100) * acierto_neto - (1 - tasa / 100) * fallo_neto
+
+    return {
+        "aciertos": aciertos,
+        "fallos": fallos,
+        "cerradas": cerradas,
+        "tasa": tasa,
+        "ganado": ganado,
+        "perdido": perdido,
+        "neto": ganado - perdido,
+        "ganancia_media_pct": (sum(porcentajes) / len(porcentajes)) if porcentajes else 0.0,
+        "equilibrio": equilibrio,
+        "esperanza": esperanza,
+        "acierto_neto": acierto_neto,
+        "fallo_neto": fallo_neto,
+    }
 
 def ejecutar_compra_profesional(simbolo, precio, confianza, razon, tendencia_30d):
     probabilidad = calcular_probabilidad(confianza)
@@ -1633,8 +1707,7 @@ def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_oncha
         return True
     except Exception:
         return False
-      
-# ══════════════════ BLOQUE 10/10: ciclo, panel y refresco automático ══════════════════
+      # ══════════════════ BLOQUE 10/10: ciclo, panel, contador y refresco automático ══════════════════
 
 def _ejecutar_ordenes_pendientes():
     """Resuelve las órdenes Maker pendientes y las aplica al registro contable."""
@@ -1897,7 +1970,6 @@ def ejecutar_ciclo(interfaz):
         columnas[1].metric("Valor total (Bitso)", f"${valor_total_real:,.2f}")
         columnas[2].metric("BTC / ETH (Bitso)", f"{btc_real:.6f} / {eth_real:.6f}")
         columnas[3].metric("Operaciones hoy", st.session_state.ops_del_dia)
-        # ⭐ FIX: esta línea ya no la tapa la de las posiciones (contenedor propio)
         interfaz["cartera"].caption(
             f"🔗 Datos reales de Bitso — BTC ${btc:,.0f} · ETH ${eth:,.0f} MXN | "
             f"📋 Registro interno del bot: ${st.session_state.saldo:,.2f} "
@@ -1923,7 +1995,7 @@ def ejecutar_ciclo(interfaz):
             + str(st.session_state.get("error_saldo_bitso") or "sin detalle")
         )
 
-    # ===== POSICIÓN ABIERTA: PUNTO DE SALIDA (contenedor propio, ⭐ FIX) =====
+    # ===== POSICIÓN ABIERTA: PUNTO DE SALIDA =====
     for simbolo_pos, precio_pos in [("BTC", btc), ("ETH", eth)]:
         cantidad_pos = float(st.session_state.posiciones.get(simbolo_pos, 0.0))
         if cantidad_pos <= 0:
@@ -1955,6 +2027,32 @@ def ejecutar_ciclo(interfaz):
         interfaz["historial"].text(texto)
     else:
         interfaz["historial"].text("Sin operaciones aún.")
+
+    # ===== CONTADOR DE ACIERTOS VS FALLOS DE LA FASE =====
+    resumen = _resumen_aciertos()
+    interfaz["aciertos"].subheader("📈 Aciertos vs fallos de la fase")
+    columnas_ac = interfaz["aciertos"].columns(4)
+    columnas_ac[0].metric("Aciertos", resumen["aciertos"])
+    columnas_ac[1].metric("Fallos", resumen["fallos"])
+    columnas_ac[2].metric("Tasa de acierto", f"{resumen['tasa']:.1f}%")
+    columnas_ac[3].metric(
+        "Punto de equilibrio", f"{resumen['equilibrio']:.1f}%",
+        help="Aciertos que necesitas para no perder, según tu TP, tu SL y las comisiones.")
+
+    if resumen["cerradas"] == 0:
+        interfaz["aciertos"].caption(
+            "Aún no hay ventas en esta fase. Aquí se contarán las que aparezcan en el historial.")
+    else:
+        texto_ac = (
+            f"💰 Ganado ${resumen['ganado']:.2f} · Perdido ${resumen['perdido']:.2f} · "
+            f"**Neto ${resumen['neto']:+.2f}** | "
+            f"Esperanza por operación: {resumen['esperanza']:+.2f}% "
+            f"(acierto +{resumen['acierto_neto']:.2f}% · fallo -{resumen['fallo_neto']:.2f}%)"
+        )
+        if resumen["tasa"] >= resumen["equilibrio"]:
+            interfaz["aciertos"].success("✅ " + texto_ac + " — vas POR ENCIMA del punto de equilibrio.")
+        else:
+            interfaz["aciertos"].error("🚨 " + texto_ac + " — vas POR DEBAJO del punto de equilibrio.")
 
     if st.session_state.ciclo % 5 == 0 and st.session_state.modo_aprendizaje:
         for simbolo in ["BTC", "ETH"]:
@@ -1998,7 +2096,7 @@ def ejecutar_ciclo(interfaz):
             elif senal == "SELL" and probabilidad_senal > umbral_valor:
                 if st.session_state.posiciones.get(simbolo, 0) > 0:
                     if tendencia_30d != "ALCISTA":
-                        # ⭐ FIX: la señal ya no exige +2.5%; cierra a la par o en ganancia.
+                        # La señal ya no exige +2.5%: cierra a la par o en ganancia.
                         # Las pérdidas las corta el límite de pérdida de _revisar_salidas().
                         _cerrar_posicion(simbolo, precio,
                                          f"señal SELL ({probabilidad_senal:.1f}%)",
@@ -2052,16 +2150,19 @@ def _panel():
 
     ⭐ FIX arquitectónico: los contenedores viven DENTRO del fragmento, así que el
     refresco periódico actualiza la interfaz sin bloquear el script con un `while True`.
+    ⭐ FIX: 'tabla', 'historial' y 'aciertos' son containers (no empty) para que el
+    título y el contenido se vean a la vez.
     """
     interfaz = {
-        "tabla": st.empty(),
+        "tabla": st.container(),
         "horario": st.empty(),
         "fase": st.empty(),
         "info": st.empty(),
         "metricas": st.empty(),
         "cartera": st.empty(),
-        "posiciones": st.empty(),      # ⭐ FIX: contenedor propio para las posiciones
-        "historial": st.empty(),
+        "posiciones": st.empty(),
+        "historial": st.container(),
+        "aciertos": st.container(),    # ⭐ NUEVO: contador aciertos vs fallos
         "ultima_senal": st.empty(),
         "estado": st.empty(),
         "mensajes": st.empty(),
