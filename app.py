@@ -19,7 +19,12 @@ except Exception:
 
 COMISION = 0.006                       # 0.60% por operación
 VOLUMEN_MINIMO_24H = 0.5               # miles de millones de USD
-GANANCIA_MINIMA_VENTA_PCT = 2.5        # el original exigía +2.5% fijo para vender
+# ⭐ FIX: la señal SELL ya no exige +2.5%. 0.0 = puede cerrar en cuanto esté a la par
+# o en ganancia. Las pérdidas las corta el límite de pérdida, no la señal.
+GANANCIA_MINIMA_VENTA_PCT = 0.0
+# ⭐ NUEVO: True  = vende justo al alcanzar la toma de ganancia (simple y predecible)
+#            False = deja correr la ganancia y sale con la detención móvil
+TOMA_GANANCIA_FIJA = True
 MENSAJES = deque(maxlen=30)            # avisos del ciclo (antes iban a la barra lateral)
 
 def avisar(mensaje, nivel="info"):
@@ -938,7 +943,7 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
         return "BUY", confianza, f"Señal de compra ({puntuacion:.1f})", {}
     else:
         return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
-    # ══════════════════ BLOQUE 8/10: interfaz, cartera y compra automática ══════════════════
+    # ══════════════════ BLOQUE 8/10: interfaz, cartera, compra automática y salidas ══════════════════
 
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
@@ -1054,6 +1059,123 @@ def _aplicar_venta(simbolo, precio, cantidad_forzada=None):
     st.session_state.precio_maximo[simbolo] = 0.0
     st.session_state.ops_del_dia += 1
     return neto, ganancia
+
+def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0.0):
+    """
+    ⭐ NUEVO: cierra la posición (real o simulada) dejando consistentes el registro,
+    Telegram y el respaldo. Devuelve True si la venta se envió.
+    """
+    # Nunca duplicar una venta que ya está en camino al exchange
+    if st.session_state.get(f"orden_pendiente_{simbolo}"):
+        avisar(f"⏳ Ya hay una orden pendiente para {simbolo}: no se duplica la venta", "info")
+        return False
+
+    cantidad = float(st.session_state.posiciones.get(simbolo, 0.0))
+    if cantidad <= 0:
+        return False
+
+    entrada = float(st.session_state.precio_entrada.get(simbolo, 0.0))
+
+    # La señal de venta solo cierra si no se está en pérdida. Quien corta las pérdidas
+    # es el límite de pérdida de _revisar_salidas().
+    if entrada > 0 and precio < entrada * (1 + minima_ganancia_pct / 100.0):
+        ganancia_potencial = ((precio / entrada) - 1) * 100
+        avisar(f"⏸️ {simbolo}: venta por {motivo} frenada; está en {ganancia_potencial:+.2f}% "
+               f"(mínimo {minima_ganancia_pct:.2f}%). Esperando al límite de pérdida.", "warning")
+        return False
+
+    precio_maker_venta = precio * 1.002
+    libro = "btc_mxn" if simbolo == "BTC" else "eth_mxn"
+    # Evita recomprar el mismo símbolo en el mismo ciclo tras una salida
+    st.session_state[f"ultima_compra_{simbolo}"] = st.session_state.ciclo
+
+    if MODO_REAL:
+        try:
+            orden = colocar_orden_bitso(libro, "sell", f"{cantidad:.8f}", f"{precio_maker_venta:.2f}")
+        except Exception as e:
+            avisar(f"❌ Error enviando la venta de {simbolo}: {e}", "error")
+            return False
+        if not orden or orden.get("error"):
+            avisar(f"❌ Venta Maker {simbolo} falló: "
+                   f"{orden.get('error') if orden else 'sin respuesta'}", "error")
+            return False
+        st.session_state[f"orden_pendiente_{simbolo}"] = {
+            "oid": orden.get("oid"), "side": "sell", "sym": simbolo,
+            "price": precio_maker_venta, "qty": cantidad, "monto": 0.0,
+            "timestamp": time.time(), "confianza": confianza, "motivo": motivo,
+        }
+        guardar_datos()
+        enviar_telegram(f"⏳ **VENTA MAKER {simbolo}** ({motivo}) a ${precio_maker_venta:,.0f}")
+        avisar(f"⏳ Venta Maker {simbolo} enviada ({motivo})", "info")
+        return True
+
+    neto, ganancia = _aplicar_venta(simbolo, precio_maker_venta)
+    porcentaje = ((precio_maker_venta / entrada) - 1) * 100 if entrada else 0.0
+    signo = "+" if ganancia > 0 else ""
+    resultado = "GANANCIA" if ganancia > 0 else "PÉRDIDA"
+    # el texto "PROFIT:" se mantiene porque el análisis de aprendizaje lo lee con regex
+    msg = (f"🔴 VENTA [MAKER-SIM] {simbolo} | {motivo} | Neto: ${neto:.2f} | "
+           f"PROFIT: {signo}${ganancia:.2f} ({signo}{porcentaje:.2f}%) ({resultado})")
+    enviar_telegram(msg)
+    st.session_state.operaciones.append((datetime.now(), msg))
+    guardar_datos()
+    avisar(f"✅ Venta {simbolo} ({motivo}): {signo}${ganancia:.2f}", "success")
+    return True
+
+def _revisar_salidas(simbolo, precio):
+    """
+    ⭐ NUEVO: salidas de riesgo, en orden de prioridad:
+      1. Límite de pérdida  (protege el capital)
+      2. Toma de ganancia   (asegura la ganancia), o detención móvil si TOMA_GANANCIA_FIJA = False
+    No dependen del horario ni de la fase: si hay que salir, se sale.
+    """
+    cantidad = float(st.session_state.posiciones.get(simbolo, 0.0))
+    if cantidad <= 0:
+        return False
+
+    entrada = float(st.session_state.precio_entrada.get(simbolo, 0.0))
+    if entrada <= 0:
+        return False
+
+    maximo = float(st.session_state.precio_maximo.get(simbolo, 0.0) or 0.0)
+    if precio > maximo:
+        maximo = precio
+        st.session_state.precio_maximo[simbolo] = precio
+
+    umbral_perdida = entrada * (1 - st.session_state.limite_perdida / 100.0)
+    umbral_ganancia = entrada * (1 + st.session_state.toma_ganancia / 100.0)
+    umbral_movil = maximo * (1 - st.session_state.seguimiento / 100.0)
+
+    if st.session_state.modo_solo_senales:
+        # No ejecuta nada, pero avisa por Telegram para que decidas tú
+        hay_aviso = precio <= umbral_perdida or precio >= umbral_ganancia
+        clave_aviso = f"aviso_salida_{simbolo}"
+        if hay_aviso and not st.session_state.get(clave_aviso):
+            st.session_state[clave_aviso] = True
+            enviar_telegram(
+                f"🔇 **AVISO DE SALIDA {simbolo}**\n"
+                f"Precio ${precio:,.0f} vs entrada ${entrada:,.0f} "
+                f"({((precio/entrada)-1)*100:+.2f}%)\n"
+                f"Modo 'solo señales' activo: el bot NO ejecutó la venta.")
+            avisar(f"🔇 {simbolo}: salida sugerida, pero 'solo señales' la bloquea", "warning")
+        elif not hay_aviso and st.session_state.get(clave_aviso):
+            st.session_state[clave_aviso] = False
+        return False
+
+    if precio <= umbral_perdida:
+        return _cerrar_posicion(simbolo, precio,
+                                f"límite de pérdida {st.session_state.limite_perdida}%")
+
+    if TOMA_GANANCIA_FIJA:
+        if precio >= umbral_ganancia:
+            return _cerrar_posicion(simbolo, precio,
+                                    f"toma de ganancia {st.session_state.toma_ganancia}%")
+    elif maximo >= umbral_ganancia and precio <= umbral_movil:
+        return _cerrar_posicion(
+            simbolo, precio,
+            f"detención móvil {st.session_state.seguimiento}% desde ${maximo:,.0f}")
+
+    return False
 
 def ejecutar_compra_profesional(simbolo, precio, confianza, razon, tendencia_30d):
     probabilidad = calcular_probabilidad(confianza)
@@ -1198,6 +1320,8 @@ st.session_state.modo_solo_senales = st.sidebar.checkbox(
     "🔇 Solo señales (no ejecutar)", value=st.session_state.modo_solo_senales)
 
 st.sidebar.caption("💰 La cartera se muestra en el panel principal (se refresca en cada ciclo).")
+st.sidebar.caption("📌 Las salidas de riesgo (límite de pérdida y toma de ganancia) se aplican "
+                   "siempre, sin depender del horario ni de la fase.")
 # ══════════════════ BLOQUE 9/10: botones, cartera real y control manual ══════════════════
 
 if st.sidebar.button("Reiniciar simulación"):
@@ -1262,8 +1386,8 @@ if st.sidebar.button("🔄 Sincronizar cartera con Bitso"):
         st.session_state.saldo = mxn
         st.session_state.posiciones["BTC"] = cantidad_btc
         st.session_state.posiciones["ETH"] = cantidad_eth
-        # Si no sabemos a qué precio compraste, usamos el precio actual para que la
-        # regla de venta (+2.5%) siga teniendo sentido. Cámbialo por tu costo real.
+        # Si no sabemos a qué precio compraste, usamos el precio actual para que las
+        # salidas por reglas tengan una referencia válida. Cámbialo por tu costo real.
         st.session_state.precio_entrada["BTC"] = precio_btc if cantidad_btc > 0 else 0.0
         st.session_state.precio_entrada["ETH"] = precio_eth if cantidad_eth > 0 else 0.0
         st.session_state.precio_maximo["BTC"] = precio_btc if cantidad_btc > 0 else 0.0
@@ -1332,6 +1456,10 @@ if st.sidebar.button("💸 Vender TODO"):
             precio = precios.get(simbolo)
             if cantidad <= 0:
                 continue
+            # ⭐ NUEVO: si ya hay una venta en camino, no mandar otra
+            if st.session_state.get(f"orden_pendiente_{simbolo}"):
+                st.sidebar.warning(f"⏳ Ya hay una orden pendiente para {simbolo}; se omite")
+                continue
             if not precio:
                 st.sidebar.error(f"❌ Sin precio para {simbolo}")
                 continue
@@ -1351,6 +1479,7 @@ if st.sidebar.button("💸 Vender TODO"):
                     "qty": cantidad,
                     "monto": 0.0,
                     "timestamp": time.time(),
+                    "motivo": "venta manual (Vender TODO)",
                 }
                 enviar_telegram(f"⏳ VENTA MAKER {simbolo} | {cantidad:.8f} a ${precio_maker_venta:,.0f}")
                 vendido = True
@@ -1358,7 +1487,7 @@ if st.sidebar.button("💸 Vender TODO"):
             neto, ganancia = _aplicar_venta(simbolo, precio_maker_venta)
             resultado = "GANANCIA" if ganancia > 0 else "PÉRDIDA"
             signo = "+" if ganancia > 0 else ""
-            msg = (f"🔴 VENTA [MAKER-SIM] {simbolo} | Neto: ${neto:.2f} | "
+            msg = (f"🔴 VENTA [MAKER-SIM] {simbolo} | venta manual | Neto: ${neto:.2f} | "
                    f"PROFIT: {signo}${ganancia:.2f} ({resultado})")
             enviar_telegram(msg)
             st.session_state.operaciones.append((datetime.now(), msg))
@@ -1418,6 +1547,7 @@ def _compra_manual(simbolo, libro):
                 "cant": 1,
                 "timestamp": time.time(),
                 "confianza": 0,
+                "motivo": "compra manual",
             }
             msg = f"🟢 ORDEN MAKER [REAL] {simbolo} | {cantidad:.8f} a ${precio_objetivo:,.2f}"
             enviar_telegram(msg)
@@ -1480,7 +1610,8 @@ def _ejecutar_ordenes_pendientes():
                         neto, ganancia = _aplicar_venta(simbolo, precio_ejecucion, cantidad_forzada=cantidad)
                         resultado = "GANANCIA" if ganancia > 0 else "PÉRDIDA"
                         signo = "+" if ganancia > 0 else ""
-                        msg = (f"🔴 VENTA [MAKER-REAL] {simbolo} | Neto: ${neto:.2f} | "
+                        motivo = datos.get("motivo", "")
+                        msg = (f"🔴 VENTA [MAKER-REAL] {simbolo} | {motivo} | Neto: ${neto:.2f} | "
                                f"PROFIT: {signo}${ganancia:.2f} ({resultado})")
                         enviar_telegram(msg)
                         st.session_state.operaciones.append((datetime.now(), msg))
@@ -1584,6 +1715,15 @@ def ejecutar_ciclo(interfaz):
     # ===== ÓRDENES MAKER PENDIENTES =====
     _ejecutar_ordenes_pendientes()
 
+    # ===== SALIDAS POR REGLAS: LÍMITE DE PÉRDIDA, TOMA DE GANANCIA Y DETENCIÓN MÓVIL =====
+    for simbolo_salida, precio_salida in [("BTC", btc), ("ETH", eth)]:
+        if st.session_state.posiciones.get(simbolo_salida, 0) > 0:
+            # la detención móvil necesita saber el máximo alcanzado
+            st.session_state.precio_maximo[simbolo_salida] = max(
+                float(st.session_state.precio_maximo.get(simbolo_salida, 0.0) or 0.0),
+                precio_salida)
+        _revisar_salidas(simbolo_salida, precio_salida)
+
     # ===== FASE DE APRENDIZAJE =====
     ahora = datetime.now()
     try:
@@ -1678,9 +1818,9 @@ def ejecutar_ciclo(interfaz):
 
     texto_info = (
         f"Ciclo: {st.session_state.ciclo} | "
-        f"Caída: {st.session_state.umbral_caida}% | "
         f"Toma de ganancia: {st.session_state.toma_ganancia}% | "
         f"Límite de pérdida: {st.session_state.limite_perdida}% | "
+        f"Detención móvil: {st.session_state.seguimiento}% | "
         f"Miedo/Codicia: {valor_miedo}/100 ({etiqueta_miedo}) | "
         f"Aprendizaje: {'✅' if st.session_state.modo_aprendizaje else '❌'} | "
         f"Prob. mínima: {umbral_probabilidad:.1f}% | "
@@ -1727,6 +1867,28 @@ def ejecutar_ciclo(interfaz):
             "⚠️ No se pudo leer el saldo real de Bitso: "
             + str(st.session_state.get("error_saldo_bitso") or "sin detalle")
         )
+
+    # ===== POSICIÓN ABIERTA: PUNTO DE SALIDA =====
+    for simbolo_pos, precio_pos in [("BTC", btc), ("ETH", eth)]:
+        cantidad_pos = float(st.session_state.posiciones.get(simbolo_pos, 0.0))
+        if cantidad_pos <= 0:
+            continue
+        entrada_pos = float(st.session_state.precio_entrada.get(simbolo_pos, 0.0))
+        if entrada_pos <= 0:
+            continue
+        objetivo = entrada_pos * (1 + st.session_state.toma_ganancia / 100.0)
+        corte = entrada_pos * (1 - st.session_state.limite_perdida / 100.0)
+        aviso_pos = f"🎯 **{simbolo_pos}**: entrada ${entrada_pos:,.0f} | " \
+                    f"vende en ${objetivo:,.0f} (+{st.session_state.toma_ganancia}%) | " \
+                    f"corta en ${corte:,.0f} (-{st.session_state.limite_perdida}%) | " \
+                    f"precio ahora ${precio_pos:,.0f} " \
+                    f"({((precio_pos / entrada_pos) - 1) * 100:+.2f}%)"
+        if precio_pos >= objetivo:
+            interfaz["cartera"].success("✅ " + aviso_pos)
+        elif precio_pos <= corte:
+            interfaz["cartera"].error("🚨 " + aviso_pos)
+        else:
+            interfaz["cartera"].info(aviso_pos)
 
     interfaz["historial"].subheader(f"📜 Historial (últimas 10 de {len(st.session_state.operaciones)})")
     if st.session_state.operaciones:
@@ -1780,54 +1942,12 @@ def ejecutar_ciclo(interfaz):
             elif senal == "SELL" and probabilidad_senal > umbral_valor:
                 if st.session_state.posiciones.get(simbolo, 0) > 0:
                     if tendencia_30d != "ALCISTA":
-                        cantidad = st.session_state.posiciones[simbolo]
-                        entrada = st.session_state.precio_entrada[simbolo]
-                        precio_minimo_venta = entrada * (1 + GANANCIA_MINIMA_VENTA_PCT / 100.0)
-                        if precio < precio_minimo_venta:
-                            ganancia_potencial = ((precio / entrada) - 1) * 100 if entrada else 0
-                            avisar(
-                                f"⏸️ Venta de {simbolo} bloqueada: precio +{ganancia_potencial:.2f}% "
-                                f"< {GANANCIA_MINIMA_VENTA_PCT}% requerido", "warning")
-                            continue
-
-                        precio_maker_venta = precio * 1.002
-                        libro = "btc_mxn" if simbolo == "BTC" else "eth_mxn"
-
-                        if MODO_REAL:
-                            # ⭐ FIX: registrar la venta Maker para poder verificarla
-                            try:
-                                orden = colocar_orden_bitso(libro, "sell", f"{cantidad:.8f}",
-                                                            f"{precio_maker_venta:.2f}")
-                            except Exception as e:
-                                avisar(f"Error en la venta real de {simbolo}: {e}", "error")
-                                continue
-                            if not orden or orden.get("error"):
-                                avisar(f"❌ Venta Maker {simbolo}: "
-                                       f"{orden.get('error') if orden else 'sin respuesta'}", "error")
-                                continue
-                            st.session_state[f"orden_pendiente_{simbolo}"] = {
-                                "oid": orden.get("oid"),
-                                "side": "sell",
-                                "sym": simbolo,
-                                "price": precio_maker_venta,
-                                "qty": cantidad,
-                                "monto": 0.0,
-                                "timestamp": time.time(),
-                                "confianza": confianza_senal,
-                            }
-                            guardar_datos()
-                            enviar_telegram(f"⏳ **VENTA MAKER {simbolo}** a ${precio_maker_venta:,.0f}")
-                            continue
-
-                        neto, ganancia = _aplicar_venta(simbolo, precio_maker_venta)
-                        resultado = "GANANCIA" if ganancia > 0 else "PÉRDIDA"
-                        signo = "+" if ganancia > 0 else ""
-                        msg = (f"🔴 VENTA [MAKER-SIM] {simbolo} | Neto: ${neto:.2f} | "
-                               f"PROFIT: {signo}${ganancia:.2f} ({resultado})")
-                        enviar_telegram(msg)
-                        st.session_state.operaciones.append((datetime.now(), msg))
-                        guardar_datos()
-                        avisar(f"✅ Venta Maker {simbolo}", "success")
+                        # ⭐ FIX: la señal ya no exige +2.5%; cierra a la par o en ganancia.
+                        # Las pérdidas las corta el límite de pérdida de _revisar_salidas().
+                        _cerrar_posicion(simbolo, precio,
+                                         f"señal SELL ({probabilidad_senal:.1f}%)",
+                                         confianza_senal,
+                                         minima_ganancia_pct=GANANCIA_MINIMA_VENTA_PCT)
 
         if probabilidad_senal > umbral_valor and senal != "HOLD":
             clave_marca = f"ultima_senal_enviada_{simbolo}"
