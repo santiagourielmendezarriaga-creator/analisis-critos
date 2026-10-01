@@ -25,8 +25,10 @@ Cambios respecto al original (marcados con "# ⭐ FIX:"):
      opcional, con prioridad sobre la señal. La señal SELL ya no exige +2.5%.
  14. El límite de pérdida y la detención móvil salen A MERCADO (llenado inmediato),
      con respaldo automático en límite agresivo si Bitso rechaza el mercado.
- 15. ⭐ NUEVO: el límite de pérdida protege incluso con "solo señales" activado, para
-     que desactivar la ejecución no te deje sin red de seguridad.
+ 15. El límite de pérdida protege incluso con "solo señales" activado.
+ 16. ⭐ NUEVO: si Bitso RECHAZA una venta, esa venta entra en pausa (por defecto 15
+     minutos) para no reintentar cada ciclo, y el aviso dice la cantidad exacta que
+     se intentó vender, para diagnosticar el rechazo.
 
 Configuración esperada (Streamlit secrets o variables de entorno):
     BITSO_API_KEY, BITSO_API_SECRET, MODO_REAL,
@@ -67,6 +69,8 @@ MARGEN_AGRESIVO_PCT = 0.5    # si el mercado es rechazado: límite 0.5% por DEBA
 # ⭐ NUEVO: el límite de pérdida protege incluso con "solo señales" activado.
 # Si no, al desactivar la ejecución te quedas sin red de seguridad.
 SALIDAS_IGNORAN_SOLO_SENALES = True
+# ⭐ NUEVO: minutos de pausa tras un rechazo de Bitso, para no reintentar cada ciclo
+ESPERA_TRAS_FALLO_MIN = 15
 MENSAJES = deque(maxlen=30)            # avisos del ciclo (antes iban a la barra lateral)
 
 def avisar(mensaje, nivel="info"):
@@ -987,7 +991,7 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
         return "BUY", confianza, f"Señal de compra ({puntuacion:.1f})", {}
     else:
         return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
-    # ══════════════════ BLOQUE 8/10: interfaz, cartera, compra automática, salidas y contador ══════════════════
+   # ══════════════════ BLOQUE 8/10: interfaz, cartera, compra automática, salidas y contador ══════════════════
 
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
@@ -1086,6 +1090,8 @@ def _aplicar_compra(simbolo, monto, precio, comision=COMISION):
         float(st.session_state.precio_maximo.get(simbolo, 0.0)), precio)
     st.session_state.ops_del_dia += 1
     st.session_state.monto_del_dia = float(st.session_state.get("monto_del_dia", 0.0)) + monto
+    # ⭐ NUEVO: una compra nueva limpia el freno de ventas rechazadas
+    st.session_state[f"venta_fallida_{simbolo}"] = 0.0
     return cantidad
 
 def _aplicar_venta(simbolo, precio, cantidad_forzada=None):
@@ -1113,13 +1119,17 @@ def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0
     salida_rapida=True  → límite de pérdida y detención móvil: sale a MERCADO para
                           garantizar el llenado (si Bitso lo rechaza, usa un límite
                           agresivo por debajo del mercado).
-    salida_rapida=False → toma de ganancia y señal: orden Maker por encima del mercado,
-                          para cobrar un precio algo mejor.
+    salida_rapida=False → toma de ganancia y señal: orden Maker por encima del mercado.
     forzar=True         → vende aunque esté en pérdida (venta manual).
     """
     # Nunca duplicar una venta que ya está en camino al exchange
     if st.session_state.get(f"orden_pendiente_{simbolo}"):
         avisar(f"⏳ Ya hay una orden pendiente para {simbolo}: no se duplica la venta", "info")
+        return False
+
+    # ⭐ NUEVO: freno tras un rechazo de Bitso, para no martillar cada 5 segundos
+    ultimo_fallo = float(st.session_state.get(f"venta_fallida_{simbolo}", 0.0) or 0.0)
+    if ultimo_fallo and (time.time() - ultimo_fallo) < ESPERA_TRAS_FALLO_MIN * 60:
         return False
 
     cantidad = float(st.session_state.posiciones.get(simbolo, 0.0))
@@ -1161,8 +1171,16 @@ def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0
                                         f"{precio_envio:.2f}", tipo="limit")
 
         if not orden or orden.get("error"):
-            avisar(f"❌ Venta {simbolo} falló: "
-                   f"{orden.get('error') if orden else 'sin respuesta'}", "error")
+            detalle = orden.get("error") if orden else "sin respuesta"
+            st.session_state[f"venta_fallida_{simbolo}"] = time.time()
+            # ⭐ NUEVO: el aviso dice EXACTAMENTE qué se intentó vender
+            avisar(f"❌ Venta {simbolo} falló: intenté vender {cantidad:.8f} {simbolo} "
+                   f"a ${precio_envio:,.2f} | Bitso: {detalle} | "
+                   f"En pausa {ESPERA_TRAS_FALLO_MIN} min.", "error")
+            enviar_telegram(f"❌ **VENTA {simbolo} RECHAZADA POR BITSO**\n"
+                            f"Intenté vender {cantidad:.8f} {simbolo} a ${precio_envio:,.2f}\n"
+                            f"Bitso: {detalle}\n"
+                            f"Motivo del bot: {motivo_completo}")
             return False
 
         st.session_state[f"orden_pendiente_{simbolo}"] = {
@@ -1170,6 +1188,7 @@ def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0
             "price": precio_envio, "qty": cantidad, "monto": 0.0,
             "timestamp": time.time(), "confianza": confianza, "motivo": motivo_completo,
         }
+        st.session_state[f"venta_fallida_{simbolo}"] = 0.0
         guardar_datos()
         enviar_telegram(f"⏳ **VENTA {simbolo}** ({motivo_completo})")
         avisar(f"⏳ Venta {simbolo} enviada ({motivo_completo})", "info")
@@ -1182,7 +1201,7 @@ def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0
     porcentaje = ((precio_sim / entrada) - 1) * 100 if entrada else 0.0
     signo = "+" if ganancia > 0 else ""
     resultado = "GANANCIA" if ganancia > 0 else "PÉRDIDA"
-    # el texto "PROFIT:" se mantiene porque el análisis de aprendizaje y el contador lo leen
+    # el texto "PROFIT:" se mantiene porque el aprendizaje y el contador lo leen
     msg = (f"🔴 VENTA [MAKER-SIM] {simbolo} | {motivo_completo} | Neto: ${neto:.2f} | "
            f"PROFIT: {signo}${ganancia:.2f} ({signo}{porcentaje:.2f}%) ({resultado})")
     enviar_telegram(msg)
@@ -1255,8 +1274,8 @@ def _revisar_salidas(simbolo, precio):
 
 def _resumen_aciertos():
     """
-    ⭐ NUEVO: cuenta aciertos y fallos de la FASE ACTUAL leyendo el historial, y
-    calcula el punto de equilibrio según tu TP, tu SL y las comisiones.
+    Cuenta aciertos y fallos de la FASE ACTUAL leyendo el historial, y calcula el
+    punto de equilibrio según tu TP, tu SL y las comisiones.
     """
     try:
         inicio_fase = datetime.fromisoformat(st.session_state.inicio_fase)
