@@ -505,14 +505,14 @@ def obtener_saldo_bitso(usar_cache=True):
         st.session_state["error_saldo_bitso"] = f"Excepción consultando el saldo: {e}"
         print(f"Error consultando saldo: {e}")
         return None
-       # ══════════════════ BLOQUE 5/10: órdenes de Bitso ══════════════════
+    # ══════════════════ BLOQUE 5/10: órdenes de Bitso ══════════════════
 
 def colocar_orden_bitso(libro, lado, cantidad_mayor, precio, tipo="limit"):
     """
     Coloca una orden en Bitso.
       tipo="limit"  → orden Maker con precio (la de siempre, mejor precio)
       tipo="market" → orden a mercado, sin precio (llenado inmediato)
-    ⭐ NUEVO: las salidas de pánico (límite de pérdida y detención móvil) usan mercado.
+    Las salidas de pánico (límite de pérdida y detención móvil) usan mercado.
     """
     if not MODO_REAL:
         print("⚠️ MODO_REAL desactivado.")
@@ -592,9 +592,15 @@ def cancelar_orden_bitso(oid):
 def verificar_orden_pendiente(simbolo):
     """
     Verifica si hay una orden pendiente para `simbolo`.
+
     ⭐ FIX: devuelve SIEMPRE la orden almacenada (con monto/precio/cantidad/lado) y no
     el payload de Bitso. Antes ponía la clave en None y devolvía el payload, así que el
     código de ejecución leía monto=0 y descartaba la operación en silencio.
+
+    ⭐ FIX 2: el vencimiento de 10 minutos se evalúa SIN depender del estado que
+    devuelva Bitso. Antes, si la API no daba un estado legible (orden ya cancelada allá,
+    404 o error), la clave quedaba bloqueada para siempre y el bot no volvía a vender
+    ese símbolo nunca más.
     """
     clave_orden = f"orden_pendiente_{simbolo}"
     orden = st.session_state.get(clave_orden)
@@ -608,42 +614,42 @@ def verificar_orden_pendiente(simbolo):
         st.session_state[clave_orden] = None
         return "sin_orden", None
 
+    # ⭐ FIX 2: el vencimiento se calcula ANTES de consultar el estado
+    creada = float(orden.get("timestamp", time.time()) or time.time())
+    vencida = (time.time() - creada) > 600
+
     if not MODO_REAL:
         # Sin API real no hay órdenes en el exchange: se resuelve de inmediato.
         st.session_state[clave_orden] = None
         return "ejecutada", orden
 
+    estado_orden = None
     try:
         estado_orden = obtener_estado_orden(oid)
     except Exception as e:
         print(f"Error consultando la orden {oid}: {e}")
-        return "pendiente", orden
 
-    if not isinstance(estado_orden, dict):
-        return "pendiente", orden
-
-    estado = estado_orden.get("status")
-
-    if estado in ["completed", "filled"]:
-        orden = dict(orden)
-        orden["ejecucion"] = estado_orden
-        st.session_state[clave_orden] = None
-        return "ejecutada", orden
-    elif estado == "cancelled":
-        st.session_state[clave_orden] = None
-        return "cancelada", None
-    elif estado in ["open", "partially_filled"]:
-        creada = orden.get("timestamp", time.time())
-        if time.time() - creada > 600:
-            try:
-                cancelar_orden_bitso(oid)
-            except Exception:
-                pass
+    if isinstance(estado_orden, dict):
+        estado = estado_orden.get("status")
+        if estado in ["completed", "filled"]:
+            orden = dict(orden)
+            orden["ejecucion"] = estado_orden
+            st.session_state[clave_orden] = None
+            return "ejecutada", orden
+        if estado == "cancelled":
             st.session_state[clave_orden] = None
             return "cancelada", None
-        return "pendiente", orden
-    else:
-        return "pendiente", orden
+
+    if vencida:
+        # ⭐ FIX 2: vencida o sin estado legible → se intenta cancelar y SIEMPRE se libera
+        try:
+            cancelar_orden_bitso(oid)
+        except Exception:
+            pass
+        st.session_state[clave_orden] = None
+        return "cancelada", None
+
+    return "pendiente", orden
 
 def obtener_miedo_codicia():
     try:
@@ -1492,7 +1498,8 @@ st.sidebar.caption("💰 La cartera se muestra en el panel principal (se refresc
 st.sidebar.caption("📌 Las salidas de riesgo se aplican siempre, sin depender del horario ni "
                    "de la fase. El límite de pérdida sale a mercado y protege incluso con "
                    "'solo señales' activado; la toma de ganancia usa orden Maker.")
-# ══════════════════ BLOQUE 9/10: botones, cartera real y control manual ══════════════════
+
+    # ══════════════════ BLOQUE 9/10: botones, cartera real y control manual ══════════════════
 
 if st.sidebar.button("Reiniciar simulación"):
     with st.spinner("💾 Creando respaldo..."):
@@ -1518,6 +1525,34 @@ if st.sidebar.button("💾 Guardar datos ahora"):
         st.sidebar.success("✅ Datos guardados")
     else:
         st.sidebar.error("❌ Error: " + str(mensaje))
+
+# ===== LIBERAR ÓRDENES PENDIENTES ATASCADAS =====
+st.sidebar.markdown("---")
+st.sidebar.markdown("**🧹 Órdenes pendientes**")
+
+if st.sidebar.button("🧹 Liberar órdenes pendientes"):
+    for simbolo_limpiar in ["BTC", "ETH"]:
+        orden_pend = st.session_state.get(f"orden_pendiente_{simbolo_limpiar}")
+        if not isinstance(orden_pend, dict):
+            st.session_state[f"orden_pendiente_{simbolo_limpiar}"] = None
+            continue
+        oid_pend = orden_pend.get("oid")
+        cancelada = False
+        if oid_pend:
+            try:
+                cancelada = cancelar_orden_bitso(oid_pend)
+            except Exception:
+                cancelada = False
+        st.session_state[f"orden_pendiente_{simbolo_limpiar}"] = None
+        st.session_state[f"venta_fallida_{simbolo_limpiar}"] = 0.0
+        st.sidebar.write(
+            f"**{simbolo_limpiar}**: "
+            + ("cancelada en Bitso ✅" if cancelada
+               else "liberada localmente (no se pudo cancelar en Bitso — revísala en la app)")
+        )
+    guardar_datos()
+    st.sidebar.success("✅ Órdenes pendientes liberadas")
+    st.rerun()
 
 # ===== CARTERA REAL DE BITSO =====
 st.sidebar.markdown("---")
@@ -1567,6 +1602,10 @@ if st.sidebar.button("🔄 Sincronizar cartera con Bitso"):
             elif float(st.session_state.precio_entrada.get(simbolo_sync, 0.0) or 0.0) <= 0:
                 st.session_state.precio_entrada[simbolo_sync] = precio_sync
                 st.session_state.precio_maximo[simbolo_sync] = precio_sync
+
+        # ⭐ Limpia el freno de ventas rechazadas al resincronizar
+        st.session_state["venta_fallida_BTC"] = 0.0
+        st.session_state["venta_fallida_ETH"] = 0.0
 
         guardar_datos()
         st.sidebar.success(
@@ -1634,7 +1673,7 @@ if st.sidebar.button("💸 Vender TODO"):
             if not precio:
                 st.sidebar.error(f"❌ Sin precio para {simbolo}")
                 continue
-            # ⭐ NUEVO: venta manual = salida A MERCADO y sin condición de ganancia.
+            # Venta manual = salida A MERCADO y sin condición de ganancia.
             # _cerrar_posicion ya guarda los datos y evita duplicar órdenes pendientes.
             if _cerrar_posicion(simbolo, precio, "venta manual (Vender TODO)",
                                 salida_rapida=True, forzar=True):
@@ -1669,7 +1708,7 @@ def _compra_manual(simbolo, libro):
             st.error("❌ MODO_REAL está en FALSE. Actívalo en Secrets.")
             return
 
-        monto = min(50.0, MONTO_MAXIMO_POR_OPERACION)   # ⭐ FIX: respetar el límite
+        monto = min(50.0, MONTO_MAXIMO_POR_OPERACION)   # respeta el límite
         precio_objetivo = precio * 0.998
         cantidad = (monto * 0.999) / precio_objetivo
 
@@ -1725,8 +1764,7 @@ def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_oncha
         enviar_telegram(msg)
         return True
     except Exception:
-        return False
-     
+        return False 
 # ══════════════════ BLOQUE 10/10: ciclo, panel, contador y refresco automático ══════════════════
 
 def _ejecutar_ordenes_pendientes():
