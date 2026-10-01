@@ -1,3 +1,39 @@
+# -*- coding: utf-8 -*-
+"""
+🧠 Bot Scalping Extremo + Volumen + Tendencia 30d (Streamlit)
+VERSIÓN CORREGIDA, EN ESPAÑOL, CON SALDO REAL DE BITSO Y VENTAS POR REGLAS
+
+Cambios respecto al original (marcados con "# ⭐ FIX:"):
+
+  1. Se eliminó el `while True: time.sleep(...)` final que bloqueaba Streamlit: la
+     interfaz nunca se repintaba. El ciclo corre en un `st.fragment(run_every=...)`.
+  2. `verificar_orden_pendiente()` devolvía el payload de Bitso en vez de la orden
+     guardada, así que una compra Maker real nunca se contabilizaba.
+  3. El tramo de probabilidad >= 100% pedía $100 con límite de $50 y nunca compraba.
+  4. `st.stop()` dentro de "Vender TODO" abortaba el script y dejaba la orden real
+     sin seguimiento.
+  5. Las órdenes pendientes no se guardaban en Firebase.
+  6. MODO_REAL y los montos leídos de secrets podían venir como texto ("false" es
+     truthy).
+  7. `obtener_volumen_onchain()` inventaba 0.5B si fallaba la API.
+  8. `enviar_telegram()` fallaba en silencio con Markdown inválido.
+  9. El reset diario de contadores ocurría DESPUÉS de mostrarlos.
+ 10. El token de Telegram estaba hardcodeado (expuesto). RÓTALO.
+ 11. Todo el código en español, con migración automática desde las claves viejas.
+ 12. El saldo REAL de Bitso se lee y se muestra. Leer el saldo ya NO exige MODO_REAL.
+ 13. El bot VENDE POR REGLAS: límite de pérdida, toma de ganancia y detención móvil
+     opcional, con prioridad sobre la señal. La señal SELL ya no exige +2.5%.
+ 14. El límite de pérdida y la detención móvil salen A MERCADO (llenado inmediato),
+     con respaldo automático en límite agresivo si Bitso rechaza el mercado.
+ 15. ⭐ NUEVO: el límite de pérdida protege incluso con "solo señales" activado, para
+     que desactivar la ejecución no te deje sin red de seguridad.
+
+Configuración esperada (Streamlit secrets o variables de entorno):
+    BITSO_API_KEY, BITSO_API_SECRET, MODO_REAL,
+    MONTO_MAXIMO_POR_OPERACION, MONTO_MAXIMO_DIARIO,
+    TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+"""
+
 # ══════════════════ BLOQUE 1/10: importaciones y configuración global ══════════════════
 
 import streamlit as st
@@ -28,6 +64,9 @@ TOMA_GANANCIA_FIJA = True
 # ⭐ NUEVO: cómo se ejecutan las salidas
 SALIDA_A_MERCADO = True      # el límite de pérdida y la detención móvil salen a mercado
 MARGEN_AGRESIVO_PCT = 0.5    # si el mercado es rechazado: límite 0.5% por DEBAJO del mercado
+# ⭐ NUEVO: el límite de pérdida protege incluso con "solo señales" activado.
+# Si no, al desactivar la ejecución te quedas sin red de seguridad.
+SALIDAS_IGNORAN_SOLO_SENALES = True
 MENSAJES = deque(maxlen=30)            # avisos del ciclo (antes iban a la barra lateral)
 
 def avisar(mensaje, nivel="info"):
@@ -1177,7 +1216,10 @@ def _revisar_salidas(simbolo, precio):
     umbral_ganancia = entrada * (1 + st.session_state.toma_ganancia / 100.0)
     umbral_movil = maximo * (1 - st.session_state.seguimiento / 100.0)
 
-    if st.session_state.modo_solo_senales:
+    # ⭐ NUEVO: con "solo señales" se respeta el modo... salvo el límite de pérdida,
+    # que siempre protege el capital (si no, te quedas sin red de seguridad).
+    if st.session_state.modo_solo_senales and not (
+            SALIDAS_IGNORAN_SOLO_SENALES and precio <= umbral_perdida):
         # No ejecuta nada, pero avisa por Telegram para que decidas tú
         hay_aviso = precio <= umbral_perdida or precio >= umbral_ganancia
         clave_aviso = f"aviso_salida_{simbolo}"
@@ -1354,9 +1396,9 @@ st.session_state.modo_solo_senales = st.sidebar.checkbox(
     "🔇 Solo señales (no ejecutar)", value=st.session_state.modo_solo_senales)
 
 st.sidebar.caption("💰 La cartera se muestra en el panel principal (se refresca en cada ciclo).")
-st.sidebar.caption("📌 Las salidas de riesgo (límite de pérdida y toma de ganancia) se aplican "
-                   "siempre, sin depender del horario ni de la fase. El límite de pérdida sale "
-                   "a mercado; la toma de ganancia, con orden Maker.")
+st.sidebar.caption("📌 Las salidas de riesgo se aplican siempre, sin depender del horario ni "
+                   "de la fase. El límite de pérdida sale a mercado y protege incluso con "
+                   "'solo señales' activado; la toma de ganancia usa orden Maker.")
 # ══════════════════ BLOQUE 9/10: botones, cartera real y control manual ══════════════════
 
 if st.sidebar.button("Reiniciar simulación"):
@@ -1591,7 +1633,8 @@ def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_oncha
         return True
     except Exception:
         return False
-        # ══════════════════ BLOQUE 10/10: ciclo, panel y refresco automático ══════════════════
+      
+# ══════════════════ BLOQUE 10/10: ciclo, panel y refresco automático ══════════════════
 
 def _ejecutar_ordenes_pendientes():
     """Resuelve las órdenes Maker pendientes y las aplica al registro contable."""
@@ -1854,9 +1897,10 @@ def ejecutar_ciclo(interfaz):
         columnas[1].metric("Valor total (Bitso)", f"${valor_total_real:,.2f}")
         columnas[2].metric("BTC / ETH (Bitso)", f"{btc_real:.6f} / {eth_real:.6f}")
         columnas[3].metric("Operaciones hoy", st.session_state.ops_del_dia)
+        # ⭐ FIX: esta línea ya no la tapa la de las posiciones (contenedor propio)
         interfaz["cartera"].caption(
             f"🔗 Datos reales de Bitso — BTC ${btc:,.0f} · ETH ${eth:,.0f} MXN | "
-            f"Registro interno: ${st.session_state.saldo:,.2f} "
+            f"📋 Registro interno del bot: ${st.session_state.saldo:,.2f} "
             f"({st.session_state.posiciones.get('BTC', 0):.6f} BTC / "
             f"{st.session_state.posiciones.get('ETH', 0):.6f} ETH)"
         )
@@ -1879,7 +1923,7 @@ def ejecutar_ciclo(interfaz):
             + str(st.session_state.get("error_saldo_bitso") or "sin detalle")
         )
 
-    # ===== POSICIÓN ABIERTA: PUNTO DE SALIDA =====
+    # ===== POSICIÓN ABIERTA: PUNTO DE SALIDA (contenedor propio, ⭐ FIX) =====
     for simbolo_pos, precio_pos in [("BTC", btc), ("ETH", eth)]:
         cantidad_pos = float(st.session_state.posiciones.get(simbolo_pos, 0.0))
         if cantidad_pos <= 0:
@@ -1889,17 +1933,18 @@ def ejecutar_ciclo(interfaz):
             continue
         objetivo = entrada_pos * (1 + st.session_state.toma_ganancia / 100.0)
         corte = entrada_pos * (1 - st.session_state.limite_perdida / 100.0)
-        aviso_pos = f"🎯 **{simbolo_pos}**: entrada ${entrada_pos:,.0f} | " \
-                    f"vende en ${objetivo:,.0f} (+{st.session_state.toma_ganancia}%) | " \
-                    f"corta en ${corte:,.0f} (-{st.session_state.limite_perdida}%) | " \
-                    f"precio ahora ${precio_pos:,.0f} " \
-                    f"({((precio_pos / entrada_pos) - 1) * 100:+.2f}%)"
+        aviso_pos = (f"🎯 **{simbolo_pos}**: {cantidad_pos:.8f} unidades | "
+                     f"entrada ${entrada_pos:,.0f} | "
+                     f"vende en ${objetivo:,.0f} (+{st.session_state.toma_ganancia}%) | "
+                     f"corta en ${corte:,.0f} (-{st.session_state.limite_perdida}%) | "
+                     f"precio ahora ${precio_pos:,.0f} "
+                     f"({((precio_pos / entrada_pos) - 1) * 100:+.2f}%)")
         if precio_pos >= objetivo:
-            interfaz["cartera"].success("✅ " + aviso_pos)
+            interfaz["posiciones"].success("✅ " + aviso_pos)
         elif precio_pos <= corte:
-            interfaz["cartera"].error("🚨 " + aviso_pos)
+            interfaz["posiciones"].error("🚨 " + aviso_pos)
         else:
-            interfaz["cartera"].info(aviso_pos)
+            interfaz["posiciones"].info(aviso_pos)
 
     interfaz["historial"].subheader(f"📜 Historial (últimas 10 de {len(st.session_state.operaciones)})")
     if st.session_state.operaciones:
@@ -2015,6 +2060,7 @@ def _panel():
         "info": st.empty(),
         "metricas": st.empty(),
         "cartera": st.empty(),
+        "posiciones": st.empty(),      # ⭐ FIX: contenedor propio para las posiciones
         "historial": st.empty(),
         "ultima_senal": st.empty(),
         "estado": st.empty(),
