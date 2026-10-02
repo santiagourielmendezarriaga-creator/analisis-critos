@@ -120,9 +120,24 @@ def _leer(datos, clave_nueva, clave_vieja, predeterminado):
     if clave_vieja in datos:
         return datos[clave_vieja]
     return predeterminado
-    # ══════════════════ BLOQUE 2/10: persistencia en Firebase ══════════════════
+  # ══════════════════ BLOQUE 2/10: persistencia en Firebase + respaldos ══════════════════
+#
+# 🔒 SEGURIDAD: la base de datos se guarda bajo una RUTA SECRETA en vez de /bot.json.
+#    Instrucciones:
+#      1. Cambia RUTA_SECRETA por tu propia cadena aleatoria (no compartas cuál es).
+#      2. En Firebase Console → Realtime Database → Reglas, publica:
+#         {
+#           "rules": {
+#             ".read": false,
+#             ".write": false,
+#             "TU_CADENA_SECRETA": { ".read": true, ".write": true }
+#           }
+#         }
+#    Con eso nadie puede listar las rutas para descubrir la tuya.
 
-URL_FIREBASE = "https://bot-cc6c4-default-rtdb.firebaseio.com"
+URL_BASE_FIREBASE = "https://bot-cc6c4-default-rtdb.firebaseio.com"
+RUTA_SECRETA = "x9k2-trm-4471-zq"          # ⭐ CÁMBIALA por tu propia cadena aleatoria
+URL_FIREBASE = f"{URL_BASE_FIREBASE}/{RUTA_SECRETA}"
 
 def guardar_datos():
     try:
@@ -167,10 +182,10 @@ def guardar_datos():
             "fase_actual": st.session_state.fase_actual,
             "analisis_anterior": st.session_state.analisis_anterior,
             "operar_24_7": st.session_state.get("operar_24_7", False),
-            # ⭐ FIX: las órdenes pendientes deben sobrevivir a un reinicio
+            # ⭐ las órdenes pendientes deben sobrevivir a un reinicio
             "orden_pendiente_BTC": st.session_state.get("orden_pendiente_BTC"),
             "orden_pendiente_ETH": st.session_state.get("orden_pendiente_ETH"),
-            # ⭐ FIX: contadores de respaldos automáticos (antes vivían solo en memoria)
+            # ⭐ contadores de respaldos automáticos
             "ultimo_respaldo_auto": st.session_state.get("ultimo_respaldo_auto", time.time()),
             "ultimo_respaldo_operaciones": st.session_state.get("ultimo_respaldo_operaciones", 0),
         }
@@ -245,8 +260,152 @@ def iniciar_estado_nuevo():
     st.session_state.orden_pendiente_BTC = None
     st.session_state.orden_pendiente_ETH = None
     st.session_state.operar_24_7 = False
-    st.session_state.ultimo_respaldo_auto = time.time()          # ⭐ FIX: faltaba
-    st.session_state.ultimo_respaldo_operaciones = 0             # ⭐ FIX: faltaba
+    st.session_state.ultimo_respaldo_auto = time.time()
+    st.session_state.ultimo_respaldo_operaciones = 0
+
+def restaurar_desde_archivo():
+    datos = cargar_datos()
+    if datos is None:
+        iniciar_estado_nuevo()
+        return
+    try:
+        operaciones = []
+        for marca, msg in _leer(datos, "operaciones", "trades", []):
+            if isinstance(marca, str):
+                operaciones.append((datetime.fromisoformat(marca), msg))
+            else:
+                operaciones.append((marca, msg))
+
+        st.session_state.saldo = _leer(datos, "saldo", "balance", 1000.0)
+        st.session_state.posiciones = _leer(datos, "posiciones", "positions", {"BTC": 0.0, "ETH": 0.0})
+        st.session_state.operaciones = operaciones
+        st.session_state.ultima_accion = _leer(datos, "ultima_accion", "last_action", {"BTC": None, "ETH": None})
+        st.session_state.ops_del_dia = _leer(datos, "ops_del_dia", "daily_trades", 0)
+        st.session_state.ultimo_dia = _leer(datos, "ultimo_dia", "last_day", datetime.now().day)
+        st.session_state.monto_del_dia = _leer(datos, "monto_del_dia", "monto_dia", 0.0)
+        st.session_state.precio_referencia = _leer(datos, "precio_referencia", "ref_price", {"BTC": 0.0, "ETH": 0.0})
+        st.session_state.ultimo_precio = _leer(datos, "ultimo_precio", "last_price", {"BTC": 0.0, "ETH": 0.0})
+        st.session_state.precio_entrada = _leer(datos, "precio_entrada", "entry_price", {"BTC": 0.0, "ETH": 0.0})
+        st.session_state.precio_maximo = _leer(datos, "precio_maximo", "highest_price", {"BTC": 0.0, "ETH": 0.0})
+        st.session_state.ciclo = _leer(datos, "ciclo", "cycle", 0)
+        st.session_state.umbral_caida = datos.get("umbral_caida", 0.005)
+        st.session_state.limite_perdida = _leer(datos, "limite_perdida", "stop_loss", 1.5)
+        st.session_state.toma_ganancia = max(0.5, _a_decimal(
+            _leer(datos, "toma_ganancia", "take_profit", 2.5), 2.5))
+        st.session_state.seguimiento = _leer(datos, "seguimiento", "trailing", 0.5)
+        st.session_state.umbral_indicadores_activacion = datos.get("umbral_indicadores_activacion", 0.5)
+        st.session_state.puntaje_experto = _leer(datos, "puntaje_experto", "expert_score", 30)
+        st.session_state.rsi_sobreventa = _leer(datos, "rsi_sobreventa", "rsi_os", 30)
+        st.session_state.rsi_sobrecompra = _leer(datos, "rsi_sobrecompra", "rsi_ob", 80)
+        st.session_state.ema_rapida = _leer(datos, "ema_rapida", "ema_fast", 5)
+        st.session_state.ema_lenta = _leer(datos, "ema_lenta", "ema_slow", 12)
+        st.session_state.sl_disparado = _leer(datos, "sl_disparado", "sl_triggered", {"BTC": False, "ETH": False})
+        st.session_state.sl_precio_minimo = _leer(datos, "sl_precio_minimo", "sl_low_price", {"BTC": 0.0, "ETH": 0.0})
+        st.session_state.indicadores_activados = datos.get("indicadores_activados", {"BTC": False, "ETH": False})
+        st.session_state.modo_solo_senales = datos.get("modo_solo_senales", False)
+        st.session_state.modo_aprendizaje = datos.get("modo_aprendizaje", False)
+        st.session_state.rendimiento = datos.get("rendimiento", {
+            "BTC": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []},
+            "ETH": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []}
+        })
+        st.session_state.confianza = datos.get("confianza", {"BTC": 50, "ETH": 50})
+        st.session_state.tendencia = datos.get("tendencia", {"BTC": "NEUTRAL", "ETH": "NEUTRAL"})
+        st.session_state.historial_operaciones = datos.get("historial_operaciones", [])
+        st.session_state.cache_onchain = _leer(datos, "cache_onchain", "onchain_cache", {
+            "BTC": {"valor": None, "timestamp": 0},
+            "ETH": {"valor": None, "timestamp": 0}
+        })
+        st.session_state.tendencia_historica = _leer(datos, "tendencia_historica", "historical_trend", {"BTC": {}, "ETH": {}})
+        st.session_state.confianza_umbral = min(95, max(50, _a_entero(datos.get("confianza_umbral", 65), 65)))
+        st.session_state.intervalo_actualizacion = datos.get("intervalo_actualizacion", 5)
+        st.session_state.inicio_fase = datos.get("inicio_fase", datetime.now().isoformat())
+        st.session_state.fase_actual = datos.get("fase_actual", "operando")
+        st.session_state.analisis_anterior = datos.get("analisis_anterior", {})
+        st.session_state.operar_24_7 = _a_booleano(datos.get("operar_24_7", False), False)
+        historial = _leer(datos, "historial_precios", "price_history", {"BTC": [], "ETH": []})
+        st.session_state.historial_precios = {k: deque(v, maxlen=200) for k, v in historial.items()}
+        # ⭐ restaurar órdenes pendientes
+        st.session_state.orden_pendiente_BTC = datos.get("orden_pendiente_BTC")
+        st.session_state.orden_pendiente_ETH = datos.get("orden_pendiente_ETH")
+        st.session_state.ultimo_respaldo_auto = _leer(
+            datos, "ultimo_respaldo_auto", "ultimo_backup_auto", None) or time.time()
+        st.session_state.ultimo_respaldo_operaciones = _a_entero(
+            _leer(datos, "ultimo_respaldo_operaciones", "ultimo_backup_trades", 0), 0)
+        print(f"✅ Datos restaurados. Ciclo: {st.session_state.ciclo}")
+    except Exception as e:
+        print(f"Error al restaurar: {e}")
+        iniciar_estado_nuevo()
+
+# ==================== FUNCIONES DE RESPALDO ====================
+def crear_respaldo():
+    try:
+        url = f"{URL_FIREBASE}/bot.json"
+        respuesta = requests.get(url, timeout=10)
+        if respuesta.status_code != 200:
+            return None, "No hay datos para respaldar"
+        datos_actuales = respuesta.json()
+        if not datos_actuales or ("saldo" not in datos_actuales and "balance" not in datos_actuales):
+            return None, "Datos incompletos"
+        marca = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        clave_respaldo = f"backup_{marca}"
+        url_respaldo = f"{URL_FIREBASE}/backups/{clave_respaldo}.json"
+        contenido = {
+            "timestamp": marca,
+            "cycle": datos_actuales.get("ciclo", datos_actuales.get("cycle", 0)),
+            "balance": datos_actuales.get("saldo", datos_actuales.get("balance", 0)),
+            "positions": datos_actuales.get("posiciones", datos_actuales.get("positions", {})),
+            "trades_count": len(datos_actuales.get("operaciones", datos_actuales.get("trades", []))),
+            "data": datos_actuales
+        }
+        respuesta2 = requests.put(url_respaldo, json=contenido, timeout=15)
+        if respuesta2.status_code == 200:
+            print(f"💾 Respaldo creado: {clave_respaldo}")
+            return clave_respaldo, "Respaldo creado exitosamente"
+        return None, "Error al crear el respaldo en Firebase"
+    except Exception as e:
+        print(f"Error creando respaldo: {e}")
+        return None, str(e)
+
+def listar_respaldos():
+    try:
+        url = f"{URL_FIREBASE}/backups.json"
+        respuesta = requests.get(url, timeout=10)
+        if respuesta.status_code == 200:
+            datos = respuesta.json()
+            if datos:
+                return sorted(datos.keys(), reverse=True)
+        return []
+    except Exception as e:
+        print(f"Error listando respaldos: {e}")
+        return []
+
+def restaurar_respaldo(clave_respaldo):
+    try:
+        url = f"{URL_FIREBASE}/backups/{clave_respaldo}.json"
+        respuesta = requests.get(url, timeout=10)
+        if respuesta.status_code == 200:
+            datos = respuesta.json()
+            if datos and "data" in datos:
+                url_bot = f"{URL_FIREBASE}/bot.json"
+                respuesta2 = requests.put(url_bot, json=datos["data"], timeout=15)
+                if respuesta2.status_code == 200:
+                    print(f"✅ Respaldo {clave_respaldo} restaurado")
+                    return True
+        return False
+    except Exception as e:
+        print(f"Error restaurando respaldo: {e}")
+        return False
+
+def limpiar_respaldos_viejos(maximo_respaldos=10):
+    try:
+        respaldos = listar_respaldos()
+        if len(respaldos) > maximo_respaldos:
+            for viejo in respaldos[maximo_respaldos:]:
+                url_borrar = f"{URL_FIREBASE}/backups/{viejo}.json"
+                requests.delete(url_borrar, timeout=10)
+                print(f"🗑️ Respaldo viejo eliminado: {viejo}")
+    except Exception as e:
+        print(f"Error limpiando respaldos: {e}")
 # ══════════════════ BLOQUE 3/10: restaurar estado y respaldos ══════════════════
 
 def restaurar_desde_archivo():
