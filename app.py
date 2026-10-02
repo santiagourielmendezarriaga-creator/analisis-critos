@@ -552,20 +552,24 @@ def limpiar_respaldos_viejos(maximo_respaldos=10):
         print(f"Error limpiando respaldos: {e}")
         # ══════════════════ BLOQUE 4/10: Telegram, Bitso y saldo real ══════════════════
 
-# ⚠️ SEGURIDAD: el token original quedó expuesto en el código fuente. RÓTALO en
-# BotFather y colócalo en Secrets. Este respaldo solo evita romper la app mientras
-# no esté configurado.
-_TOKEN_SEGURO = _secreto("TELEGRAM_TOKEN", "") or os.environ.get("TELEGRAM_TOKEN", "")
-_CHAT_SEGURO = _secreto("TELEGRAM_CHAT_ID", "")
-_TOKEN_RESPALDO = "8532857017:AAHwLhRnM3oC6TbgFFKAEmQnZVoo6JD_esQ"
-_CHAT_RESPALDO = "5835990242"
-
-TOKEN_TELEGRAM = _TOKEN_SEGURO or _TOKEN_RESPALDO
-CHAT_ID_TELEGRAM = str(_CHAT_SEGURO or _CHAT_RESPALDO)
-USANDO_TOKEN_RESPALDO = not _TOKEN_SEGURO
+# ===== TELEGRAM =====
+# 🔑 SEGURIDAD: el token se lee SIEMPRE de Secrets (o del entorno). No se escribe en el
+#    código. En Streamlit Cloud: App settings → Secrets.
+#        TELEGRAM_TOKEN = "123456789:AAH..."
+#        TELEGRAM_CHAT_ID = "5835990242"
+TOKEN_TELEGRAM = str(_secreto("TELEGRAM_TOKEN", "") or os.environ.get("TELEGRAM_TOKEN", "")).strip()
+CHAT_ID_TELEGRAM = str(_secreto("TELEGRAM_CHAT_ID", "") or os.environ.get("TELEGRAM_CHAT_ID", "")).strip()
+TELEGRAM_CONFIGURADO = bool(TOKEN_TELEGRAM and CHAT_ID_TELEGRAM)
 
 def enviar_telegram(mensaje):
-    """Envía a Telegram. ⭐ FIX: reintenta sin Markdown si el parseo falla."""
+    """
+    Envía un aviso a Telegram.
+    ⭐ FIX: reintenta sin Markdown si el parseo falla.
+    ⭐ FIX: si no hay token configurado, no intenta nada y lo deja en el log.
+    """
+    if not TELEGRAM_CONFIGURADO:
+        print("⚠️ Telegram no configurado: define TELEGRAM_TOKEN y TELEGRAM_CHAT_ID en Secrets.")
+        return False
     try:
         url = f"https://api.telegram.org/bot{TOKEN_TELEGRAM}/sendMessage"
         cuerpo = {"chat_id": CHAT_ID_TELEGRAM, "text": mensaje}
@@ -1156,7 +1160,7 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
         return "BUY", confianza, f"Señal de compra ({puntuacion:.1f})", {}
     else:
         return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
-   # ══════════════════ BLOQUE 8/10: interfaz, cartera, compra automática, salidas y contador ══════════════════
+  # ══════════════════ BLOQUE 8/10: interfaz, cartera, compra automática, salidas y contador ══════════════════
 
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
@@ -1231,10 +1235,11 @@ if MODO_REAL:
 else:
     st.info("🟢 **MODO SIMULACIÓN** — Sin dinero real")
 
-if USANDO_TOKEN_RESPALDO:
+# ⭐ FIX: el token ya no vive en el código. Si no está en Secrets, se avisa aquí.
+if not TELEGRAM_CONFIGURADO:
     st.warning(
-        "🔑 **Telegram usa el token hardcodeado del código original (expuesto).** "
-        "Rótalo en BotFather y define `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` en Secrets."
+        "🔑 **Telegram no está configurado.** Define `TELEGRAM_TOKEN` y `TELEGRAM_CHAT_ID` "
+        "en los Secrets (App settings → Secrets) para recibir los avisos de ventas y errores."
     )
 
 # ===== FUNCIONES DE REGISTRO CONTABLE (SIMULACIÓN) =====
@@ -1255,7 +1260,7 @@ def _aplicar_compra(simbolo, monto, precio, comision=COMISION):
         float(st.session_state.precio_maximo.get(simbolo, 0.0)), precio)
     st.session_state.ops_del_dia += 1
     st.session_state.monto_del_dia = float(st.session_state.get("monto_del_dia", 0.0)) + monto
-    # ⭐ NUEVO: una compra nueva limpia el freno de ventas rechazadas
+    # ⭐ una compra nueva limpia el freno de ventas rechazadas
     st.session_state[f"venta_fallida_{simbolo}"] = 0.0
     return cantidad
 
@@ -1292,7 +1297,7 @@ def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0
         avisar(f"⏳ Ya hay una orden pendiente para {simbolo}: no se duplica la venta", "info")
         return False
 
-    # ⭐ NUEVO: freno tras un rechazo de Bitso, para no martillar cada 5 segundos
+    # ⭐ freno tras un rechazo de Bitso, para no martillar cada 5 segundos
     ultimo_fallo = float(st.session_state.get(f"venta_fallida_{simbolo}", 0.0) or 0.0)
     if ultimo_fallo and (time.time() - ultimo_fallo) < ESPERA_TRAS_FALLO_MIN * 60:
         return False
@@ -1338,7 +1343,7 @@ def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0
         if not orden or orden.get("error"):
             detalle = orden.get("error") if orden else "sin respuesta"
             st.session_state[f"venta_fallida_{simbolo}"] = time.time()
-            # ⭐ NUEVO: el aviso dice EXACTAMENTE qué se intentó vender
+            # ⭐ el aviso dice EXACTAMENTE qué se intentó vender
             avisar(f"❌ Venta {simbolo} falló: intenté vender {cantidad:.8f} {simbolo} "
                    f"a ${precio_envio:,.2f} | Bitso: {detalle} | "
                    f"En pausa {ESPERA_TRAS_FALLO_MIN} min.", "error")
@@ -1582,7 +1587,7 @@ def ejecutar_compra_profesional(simbolo, precio, confianza, razon, tendencia_30d
         st.session_state[clave_compra] = st.session_state.ciclo
         avisar(f"⏳ Orden Maker {simbolo} colocada (oid {orden.get('oid')})", "info")
         enviar_telegram(f"⏳ ORDEN MAKER {simbolo} | Precio: ${precio_maker:,.2f}")
-        guardar_datos()  # ⭐ FIX: persistir la orden pendiente
+        guardar_datos()  # ⭐ persistir la orden pendiente
         return
 
     ejecutadas = 0
