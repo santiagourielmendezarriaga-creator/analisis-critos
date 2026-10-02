@@ -950,7 +950,7 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
         return "BUY", confianza, f"Señal de compra ({puntuacion:.1f})", {}
     else:
         return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
-       # ══════════════════ PARTE 7/11: interfaz, cartera, salidas y contador ══════════════════
+      # ══════════════════ PARTE 7/11: interfaz, cartera, salidas y contador ══════════════════
 
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
@@ -967,8 +967,8 @@ variables_requeridas = {
     "ciclo": 0,
     "historial_precios": {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)},
     "umbral_caida": 0.005,
-    "toma_ganancia": 5.0,           # 🔧 ANTES 2.0
-    "limite_perdida": 1.0,          # 🔧 ANTES 1.5
+    "toma_ganancia": 5.0,
+    "limite_perdida": 1.0,
     "seguimiento": 0.5,
     "umbral_indicadores_activacion": 0.5,
     "puntaje_experto": 30,
@@ -1005,15 +1005,15 @@ variables_requeridas = {
     "ultimo_respaldo_auto": time.time(),
     "ultimo_respaldo_operaciones": 0,
     "ultimo_dia": datetime.now().day,
+    "saldo_sincronizado_bitso": False,       # 🆕 flag de control
+    "ultima_sincronizacion": 0.0,            # 🆕 timestamp última sincronización
 }
 
 for nombre, valor_predeterminado in variables_requeridas.items():
     if nombre not in st.session_state:
         st.session_state[nombre] = valor_predeterminado
 
-# 🔧 CORRECCIÓN CRÍTICA: forzar los valores deseados SIEMPRE al arrancar,
-#    sin importar lo que Firebase tenga guardado. Así los sliders arrancan
-#    con TP=5% y SL=1% garantizado.
+# 🔧 Forzar TP=5% y SL=1% SIEMPRE al arrancar
 FORZAR_TP = 5.0
 FORZAR_SL = 1.0
 if st.session_state.get("toma_ganancia") != FORZAR_TP:
@@ -1028,6 +1028,98 @@ st.session_state.confianza_umbral = min(95, max(50, _a_entero(st.session_state.g
 if "datos_cargados" not in st.session_state:
     restaurar_desde_archivo()
     st.session_state.datos_cargados = True
+
+
+# ══════════════════ 🆕 SINCRONIZACIÓN CON BITSO ══════════════════
+def sincronizar_estado_con_bitso(forzar=False):
+    """
+    Lee el saldo real de Bitso y ajusta el registro interno del bot.
+
+    Reglas:
+      - Solo sincroniza si NO hay orden pendiente del bot (para no pisar su estado).
+      - Usa 'total' (incluye reservado en órdenes) para las posiciones.
+      - Para el MXN usa 'available' (lo disponible para comprar).
+      - Si detecta cripto que el bot no tenía registrado, lo asigna con
+        precio_entrada = precio actual (conservador: asume que ya estaba en el mercado).
+      - Si el bot tenía posición pero Bitso ya no tiene nada, la cierra.
+
+    Retorna dict con el resumen de lo que cambió.
+    """
+    if not LLAVE_API_BITSO or not SECRETO_API_BITSO:
+        return {"ok": False, "error": "Sin credenciales de Bitso"}
+
+    # Cooldown: no sincronizar más de 1 vez cada 30s, salvo que sea forzado
+    ahora = time.time()
+    if not forzar and (ahora - float(st.session_state.get("ultima_sincronizacion", 0))) < 30:
+        return {"ok": True, "omitido": "cooldown"}
+
+    saldos = obtener_saldo_bitso(usar_cache=False)
+    if not saldos:
+        return {"ok": False, "error": st.session_state.get("error_saldo_bitso") or "sin datos"}
+
+    cambios = []
+
+    # MXN: usar 'available' (lo disponible para comprar)
+    mxn_disponible = float(saldos.get("mxn", {}).get("available", 0.0))
+    saldo_anterior = float(st.session_state.get("saldo", 0.0))
+    if abs(mxn_disponible - saldo_anterior) > 0.01:
+        st.session_state.saldo = mxn_disponible
+        cambios.append(f"MXN: ${saldo_anterior:,.2f} → ${mxn_disponible:,.2f}")
+
+    # BTC y ETH: usar 'total' (incluye lo reservado en órdenes abiertas)
+    for simbolo in ("BTC", "ETH"):
+        cantidad_bot = float(st.session_state.posiciones.get(simbolo, 0.0))
+        cantidad_real = float(saldos.get(simbolo.lower(), {}).get("total", 0.0))
+        tiene_orden_pendiente = bool(st.session_state.get(f"orden_pendiente_{simbolo}"))
+
+        # Si el bot tiene una orden pendiente, no tocar esa posición (la está gestionando)
+        if tiene_orden_pendiente:
+            continue
+
+        # Caso A: el bot cree que no tiene nada, pero Bitso sí tiene cripto
+        if cantidad_bot <= 0.00000001 and cantidad_real > 0.00000001:
+            st.session_state.posiciones[simbolo] = cantidad_real
+            # Precio de entrada: precio actual (conservador: no sabemos a cuánto compró)
+            precio_actual = float(st.session_state.ultimo_precio.get(simbolo, 0.0) or 0.0)
+            if precio_actual > 0:
+                st.session_state.precio_entrada[simbolo] = precio_actual
+                st.session_state.precio_maximo[simbolo] = precio_actual
+            cambios.append(f"{simbolo}: 0 → {cantidad_real:.8f} (importado de Bitso)")
+
+        # Caso B: el bot cree que tiene, pero Bitso tiene menos (ajuste por comisión o venta externa)
+        elif cantidad_bot > 0.00000001 and cantidad_real < cantidad_bot * 0.95:
+            st.session_state.posiciones[simbolo] = cantidad_real
+            if cantidad_real <= 0.00000001:
+                st.session_state.precio_entrada[simbolo] = 0.0
+                st.session_state.precio_maximo[simbolo] = 0.0
+                cambios.append(f"{simbolo}: {cantidad_bot:.8f} → 0 (ya no hay en Bitso)")
+            else:
+                cambios.append(f"{simbolo}: {cantidad_bot:.8f} → {cantidad_real:.8f} (ajustado)")
+
+        # Caso C: el bot tiene más que Bitso (raro, pero puede pasar por drift)
+        elif cantidad_bot > 0.00000001 and cantidad_real > cantidad_bot * 1.05:
+            st.session_state.posiciones[simbolo] = cantidad_real
+            cambios.append(f"{simbolo}: {cantidad_bot:.8f} → {cantidad_real:.8f} (Bitso tiene más)")
+
+    st.session_state["ultima_sincronizacion"] = ahora
+    st.session_state["saldo_sincronizado_bitso"] = True
+
+    if cambios:
+        avisar(f"🔄 Sincronizado con Bitso: {' | '.join(cambios)}", "info")
+        guardar_datos()
+
+    return {"ok": True, "cambios": cambios}
+
+
+# Sincronizar al arrancar (solo una vez por sesión)
+if not st.session_state.get("saldo_sincronizado_bitso"):
+    try:
+        resultado_sync = sincronizar_estado_con_bitso(forzar=True)
+        if resultado_sync.get("ok") and resultado_sync.get("cambios"):
+            st.toast(f"🔄 Sincronizado con Bitso: {' | '.join(resultado_sync['cambios'])}", icon="🔄")
+    except Exception as e:
+        print(f"Error sincronizando con Bitso al arrancar: {e}")
+
 
 # 🧹 Limpieza automática: si NO estamos en modo real, cancelar órdenes huérfanas en Bitso.
 if (not MODO_REAL) and LLAVE_API_BITSO and SECRETO_API_BITSO:
@@ -1282,50 +1374,6 @@ def ejecutar_compra_profesional(simbolo, precio, confianza, razon, tendencia_30d
         return
     cantidad_ops = int(min(cantidad_ops, restante_dia // monto))
     if cantidad_ops < 1:
-        avisar("⚠️ Remanente diario insuficiente para una operación", "warning")
-        return
-    if st.session_state.posiciones.get(simbolo, 0) > 0:
-        return
-    precio_maker = precio * 0.998
-    if MODO_REAL:
-        saldo_real = obtener_saldo_bitso(usar_cache=False)
-        if saldo_real:
-            mxn_disponible = saldo_real.get("mxn", {}).get("available", 0)
-            if mxn_disponible < monto * cantidad_ops:
-                avisar(f"⚠️ Saldo insuficiente: ${mxn_disponible:.2f}", "warning")
-                return
-        libro = "btc_mxn" if simbolo == "BTC" else "eth_mxn"
-        cantidad = (monto * 0.999) / precio_maker
-        orden = colocar_orden_bitso(libro, "buy", f"{cantidad:.8f}", f"{precio_maker:.2f}")
-        if not orden or orden.get("error"):
-            avisar(f"❌ Orden Maker {simbolo} falló: "
-                   f"{orden.get('error') if orden else 'sin respuesta'}", "error")
-            return
-        st.session_state[clave_orden] = {
-            "oid": orden.get("oid"), "side": "buy", "sym": simbolo,
-            "price": precio_maker, "qty": cantidad, "monto": monto,
-            "cant": cantidad_ops, "timestamp": time.time(), "confianza": confianza
-        }
-        st.session_state[clave_compra] = st.session_state.ciclo
-        avisar(f"⏳ Orden Maker {simbolo} colocada (oid {orden.get('oid')})", "info")
-        enviar_telegram(f"⏳ ORDEN MAKER {simbolo} | Precio: ${precio_maker:,.2f}")
-        guardar_datos()
-        return
-    ejecutadas = 0
-    for _ in range(cantidad_ops):
-        if st.session_state.saldo >= monto:
-            _aplicar_compra(simbolo, monto, precio_maker)
-            ejecutadas += 1
-    if ejecutadas > 0:
-        st.session_state[clave_compra] = st.session_state.ciclo
-        guardar_datos()
-        msg = (f"🟢 COMPRA [MAKER-SIM] {simbolo} | {ejecutadas}x${monto:.0f} | "
-               f"Prob: {probabilidad:.1f}% | Razon: {razon}")
-        enviar_telegram(msg)
-        st.session_state.operaciones.append((datetime.now(), msg))
-        avisar(f"✅ {ejecutadas} compra(s) Maker simulada(s) en {simbolo}", "success")
-    else:
-        avisar(f"⚠️ Saldo insuficiente para comprar {simbolo}", "warning")
        # ══════════════════ PARTE 8/11: barra lateral y compra manual ══════════════════
 
 st.sidebar.header("⚙️ Configuración Principal")
