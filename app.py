@@ -1314,7 +1314,7 @@ def ejecutar_compra_profesional(simbolo, precio, confianza, razon, tendencia_30d
         avisar(f"✅ {ejecutadas} compra(s) Maker simulada(s) en {simbolo}", "success")
     else:
         avisar(f"⚠️ Saldo insuficiente para comprar {simbolo}", "warning")
-        # ══════════════════ PARTE 8/11: barra lateral y compra manual ══════════════════
+       # ══════════════════ PARTE 8/11: barra lateral y compra manual ══════════════════
 
 st.sidebar.header("⚙️ Configuración Principal")
 st.session_state.umbral_caida = st.sidebar.number_input(
@@ -1372,6 +1372,31 @@ st.sidebar.caption("📌 Las salidas de riesgo se aplican siempre, sin depender 
                    "de la fase. El límite de pérdida sale a mercado y protege incluso con "
                    "'solo señales' activado; la toma de ganancia usa orden Maker.")
 
+# 🆕 ===== SECCIÓN DE TELEGRAM =====
+st.sidebar.markdown("---")
+st.sidebar.markdown("**📡 Telegram**")
+if TELEGRAM_CONFIGURADO:
+    st.sidebar.success("✅ Chat personal configurado")
+else:
+    st.sidebar.warning("⚠️ Falta TELEGRAM_TOKEN / TELEGRAM_CHAT_ID")
+if CANAL_CONFIGURADO:
+    st.sidebar.success(f"✅ Canal configurado (señales ≥{UMBRAL_SENAL_FUERTE}%)")
+else:
+    st.sidebar.info("ℹ️ Canal no configurado (opcional)")
+    st.sidebar.caption("Define `TELEGRAM_CANAL_ID` en Secrets para recibir señales fuertes.")
+
+if st.sidebar.button("📨 Probar Telegram (chat personal)"):
+    ok = enviar_telegram("🧪 Prueba: chat personal funcionando desde el bot.")
+    st.sidebar.success("✅ Enviado") if ok else st.sidebar.error("❌ Falló el envío")
+
+if st.sidebar.button("📢 Probar Telegram (canal)"):
+    if not CANAL_CONFIGURADO:
+        st.sidebar.error("Canal no configurado")
+    else:
+        ok = enviar_canal_telegram("🧪 Prueba: canal funcionando desde el bot.")
+        st.sidebar.success("✅ Enviado al canal") if ok else st.sidebar.error("❌ Falló el envío")
+
+# 🆕 ===== BOTÓN DE PÁNICO =====
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🚨 Emergencia**")
 if st.sidebar.button("🚨 CANCELAR TODAS LAS ÓRDENES EN BITSO", type="primary"):
@@ -1410,6 +1435,7 @@ if st.sidebar.button("🚨 CANCELAR TODAS LAS ÓRDENES EN BITSO", type="primary"
         time.sleep(1)
         st.rerun()
 
+# ===== COMPRA MANUAL =====
 def _compra_manual(simbolo, libro):
     with st.sidebar.expander(f"🔍 Diagnóstico de compra {simbolo}", expanded=True):
         precio = obtener_precio_bitso(libro)
@@ -1462,23 +1488,34 @@ if st.sidebar.button("🟢 Comprar BTC AHORA"):
 if st.sidebar.button("🟢 Comprar ETH AHORA"):
     _compra_manual("ETH", "eth_mxn")
 
+# 🆕 ===== ENVÍO DE SEÑALES AL CANAL =====
 def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_onchain,
                           cambio_30d, tendencia_30d):
+    """
+    Envía una señal fuerte al CANAL privado (si está configurado).
+    Si no hay canal, la manda al chat personal como respaldo.
+    """
     try:
         probabilidad = calcular_probabilidad(confianza)
         texto_volumen = f"{volumen_onchain:.2f}B USD" if volumen_onchain is not None else "N/A"
-        msg = (f"📢 **SEÑAL {tipo} - {simbolo}**\n"
+        emoji_tipo = "🟢" if tipo == "BUY" else "🔴" if tipo == "SELL" else "⚪"
+        msg = (f"📢 **SEÑAL {emoji_tipo} {tipo} — {simbolo}**\n"
                f"🎯 Probabilidad: {probabilidad:.1f}%\n"
-               f"Precio: ${precio:,.0f}\n"
-               f"Razón: {razon}\n"
-               f"Volumen: {texto_volumen}\n"
-               f"Cambio 30d: {cambio_30d:+.2f}%\n"
-               f"Tendencia 30d: {tendencia_30d}")
-        enviar_telegram(msg)
-        return True
-    except Exception:
+               f"💰 Precio: ${precio:,.0f} MXN\n"
+               f"📝 Razón: {razon}\n"
+               f"📊 Volumen 24h: {texto_volumen}\n"
+               f"📈 Cambio 30d: {cambio_30d:+.2f}%\n"
+               f"🧭 Tendencia 30d: {tendencia_30d}\n"
+               f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        if CANAL_CONFIGURADO:
+            return enviar_canal_telegram(msg)
+        else:
+            return enviar_telegram(msg)
+    except Exception as e:
+        print(f"Error enviando señal al canal: {e}")
         return False
-        # ══════════════════ PARTE 9/11: ciclo, panel y refresco ══════════════════
+      # ══════════════════ PARTE 9/11: ciclo, panel y refresco ══════════════════
 
 HORAS_FASE_APRENDIZAJE = 48
 
@@ -1627,6 +1664,29 @@ def ejecutar_ciclo(interfaz):
     umbral_probabilidad = st.session_state.confianza_umbral
     estado_horario, emoji_horario, descripcion_horario, es_buen_horario = obtener_horario_operacion()
     horario_para_operar = es_buen_horario or st.session_state.get("operar_24_7", False)
+
+    # 🆕 ===== ENVIAR SEÑALES FUERTES AL CANAL DE TELEGRAM =====
+    for sim_actual, senal_actual, conf_actual, razon_actual, prob_actual, precio_actual in [
+        ("BTC", senal_btc, confianza_btc, razon_btc, probabilidad_btc, btc),
+        ("ETH", senal_eth, confianza_eth, razon_eth, probabilidad_eth, eth),
+    ]:
+        if senal_actual != "HOLD" and prob_actual >= UMBRAL_SENAL_FUERTE:
+            clave_senal = f"ultima_senal_enviada_{sim_actual}"
+            ultima = st.session_state.get(clave_senal, 0)
+            if st.session_state.ciclo - ultima > 10:
+                datos_t30 = st.session_state.tendencia_historica.get(sim_actual, {}) or {}
+                cambio_t30 = datos_t30.get("cambio_porcentual", 0)
+                tendencia_t30 = datos_t30.get("tendencia", "N/A")
+                vol_onchain = (volumen_onchain_btc if sim_actual == "BTC"
+                               else volumen_onchain_eth)
+                if enviar_senal_telegram(
+                    sim_actual, senal_actual, precio_actual,
+                    razon_actual, conf_actual, vol_onchain,
+                    cambio_t30, tendencia_t30
+                ):
+                    st.session_state[clave_senal] = st.session_state.ciclo
+                    avisar(f"📢 Señal {senal_actual} de {sim_actual} enviada al canal", "info")
+
     _ejecutar_ordenes_pendientes()
     if st.session_state.ciclo % 12 == 0:
         _reconciliar_cartera()
