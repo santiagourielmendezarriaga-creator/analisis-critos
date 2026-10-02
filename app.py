@@ -1474,15 +1474,6 @@ valor_seguro_umbral = min(95, max(50, int(st.session_state.confianza_umbral)))
 st.session_state.confianza_umbral = st.sidebar.slider(
     "Probabilidad mínima para operar (%)",
     min_value=50, max_value=95,
-
-
----------- Forwarded message ---------
-De: Santiago Méndez Melchor <santiagomendezmelchor@gmail.com>
-Date: vie, 2 de oct de 2026, 1:13 p.m.
-Subject:
-To: <santiagourielmendezarriaga@gmail.com>
-
-
 # -*- coding: utf-8 -*-
 """
 🧠 Bot Scalping Extremo + Volumen + Tendencia 30d (Streamlit)
