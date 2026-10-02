@@ -1614,19 +1614,66 @@ def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_oncha
     except Exception as e:
         print(f"Error enviando señal al canal: {e}")
         return False
-      # ══════════════════ PARTE 9/11: ciclo simplificado, solo señales al canal ══════════════════
+    # ══════════════════ PARTE 9/11: ciclo solo señales + respaldos Firebase ══════════════════
 
 HORAS_FASE_APRENDIZAJE = 48
 
+
+def _respaldos_automaticos():
+    """
+    Crea respaldos automáticos en Firebase:
+      - Cada 24h (si han pasado desde el último)
+      - Cada 100 operaciones cerradas
+      - Limpia los respaldos viejos (máx 10)
+    """
+    ahora = time.time()
+
+    # Respaldo cada 24 horas
+    if "ultimo_respaldo_auto" not in st.session_state or not st.session_state.ultimo_respaldo_auto:
+        st.session_state.ultimo_respaldo_auto = ahora
+    if (ahora - float(st.session_state.ultimo_respaldo_auto)) / 3600 >= 24:
+        try:
+            clave_respaldo, _ = crear_respaldo()
+            if clave_respaldo:
+                st.session_state.ultimo_respaldo_auto = ahora
+                limpiar_respaldos_viejos(maximo_respaldos=10)
+                print(f"💾 Respaldo automático (24h) creado: {clave_respaldo}")
+                enviar_telegram(f"💾 **RESPALDO AUTOMÁTICO (24h)**\n{clave_respaldo}")
+        except Exception as e:
+            print(f"Error creando respaldo 24h: {e}")
+
+    # Respaldo cada 100 operaciones/eventos
+    if "ultimo_respaldo_operaciones" not in st.session_state:
+        st.session_state.ultimo_respaldo_operaciones = 0
+    operaciones_actuales = len(st.session_state.operaciones)
+    if operaciones_actuales - int(st.session_state.ultimo_respaldo_operaciones) >= 100:
+        try:
+            clave_respaldo, _ = crear_respaldo()
+            if clave_respaldo:
+                st.session_state.ultimo_respaldo_operaciones = operaciones_actuales
+                limpiar_respaldos_viejos(maximo_respaldos=10)
+                print(f"💾 Respaldo automático (100 eventos) creado: {clave_respaldo}")
+                enviar_telegram(f"💾 **RESPALDO AUTOMÁTICO (100 eventos)**\n{clave_respaldo}")
+        except Exception as e:
+            print(f"Error creando respaldo 100 eventos: {e}")
+
+
 def ejecutar_ciclo(interfaz):
-    """Solo analiza y envía señales al canal. NO opera, NO compra, NO vende."""
+    """
+    Ciclo principal en modo SOLO SEÑALES.
+    - Analiza BTC y ETH
+    - Envía señales fuertes al canal de Telegram
+    - Guarda estado en Firebase cada 5 ciclos
+    - Crea respaldos automáticos cada 24h o 100 eventos
+    - NO opera (no compra, no vende, no toca órdenes)
+    """
     btc = obtener_precio_bitso("btc_mxn")
     eth = obtener_precio_bitso("eth_mxn")
     if btc is None or eth is None:
         interfaz["tabla"].error("❌ Error al obtener los precios.")
         return
 
-    # Actualizar historial
+    # ══════════════════ Actualizar estado ══════════════════
     st.session_state.ultimo_precio["BTC"] = btc
     st.session_state.ultimo_precio["ETH"] = eth
     st.session_state.historial_precios["BTC"].append(btc)
@@ -1641,10 +1688,18 @@ def ejecutar_ciclo(interfaz):
     if hoy != st.session_state.ultimo_dia:
         st.session_state.ops_del_dia = 0
         st.session_state.ultimo_dia = hoy
+        st.session_state.monto_del_dia = 0.0
 
     st.session_state.ciclo += 1
 
-    # Datos externos
+    # ══════════════════ Guardar en Firebase cada 5 ciclos ══════════════════
+    if st.session_state.ciclo % 5 == 0:
+        guardar_datos()
+
+    # ══════════════════ Respaldos automáticos ══════════════════
+    _respaldos_automaticos()
+
+    # ══════════════════ Datos externos ══════════════════
     valor_miedo, etiqueta_miedo = obtener_miedo_codicia()
     cambio_btc = (btc - st.session_state.precio_referencia["BTC"]) / st.session_state.precio_referencia["BTC"] * 100
     cambio_eth = (eth - st.session_state.precio_referencia["ETH"]) / st.session_state.precio_referencia["ETH"] * 100
@@ -1667,7 +1722,7 @@ def ejecutar_ciclo(interfaz):
     tendencia_btc = st.session_state.tendencia_historica.get("BTC", {}) or {}
     tendencia_eth = st.session_state.tendencia_historica.get("ETH", {}) or {}
 
-    # Análisis (solo señales)
+    # ══════════════════ Análisis (solo señales) ══════════════════
     senal_btc, confianza_btc, razon_btc, _ = analisis_avanzado("BTC", btc, valor_miedo)
     senal_eth, confianza_eth, razon_eth, _ = analisis_avanzado("ETH", eth, valor_miedo)
 
@@ -1683,7 +1738,7 @@ def ejecutar_ciclo(interfaz):
         if senal_actual != "HOLD" and prob_actual >= UMBRAL_SENAL_FUERTE:
             clave_senal = f"ultima_senal_enviada_{sim_actual}"
             ultima = st.session_state.get(clave_senal, 0)
-            if st.session_state.ciclo - ultima > 10:  # anti-spam
+            if st.session_state.ciclo - ultima > 10:  # anti-spam: 10 ciclos (~50s)
                 datos_t30 = st.session_state.tendencia_historica.get(sim_actual, {}) or {}
                 cambio_t30 = datos_t30.get("cambio_porcentual", 0)
                 tendencia_t30 = datos_t30.get("tendencia", "N/A")
@@ -1696,6 +1751,11 @@ def ejecutar_ciclo(interfaz):
                 ):
                     st.session_state[clave_senal] = st.session_state.ciclo
                     avisar(f"📢 Señal {senal_actual} de {sim_actual} enviada al canal (prob {prob_actual:.0f}%)", "info")
+                    # Guardar en el historial de operaciones para futuros respaldos
+                    marca = datetime.now()
+                    st.session_state.operaciones.append(
+                        (marca, f"📢 SEÑAL {senal_actual} {sim_actual} @ ${precio_actual:,.0f} | Prob {prob_actual:.0f}%")
+                    )
 
     # ══════════════════ TABLA ══════════════════
     interfaz["tabla"].subheader("📊 Señales + Volumen + Tendencia 30d")
@@ -1706,7 +1766,7 @@ def ejecutar_ciclo(interfaz):
         "Tendencia": [st.session_state.tendencia["BTC"], st.session_state.tendencia["ETH"]],
         "Señal": [senal_btc, senal_eth],
         "Prob. de acierto": [f"{probabilidad_btc:.1f}%", f"{probabilidad_eth:.1f}%"],
-        "Umbral mínimo": [f"{umbral_probabilidad:.1f}%", f"{umbral_probabilidad:.1f}%"],
+        "Umbral canal": [f"{UMBRAL_SENAL_FUERTE}%", f"{UMBRAL_SENAL_FUERTE}%"],
         "Volumen 24h": [
             f"{volumen_onchain_btc:.2f}B" if volumen_onchain_btc is not None else "N/A",
             f"{volumen_onchain_eth:.2f}B" if volumen_onchain_eth is not None else "N/A"
@@ -1717,28 +1777,33 @@ def ejecutar_ciclo(interfaz):
         ]
     })
 
-    # ══════════════════ INFO ══════════════════
+    # ══════════════════ INFO DEL MODO ══════════════════
     if CANAL_CONFIGURADO:
         interfaz["horario"].success(
             f"📡 **MODO SOLO SEÑALES** — Canal configurado | "
-            f"Señales ≥ {UMBRAL_SENAL_FUERTE}% de probabilidad"
+            f"Umbral: ≥{UMBRAL_SENAL_FUERTE}% | Ciclos: {st.session_state.ciclo}"
         )
     else:
         interfaz["horario"].error(
             "❌ **Canal NO configurado** — Define TELEGRAM_CANAL_ID en Secrets"
         )
 
+    # Info de Firebase
+    ops_totales = len(st.session_state.operaciones)
+    ultimo_respaldo_ts = st.session_state.get("ultimo_respaldo_auto", time.time())
+    horas_desde_respaldo = (time.time() - float(ultimo_respaldo_ts)) / 3600
+    horas_proximo_respaldo = max(0, 24 - horas_desde_respaldo)
+
     interfaz["fase"].info(
-        f"📅 **Analizando cada {st.session_state.intervalo_actualizacion}s** — "
-        f"{st.session_state.ciclo} análisis realizados"
+        f"💾 **FIREBASE** — {ops_totales} señales guardadas | "
+        f"Próximo respaldo automático en {horas_proximo_respaldo:.1f}h"
     )
 
     texto_info = (
         f"Ciclo: {st.session_state.ciclo} | "
         f"Miedo/Codicia: {valor_miedo}/100 ({etiqueta_miedo}) | "
         f"Umbral canal: {UMBRAL_SENAL_FUERTE}% | "
-        f"Umbral interno: {umbral_probabilidad:.0f}% | "
-        f"Modo: 📡 SOLO SEÑALES"
+        f"Modo: 📡 SOLO SEÑALES + 💾 Firebase"
     )
     interfaz["info"].caption(texto_info)
 
@@ -1753,9 +1818,9 @@ def ejecutar_ciclo(interfaz):
         columnas[0].metric("Saldo MXN (Bitso)", f"${mxn_total:,.2f}")
         columnas[1].metric("Valor total (Bitso)", f"${valor_total_real:,.2f}")
         columnas[2].metric("BTC / ETH (Bitso)", f"{btc_total:.6f} / {eth_total:.6f}")
-        columnas[3].metric("Ciclos", st.session_state.ciclo)
+        columnas[3].metric("Señales enviadas", ops_totales)
         interfaz["cartera"].caption(
-            f"🔗 Datos reales de Bitso — Modo solo señales activo (no opera)"
+            "🔗 Datos reales de Bitso — Modo solo señales activo (no opera)"
         )
     else:
         columnas[0].metric("Saldo MXN (simulado)", f"${st.session_state.saldo:,.2f}")
@@ -1763,11 +1828,22 @@ def ejecutar_ciclo(interfaz):
         columnas[2].metric("BTC / ETH (simulado)",
                            f"{st.session_state.posiciones.get('BTC', 0):.6f} / "
                            f"{st.session_state.posiciones.get('ETH', 0):.6f}")
-        columnas[3].metric("Ciclos", st.session_state.ciclo)
+        columnas[3].metric("Señales enviadas", ops_totales)
         interfaz["cartera"].warning(
             "⚠️ No se pudo leer el saldo de Bitso: "
             + str(st.session_state.get("error_saldo_bitso") or "sin detalle")
         )
+
+    # ══════════════════ HISTORIAL DE SEÑALES ══════════════════
+    interfaz["historial"].subheader(f"📜 Historial de señales (últimas 10 de {ops_totales})")
+    if st.session_state.operaciones:
+        texto = ""
+        for marca, msg in reversed(st.session_state.operaciones[-10:]):
+            msg_corto = msg.replace("\n", " | ")[:100]
+            texto += f"{marca.strftime('%H:%M:%S')} - {msg_corto}\n"
+        interfaz["historial"].text(texto)
+    else:
+        interfaz["historial"].text("Sin señales enviadas aún.")
 
     # ══════════════════ ÚLTIMOS AVISOS ══════════════════
     contenedor = interfaz["mensajes"].container()
