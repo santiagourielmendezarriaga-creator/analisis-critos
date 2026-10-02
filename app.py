@@ -1468,14 +1468,13 @@ st.session_state.umbral_indicadores_activacion = st.sidebar.number_input(
 st.sidebar.header("🧠 Modo de aprendizaje")
 st.session_state.modo_aprendizaje = st.sidebar.checkbox(
     "✅ Modo aprendizaje activado", value=st.session_state.modo_aprendizaje)
-
 st.sidebar.header("🎯 Probabilidad mínima")
 valor_seguro_umbral = min(95, max(50, int(st.session_state.confianza_umbral)))
 st.session_state.confianza_umbral = st.sidebar.slider(
     "Probabilidad mínima para operar (%)",
-    min_value=50, max_value=95,
-# -*- coding: utf-8 -*-
-"""
+    min_value=50, max_value=95, value=valor_seguro_umbral, step=5,
+    help="50% = señales débiles | 65% = equilibrio | 80%+ = solo señales muy fuertes"
+)
 🧠 Bot Scalping Extremo + Volumen + Tendencia 30d (Streamlit)
 VERSIÓN FINAL CORREGIDA, EN ESPAÑOL
 
