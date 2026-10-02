@@ -106,7 +106,7 @@ def _leer(datos, clave_nueva, clave_vieja, predeterminado):
     if clave_vieja in datos:
         return datos[clave_vieja]
     return predeterminado
-  # ══════════════════ BLOQUE 2/10: persistencia en Firebase ══════════════════
+ # ══════════════════ BLOQUE 2/10: persistencia en Firebase ══════════════════
 #
 # 🔒 SEGURIDAD: los datos se guardan bajo una RUTA SECRETA, no en /bot.json.
 #    1. Cambia RUTA_SECRETA por tu propia cadena aleatoria (no la compartas).
@@ -208,8 +208,8 @@ def iniciar_estado_nuevo():
     st.session_state.ciclo = 0
     st.session_state.historial_precios = {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)}
     st.session_state.umbral_caida = 0.005
-    st.session_state.limite_perdida = 1.5
-    st.session_state.toma_ganancia = 2.5
+    st.session_state.limite_perdida = 1.0          # 🔧 antes 1.5
+    st.session_state.toma_ganancia = 5.0           # 🔧 antes 2.5
     st.session_state.seguimiento = 0.5
     st.session_state.umbral_indicadores_activacion = 0.5
     st.session_state.puntaje_experto = 30
@@ -220,7 +220,7 @@ def iniciar_estado_nuevo():
     st.session_state.sl_disparado = {"BTC": False, "ETH": False}
     st.session_state.sl_precio_minimo = {"BTC": 0.0, "ETH": 0.0}
     st.session_state.indicadores_activados = {"BTC": False, "ETH": False}
-    st.session_state.modo_solo_senales = False
+    st.session_state.modo_solo_senales = True      # 🔧 antes False
     st.session_state.modo_aprendizaje = False
     st.session_state.rendimiento = {
         "BTC": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []},
