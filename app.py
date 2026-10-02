@@ -1819,6 +1819,15 @@ def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_oncha
         return False
       # ══════════════════ BLOQUE 10/10: ciclo, panel, contador y refresco ══════════════════
 
+# 🔧 Ajusta aquí la duración de la fase de aprendizaje (en horas).
+#    - 48 = 2 días (por defecto, recomendado)
+#    - 24 = 1 día
+#    - 6  = 4 evaluaciones al día
+#    - 1  = 24 evaluaciones al día
+#    ⚠️ NO bajes de 1 hora: el módulo de aprendizaje necesita varias operaciones
+#    para que sus ajustes de TP/SL/umbral tengan sentido estadístico.
+HORAS_FASE_APRENDIZAJE = 48
+
 def _reconciliar_cartera():
     """
     Coteja el registro interno con el saldo real de Bitso. Si el bot cree que tiene una
@@ -2011,10 +2020,12 @@ def ejecutar_ciclo(interfaz):
         inicio_fase = ahora
         st.session_state.inicio_fase = ahora.isoformat()
     horas_transcurridas = (ahora - inicio_fase).total_seconds() / 3600
-    horas_restantes = max(0, 48 - horas_transcurridas)
-    if horas_transcurridas >= 48 and st.session_state.fase_actual == "operando":
+    horas_restantes = max(0, HORAS_FASE_APRENDIZAJE - horas_transcurridas)
+
+    if horas_transcurridas >= HORAS_FASE_APRENDIZAJE and st.session_state.fase_actual == "operando":
         st.session_state.fase_actual = "analizando"
         enviar_telegram("🧠 **FASE DE ANÁLISIS INICIADA**")
+
     if st.session_state.fase_actual == "analizando":
         resultado = analizar_fase_aprendizaje()
         if resultado.get("suficiente"):
@@ -2043,7 +2054,7 @@ def ejecutar_ciclo(interfaz):
             "ETH": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []}
         }
         guardar_datos()
-        enviar_telegram("🔄 **NUEVA FASE DE 2 DÍAS INICIADA**")
+        enviar_telegram(f"🔄 **NUEVA FASE DE {HORAS_FASE_APRENDIZAJE}h INICIADA**")
 
     # ===== TABLA =====
     interfaz["tabla"].subheader("📊 Señales + Volumen + Tendencia 30d")
@@ -2075,8 +2086,12 @@ def ejecutar_ciclo(interfaz):
     else:
         interfaz["horario"].warning(texto_horario)
 
+    # 🔧 Texto corregido: ya no confunde "análisis" con "auto-evaluación"
     if st.session_state.fase_actual == "operando":
-        interfaz["fase"].info(f"📅 **FASE OPERATIVA** — Próximo análisis en {horas_restantes:.1f} horas")
+        interfaz["fase"].info(
+            f"📅 **FASE OPERATIVA** — Próxima auto-evaluación en "
+            f"{horas_restantes:.1f} horas ({HORAS_FASE_APRENDIZAJE}h por ciclo)"
+        )
     else:
         interfaz["fase"].warning("🧠 **ANALIZANDO FASE**...")
 
@@ -2187,8 +2202,7 @@ def ejecutar_ciclo(interfaz):
         interfaz["historial"].text(texto)
     else:
         interfaz["historial"].text("Sin operaciones aún.")
-
-    # ===== CONTADOR DE ACIERTOS =====
+# ===== CONTADOR DE ACIERTOS =====
     resumen = _resumen_aciertos()
     interfaz["aciertos"].subheader("📈 Aciertos vs fallos de la fase")
     columnas_ac = interfaz["aciertos"].columns(4)
@@ -2209,108 +2223,12 @@ def ejecutar_ciclo(interfaz):
             f"Esperanza por operación: {resumen['esperanza']:+.2f}% "
             f"(acierto +{resumen['acierto_neto']:.2f}% · fallo -{resumen['fallo_neto']:.2f}%)"
         )
-        if resumen["tasa"] >= resumen["equilibrio"]:
-            interfaz["aciertos"].success("✅ " + texto_ac + " — vas POR ENCIMA del punto de equilibrio.")
+        if resumen["esperanza"] < 0:
+            interfaz["aciertos"].warning(texto_ac)
         else:
-            interfaz["aciertos"].error("🚨 " + texto_ac + " — vas POR DEBAJO del punto de equilibrio.")
+            interfaz["aciertos"].success(texto_ac)
 
-    if st.session_state.ciclo % 5 == 0 and st.session_state.modo_aprendizaje:
-        for simbolo in ["BTC", "ETH"]:
-            evaluacion = evaluar_rendimiento(simbolo)
-            if evaluacion["accion"] == "AUMENTAR_RIESGO":
-                st.session_state.umbral_caida = min(0.05, st.session_state.umbral_caida * 1.2)
-                st.session_state.toma_ganancia = min(10.0, st.session_state.toma_ganancia * 1.1)
-            elif evaluacion["accion"] == "REDUCIR_RIESGO":
-                st.session_state.umbral_caida = max(0.001, st.session_state.umbral_caida * 0.8)
-                st.session_state.toma_ganancia = max(0.5, st.session_state.toma_ganancia * 0.9)
-
-    # ===== SEÑALES: OPERACIÓN Y AVISO AL CANAL =====
-    for simbolo, precio, senal, confianza_senal, razon in [
-        ("BTC", btc, senal_btc, confianza_btc, razon_btc),
-        ("ETH", eth, senal_eth, confianza_eth, razon_eth)
-    ]:
-        tendencia_30d = (st.session_state.tendencia_historica.get(simbolo, {}) or {}).get("tendencia", "NEUTRAL")
-        probabilidad_senal = calcular_probabilidad(confianza_senal)
-        umbral_valor = st.session_state.confianza_umbral
-        st.session_state["ultima_senal_vista"] = {
-            "sym": simbolo, "accion": senal, "razon": razon,
-            "confianza_senal": confianza_senal, "precio": precio,
-            "timestamp": datetime.now().strftime("%H:%M:%S"),
-            "tendencia_30d": tendencia_30d, "umbral": umbral_valor
-        }
-
-        # ===== SEÑALES FUERTES AL CANAL PRIVADO =====
-        if (CANAL_CONFIGURADO and senal in ("BUY", "SELL")
-                and probabilidad_senal >= UMBRAL_SENAL_FUERTE):
-            clave_canal = f"ultima_senal_canal_{simbolo}"
-            ultima_canal = st.session_state.get(clave_canal)
-            if not isinstance(ultima_canal, dict):
-                ultima_canal = {}
-            misma_senal = (ultima_canal.get("senal") == senal)
-            hace_mucho = (time.time() - float(ultima_canal.get("ts", 0) or 0)) > 3600
-            if (not misma_senal) or hace_mucho:
-                entrada_actual = float(st.session_state.precio_entrada.get(simbolo, 0.0))
-                if senal == "BUY":
-                    objetivo = precio * (1 + st.session_state.toma_ganancia / 100.0)
-                    corte = precio * (1 - st.session_state.limite_perdida / 100.0)
-                    extra_canal = (f"🎯 Objetivo sugerido: ${objetivo:,.0f} "
-                                   f"(+{st.session_state.toma_ganancia}%)\n"
-                                   f"🛡️ Corte sugerido: ${corte:,.0f} "
-                                   f"(-{st.session_state.limite_perdida}%)")
-                else:
-                    extra_canal = (f"📌 Entrada registrada del bot: ${entrada_actual:,.0f}\n"
-                                   f"💡 Solo conviene vender en ganancia")
-                emoji_canal = "🟢" if senal == "BUY" else "🔴"
-                accion_canal = "COMPRA" if senal == "BUY" else "VENTA"
-                hora_mex_canal = datetime.now(timezone(timedelta(hours=-6))).strftime("%H:%M")
-                texto_canal = (
-                    f"{emoji_canal} **SEÑAL FUERTE DE {accion_canal} — {simbolo}**\n\n"
-                    f"📊 Probabilidad: **{probabilidad_senal:.1f}%**\n"
-                    f"💰 Precio: ${precio:,.0f} MXN\n"
-                    f"📈 Tendencia 30d: {tendencia_30d}\n"
-                    f"🌍 Sesión: {estado_horario}\n"
-                    f"📝 Motivo: {razon}\n\n"
-                    f"{extra_canal}\n\n"
-                    f"⏰ {hora_mex_canal} (hora México)"
-                )
-                if enviar_canal_telegram(texto_canal):
-                    st.session_state[clave_canal] = {"senal": senal, "ts": time.time()}
-                    avisar(f"📢 Señal fuerte de {accion_canal} {simbolo} enviada al canal",
-                           "success")
-
-        if (not st.session_state.modo_solo_senales
-                and horario_para_operar
-                and st.session_state.fase_actual == "operando"):
-
-            if senal == "BUY" and probabilidad_senal > umbral_valor:
-                if st.session_state.posiciones.get(simbolo, 0) == 0:
-                    if tendencia_30d != "BAJISTA":
-                        volumen = volumen_onchain_btc if simbolo == "BTC" else volumen_onchain_eth
-                        if volumen is None or volumen >= VOLUMEN_MINIMO_24H:
-                            try:
-                                ejecutar_compra_profesional(simbolo, precio, confianza_senal,
-                                                            razon, tendencia_30d)
-                            except Exception as e:
-                                print(f"Error en la compra de {simbolo}: {e}")
-
-            elif senal == "SELL" and probabilidad_senal > umbral_valor:
-                if st.session_state.posiciones.get(simbolo, 0) > 0:
-                    if tendencia_30d != "ALCISTA":
-                        _cerrar_posicion(simbolo, precio,
-                                         f"señal SELL ({probabilidad_senal:.1f}%)",
-                                         confianza_senal,
-                                         minima_ganancia_pct=GANANCIA_MINIMA_VENTA_PCT)
-
-        if probabilidad_senal > umbral_valor and senal != "HOLD":
-            clave_marca = f"ultima_senal_enviada_{simbolo}"
-            ultimo_envio = st.session_state.get(clave_marca, 0)
-            if st.session_state.ciclo - ultimo_envio > 10:
-                volumen_onchain = volumen_onchain_btc if simbolo == "BTC" else volumen_onchain_eth
-                cambio_30d = (st.session_state.tendencia_historica.get(simbolo, {}) or {}).get("cambio_porcentual", 0)
-                if enviar_senal_telegram(simbolo, senal, precio, razon, confianza_senal,
-                                         volumen_onchain, cambio_30d, tendencia_30d):
-                    st.session_state[clave_marca] = st.session_state.ciclo
-
+    # ===== ÚLTIMA SEÑAL VISTA =====
     senal_vista = st.session_state.get("ultima_senal_vista")
     if senal_vista:
         probabilidad = calcular_probabilidad(senal_vista.get('confianza_senal', 0))
@@ -2319,6 +2237,7 @@ def ejecutar_ciclo(interfaz):
             f"Razón: {senal_vista['razon']} | Tend.30d: {senal_vista.get('tendencia_30d', 'N/A')}"
         )
 
+    # ===== ESTADO =====
     texto_estado = (
         f"🔹 Indicadores: BTC={st.session_state.indicadores_activados.get('BTC')} | "
         f"ETH={st.session_state.indicadores_activados.get('ETH')} | "
@@ -2333,6 +2252,7 @@ def ejecutar_ciclo(interfaz):
         texto_estado += " | ⏳ Orden ETH pendiente"
     interfaz["estado"].info(texto_estado)
 
+    # ===== ÚLTIMOS AVISOS =====
     contenedor = interfaz["mensajes"].container()
     with contenedor:
         st.caption("🛠️ Últimos avisos del bot")
@@ -2401,3 +2321,4 @@ else:
         "`pip install streamlit-autorefresh`."
     )
     _panel()
+ 
