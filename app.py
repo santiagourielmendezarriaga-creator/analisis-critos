@@ -1499,7 +1499,7 @@ st.sidebar.caption("📌 Las salidas de riesgo se aplican siempre, sin depender 
                    "de la fase. El límite de pérdida sale a mercado y protege incluso con "
                    "'solo señales' activado; la toma de ganancia usa orden Maker.")
 
-# ══════════════════ BLOQUE 9/10: botones, cartera real y control manual ══════════════════
+# ══════════════════ BLOQUE 9/10: botones, cartera real, control manual y registro ══════════════════
 
 if st.sidebar.button("Reiniciar simulación"):
     with st.spinner("💾 Creando respaldo..."):
@@ -1566,6 +1566,30 @@ if st.sidebar.button("🗑️ Olvidar BTC (dejar de venderlo)"):
     guardar_datos()
     st.sidebar.success("✅ BTC olvidado. El bot ya no intentará venderlo. Sigue en tu Bitso.")
     st.rerun()
+
+# ===== REGISTRAR UNA VENTA MANUAL EN EL CONTADOR =====
+st.sidebar.markdown("---")
+with st.sidebar.expander("📝 Registrar venta manual"):
+    st.caption("Úsalo solo para ventas que hiciste TÚ desde la app de Bitso. "
+               "No mueve dinero: solo anota la operación para que el contador la cuente.")
+    simbolo_manual = st.selectbox("Moneda", ["ETH", "BTC"], key="manual_simbolo")
+    neto_manual = st.number_input("Monto neto recibido (MXN)", min_value=0.0, value=0.0,
+                                  step=1.0, key="manual_neto")
+    ganancia_manual = st.number_input("Ganancia o pérdida (MXN)", value=0.0, step=1.0,
+                                      key="manual_ganancia",
+                                      help="Positivo si ganaste, negativo si perdiste.")
+    porcentaje_manual = st.number_input("Porcentaje (opcional, %)", value=0.0, step=0.1,
+                                        key="manual_porcentaje")
+    if st.button("📝 Registrar venta manual", key="manual_boton"):
+        signo_m = "+" if ganancia_manual > 0 else ""
+        resultado_m = "GANANCIA" if ganancia_manual > 0 else "PÉRDIDA"
+        msg_m = (f"🔴 VENTA [MANUAL-REGISTRADA] {simbolo_manual} | registrada a mano | "
+                 f"Neto: ${neto_manual:.2f} | PROFIT: {signo_m}${ganancia_manual:.2f} "
+                 f"({signo_m}{porcentaje_manual:.2f}%) ({resultado_m})")
+        st.session_state.operaciones.append((datetime.now(), msg_m))
+        guardar_datos()
+        st.success(f"✅ Venta de {simbolo_manual} registrada en el contador")
+        st.rerun()
 
 # ===== CARTERA REAL DE BITSO =====
 st.sidebar.markdown("---")
