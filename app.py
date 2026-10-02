@@ -1,35 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-🧠 Bot Scalping Extremo + Volumen + Tendencia 30d (Streamlit)
-VERSIÓN FINAL CORREGIDA, EN ESPAÑOL
-
-Correcciones aplicadas:
-  1. El ciclo corre en st.fragment (antes un `while True` congelaba la interfaz).
-  2. verificar_orden_pendiente devuelve la orden guardada (antes perdía el registro).
-  3. El monto por operación respeta el límite configurado.
-  4. Las ventas Maker se registran y se verifican (antes quedaban huérfanas).
-  5. Las órdenes pendientes se persisten en Firebase.
-  6. MODO_REAL y los montos se parsean explícitamente ("false" ya no es truthy).
-  7. El volumen onchain devuelve None si falla la API (antes inventaba 0.5B).
-  8. enviar_telegram reintenta sin Markdown si el parseo falla.
-  9. El reset diario ocurre antes de mostrar los contadores.
- 10. El token de Telegram vive en Secrets, no en el código.
- 11. Salidas de riesgo: límite de pérdida, toma de ganancia y detención móvil.
- 12. El límite de pérdida y la detención móvil salen A MERCADO.
- 13. El límite de pérdida protege incluso en modo "solo señales".
- 14. El saldo real de Bitso se lee y se muestra (no exige MODO_REAL).
- 15. Freno de 15 minutos tras un rechazo de Bitso.
- 16. Reconciliación automática: si Bitso ya no tiene el saldo, cierra la posición.
- 17. Contador de aciertos vs fallos con punto de equilibrio.
- 18. Firebase bajo ruta secreta (no /bot.json).
- 19. Señales fuertes de compra/venta a un canal privado de Telegram.
-
-Secrets esperados:
-    BITSO_API_KEY, BITSO_API_SECRET, MODO_REAL,
-    MONTO_MAXIMO_POR_OPERACION, MONTO_MAXIMO_DIARIO,
-    TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_CANAL_ID
-"""
-
 # ══════════════════ BLOQUE 1/10: importaciones y configuración global ══════════════════
 
 import streamlit as st
