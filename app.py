@@ -384,7 +384,7 @@ def limpiar_respaldos_viejos(maximo_respaldos=10):
                 print(f"🗑️ Respaldo viejo eliminado: {viejo}")
     except Exception as e:
         print(f"Error limpiando respaldos: {e}")
-        # ══════════════════ PARTE 3/11: Telegram, Bitso y saldo real ══════════════════
+     # ══════════════════ PARTE 3/11: Telegram, Bitso y saldo real ══════════════════
 
 TOKEN_TELEGRAM = str(_secreto("TELEGRAM_TOKEN", "") or os.environ.get("TELEGRAM_TOKEN", "")).strip()
 CHAT_ID_TELEGRAM = str(_secreto("TELEGRAM_CHAT_ID", "") or os.environ.get("TELEGRAM_CHAT_ID", "")).strip()
@@ -406,10 +406,16 @@ def enviar_telegram(mensaje):
 
 CANAL_TELEGRAM = str(_secreto("TELEGRAM_CANAL_ID", "") or os.environ.get("TELEGRAM_CANAL_ID", "")).strip()
 CANAL_CONFIGURADO = bool(TOKEN_TELEGRAM and CANAL_TELEGRAM)
-UMBRAL_SENAL_FUERTE = 80
+
+# 🔧 Umbral de probabilidad para mandar señal al canal.
+#    - 70 = ~3-6 señales al día (recomendado)
+#    - 80 = ~1-2 señales al día (más selectivo)
+#    - 60 = más señales, algunas débiles
+UMBRAL_SENAL_FUERTE = 70
 
 def enviar_canal_telegram(mensaje):
     if not CANAL_CONFIGURADO:
+        print("⚠️ Canal no configurado: define TELEGRAM_CANAL_ID en Secrets.")
         return False
     try:
         url = f"https://api.telegram.org/bot{TOKEN_TELEGRAM}/sendMessage"
@@ -950,7 +956,7 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
         return "BUY", confianza, f"Señal de compra ({puntuacion:.1f})", {}
     else:
         return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
- # ══════════════════ PARTE 7A/11: configuración, variables y sincronización ══════════════════
+# ══════════════════ PARTE 7A/11: configuración, variables y sincronización ══════════════════
 
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
@@ -979,7 +985,7 @@ variables_requeridas = {
     "sl_disparado": {"BTC": False, "ETH": False},
     "sl_precio_minimo": {"BTC": 0.0, "ETH": 0.0},
     "indicadores_activados": {"BTC": False, "ETH": False},
-    "modo_solo_senales": False,
+    "modo_solo_senales": True,          # 🔧 MODO SOLO SEÑALES POR DEFECTO
     "modo_aprendizaje": False,
     "rendimiento": {
         "BTC": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []},
@@ -1025,6 +1031,9 @@ st.session_state.toma_ganancia = max(0.5, _a_decimal(st.session_state.get("toma_
 st.session_state.limite_perdida = max(0.5, _a_decimal(st.session_state.get("limite_perdida", FORZAR_SL), FORZAR_SL))
 st.session_state.confianza_umbral = min(95, max(50, _a_entero(st.session_state.get("confianza_umbral", 65), 65)))
 
+# 🆕 FORZAR modo solo señales SIEMPRE (nunca operar)
+st.session_state.modo_solo_senales = True
+
 if "datos_cargados" not in st.session_state:
     restaurar_desde_archivo()
     st.session_state.datos_cargados = True
@@ -1034,6 +1043,7 @@ if "datos_cargados" not in st.session_state:
 def sincronizar_estado_con_bitso(forzar=False):
     """
     Lee el saldo real de Bitso y ajusta el registro interno del bot.
+    En modo solo señales, solo actualiza para mostrar datos correctos en el panel.
     """
     if not LLAVE_API_BITSO or not SECRETO_API_BITSO:
         return {"ok": False, "error": "Sin credenciales de Bitso"}
@@ -1102,39 +1112,23 @@ if not st.session_state.get("saldo_sincronizado_bitso"):
         print(f"Error sincronizando con Bitso al arrancar: {e}")
 
 
-# ══════════════════ Limpieza de órdenes huérfanas ══════════════════
-if (not MODO_REAL) and LLAVE_API_BITSO and SECRETO_API_BITSO:
-    try:
-        for libro in ("btc_mxn", "eth_mxn"):
-            ruta_oa = f"/v3/open_orders/?book={libro}"
-            cab_o, _ = _crear_cabecera_autenticacion("GET", ruta_oa)
-            if not cab_o:
-                continue
-            r_oa = requests.get(URL_BASE_BITSO + ruta_oa,
-                                headers={"Authorization": cab_o}, timeout=10)
-            if r_oa.status_code == 200:
-                abiertas = r_oa.json().get("payload") or []
-                for o in abiertas:
-                    oid = o.get("oid")
-                    if oid:
-                        if cancelar_orden_bitso(oid):
-                            print(f"🧹 Orden huérfana cancelada: {oid} ({libro})")
-    except Exception as e:
-        print(f"Error en limpieza de órdenes huérfanas: {e}")
-
-
 # ══════════════════ Banners informativos ══════════════════
 st.title("🧠 Scalping Extremo + Volumen + Tendencia 30d")
 
-if MODO_REAL:
-    st.error("🔴 **MODO REAL ACTIVADO** — Órdenes Maker con dinero real")
+st.info("📡 **MODO SOLO SEÑALES** — Este bot NO opera. Solo envía señales al canal de Telegram.")
+
+if not CANAL_CONFIGURADO:
+    st.error(
+        "❌ **Canal de Telegram NO configurado.** "
+        "Define `TELEGRAM_CANAL_ID` en Secrets para recibir señales."
+    )
 else:
-    st.info("🟢 **MODO SIMULACIÓN** — Sin dinero real")
+    st.success(f"✅ Canal configurado — Recibirás señales con probabilidad ≥ {UMBRAL_SENAL_FUERTE}%")
 
 if not TELEGRAM_CONFIGURADO:
     st.warning(
-        "🔑 **Telegram no está configurado.** Define `TELEGRAM_TOKEN` y `TELEGRAM_CHAT_ID` "
-        "en los Secrets (App settings → Secrets) para recibir los avisos de ventas y errores."
+        "⚠️ **Telegram no está configurado.** Define `TELEGRAM_TOKEN` y `TELEGRAM_CHAT_ID` "
+        "en los Secrets para que funcione el envío al canal."
     )
   # ══════════════════ PARTE 7B/11: contabilidad, salidas y ejecución de compras ══════════════════
 
@@ -1603,157 +1597,68 @@ def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_oncha
     except Exception as e:
         print(f"Error enviando señal al canal: {e}")
         return False
-      # ══════════════════ PARTE 9/11: ciclo, panel y refresco ══════════════════
+      # ══════════════════ PARTE 9/11: ciclo simplificado, solo señales al canal ══════════════════
 
 HORAS_FASE_APRENDIZAJE = 48
 
-def _reconciliar_cartera():
-    if not MODO_REAL:
-        return
-    saldos = obtener_saldo_bitso()
-    if not saldos:
-        return
-    for simbolo in ["BTC", "ETH"]:
-        cantidad_registro = float(st.session_state.posiciones.get(simbolo, 0.0))
-        if cantidad_registro <= 0:
-            continue
-        if st.session_state.get(f"orden_pendiente_{simbolo}"):
-            continue
-        cantidad_real = float(saldos.get(simbolo.lower(), {}).get("total", 0.0))
-        if cantidad_real > cantidad_registro * 0.05:
-            continue
-        entrada = float(st.session_state.precio_entrada.get(simbolo, 0.0))
-        precio_actual = float(st.session_state.ultimo_precio.get(simbolo, 0.0))
-        neto = cantidad_registro * precio_actual * (1 - COMISION)
-        ganancia = neto - (cantidad_registro * entrada)
-        signo = "+" if ganancia > 0 else ""
-        porcentaje_estimado = ((precio_actual / entrada) - 1) * 100 if entrada else 0.0
-        st.session_state.posiciones[simbolo] = 0.0
-        st.session_state.precio_entrada[simbolo] = 0.0
-        st.session_state.precio_maximo[simbolo] = 0.0
-        msg = (f"🔴 VENTA [RECONCILIADA] {simbolo} | Bitso ya no tenía el saldo | "
-               f"Neto aprox: ${neto:.2f} | PROFIT: {signo}${ganancia:.2f} "
-               f"({signo}{porcentaje_estimado:.2f}%) (estimado)")
-        st.session_state.operaciones.append((datetime.now(), msg))
-        avisar(f"🔁 Reconcilié {simbolo}: ya no hay saldo en Bitso.", "warning")
-        enviar_telegram(msg)
-        guardar_datos()
-
-def _ejecutar_ordenes_pendientes():
-    for simbolo in ["BTC", "ETH"]:
-        try:
-            estado, datos = verificar_orden_pendiente(simbolo)
-            if estado == "ejecutada" and isinstance(datos, dict):
-                lado = datos.get("side", "buy")
-                precio_ejecucion = _a_decimal(datos.get("price"), 0.0)
-                if precio_ejecucion <= 0:
-                    continue
-                if lado == "buy":
-                    monto = _a_decimal(datos.get("monto"), 0.0)
-                    if monto > 0 and st.session_state.saldo >= monto:
-                        cantidad_real = _aplicar_compra(simbolo, monto, precio_ejecucion)
-                        guardar_datos()
-                        msg = (f"✅ ORDEN MAKER EJECUTADA {simbolo} | {cantidad_real:.8f} a "
-                               f"${precio_ejecucion:,.0f} | Com: {COMISION*100:.2f}%")
-                        enviar_telegram(msg)
-                        st.session_state.operaciones.append((datetime.now(), msg))
-                        avisar(f"✅ Maker {simbolo} ejecutada", "success")
-                    else:
-                        avisar(f"⚠️ Maker {simbolo} ejecutada sin monto válido", "warning")
-                else:
-                    cantidad = _a_decimal(datos.get("qty"), 0.0)
-                    if cantidad > 0:
-                        neto, ganancia = _aplicar_venta(simbolo, precio_ejecucion,
-                                                        cantidad_forzada=cantidad)
-                        resultado = "GANANCIA" if ganancia > 0 else "PÉRDIDA"
-                        signo = "+" if ganancia > 0 else ""
-                        motivo = datos.get("motivo", "")
-                        msg = (f"🔴 VENTA [MAKER-REAL] {simbolo} | {motivo} | Neto: ${neto:.2f} | "
-                               f"PROFIT: {signo}${ganancia:.2f} ({resultado})")
-                        enviar_telegram(msg)
-                        st.session_state.operaciones.append((datetime.now(), msg))
-                        guardar_datos()
-                        avisar(f"✅ Venta Maker {simbolo} ejecutada", "success")
-            elif estado == "cancelada":
-                avisar(f"⚠️ Orden Maker {simbolo} cancelada (tiempo agotado)", "warning")
-                enviar_telegram(f"⚠️ Orden Maker {simbolo} cancelada por tiempo agotado.")
-        except Exception as e:
-            print(f"Error verificando la orden {simbolo}: {e}")
-            continue
-
-def _respaldos_automaticos():
-    ahora = time.time()
-    if "ultimo_respaldo_auto" not in st.session_state or not st.session_state.ultimo_respaldo_auto:
-        st.session_state.ultimo_respaldo_auto = ahora
-    if (ahora - float(st.session_state.ultimo_respaldo_auto)) / 3600 >= 24:
-        try:
-            clave_respaldo, _ = crear_respaldo()
-            if clave_respaldo:
-                st.session_state.ultimo_respaldo_auto = ahora
-                limpiar_respaldos_viejos(maximo_respaldos=10)
-                enviar_telegram(f"💾 **RESPALDO AUTOMÁTICO (24h)**\n{clave_respaldo}")
-        except Exception:
-            pass
-    if "ultimo_respaldo_operaciones" not in st.session_state:
-        st.session_state.ultimo_respaldo_operaciones = 0
-    operaciones_actuales = len(st.session_state.operaciones)
-    if operaciones_actuales - int(st.session_state.ultimo_respaldo_operaciones) >= 100:
-        try:
-            clave_respaldo, _ = crear_respaldo()
-            if clave_respaldo:
-                st.session_state.ultimo_respaldo_operaciones = operaciones_actuales
-                limpiar_respaldos_viejos(maximo_respaldos=10)
-                enviar_telegram(f"💾 **RESPALDO AUTOMÁTICO (100 operaciones)**\n{clave_respaldo}")
-        except Exception:
-            pass
-
 def ejecutar_ciclo(interfaz):
+    """Solo analiza y envía señales al canal. NO opera, NO compra, NO vende."""
     btc = obtener_precio_bitso("btc_mxn")
     eth = obtener_precio_bitso("eth_mxn")
     if btc is None or eth is None:
         interfaz["tabla"].error("❌ Error al obtener los precios.")
         return
+
+    # Actualizar historial
     st.session_state.ultimo_precio["BTC"] = btc
     st.session_state.ultimo_precio["ETH"] = eth
     st.session_state.historial_precios["BTC"].append(btc)
     st.session_state.historial_precios["ETH"].append(eth)
+
     if st.session_state.precio_referencia["BTC"] == 0:
         st.session_state.precio_referencia["BTC"] = btc
         st.session_state.precio_referencia["ETH"] = eth
+
+    # Reset diario
     hoy = datetime.now().day
     if hoy != st.session_state.ultimo_dia:
         st.session_state.ops_del_dia = 0
         st.session_state.ultimo_dia = hoy
-        st.session_state.monto_del_dia = 0.0
+
     st.session_state.ciclo += 1
-    if st.session_state.ciclo % 5 == 0:
-        guardar_datos()
-    _respaldos_automaticos()
+
+    # Datos externos
     valor_miedo, etiqueta_miedo = obtener_miedo_codicia()
     cambio_btc = (btc - st.session_state.precio_referencia["BTC"]) / st.session_state.precio_referencia["BTC"] * 100
     cambio_eth = (eth - st.session_state.precio_referencia["ETH"]) / st.session_state.precio_referencia["ETH"] * 100
+
+    # Tendencias
     st.session_state.tendencia["BTC"] = analizar_tendencia(st.session_state.historial_precios["BTC"])
     st.session_state.tendencia["ETH"] = analizar_tendencia(st.session_state.historial_precios["ETH"])
+
     for simbolo in ["BTC", "ETH"]:
         if st.session_state.ciclo % 60 == 1 or not st.session_state.tendencia_historica.get(simbolo):
             tendencia = obtener_tendencia_historica(simbolo, 30)
             if tendencia:
                 st.session_state.tendencia_historica[simbolo] = tendencia
+
     st.session_state.indicadores_activados["BTC"] = abs(cambio_btc) >= st.session_state.umbral_indicadores_activacion
     st.session_state.indicadores_activados["ETH"] = abs(cambio_eth) >= st.session_state.umbral_indicadores_activacion
+
     volumen_onchain_btc = obtener_volumen_onchain("BTC")
     volumen_onchain_eth = obtener_volumen_onchain("ETH")
     tendencia_btc = st.session_state.tendencia_historica.get("BTC", {}) or {}
     tendencia_eth = st.session_state.tendencia_historica.get("ETH", {}) or {}
+
+    # Análisis (solo señales)
     senal_btc, confianza_btc, razon_btc, _ = analisis_avanzado("BTC", btc, valor_miedo)
     senal_eth, confianza_eth, razon_eth, _ = analisis_avanzado("ETH", eth, valor_miedo)
+
     probabilidad_btc = calcular_probabilidad(confianza_btc)
     probabilidad_eth = calcular_probabilidad(confianza_eth)
     umbral_probabilidad = st.session_state.confianza_umbral
-    estado_horario, emoji_horario, descripcion_horario, es_buen_horario = obtener_horario_operacion()
-    horario_para_operar = es_buen_horario or st.session_state.get("operar_24_7", False)
 
-    # 🆕 ===== ENVIAR SEÑALES FUERTES AL CANAL DE TELEGRAM =====
+    # ══════════════════ ENVÍO DE SEÑALES AL CANAL ══════════════════
     for sim_actual, senal_actual, conf_actual, razon_actual, prob_actual, precio_actual in [
         ("BTC", senal_btc, confianza_btc, razon_btc, probabilidad_btc, btc),
         ("ETH", senal_eth, confianza_eth, razon_eth, probabilidad_eth, eth),
@@ -1761,7 +1666,7 @@ def ejecutar_ciclo(interfaz):
         if senal_actual != "HOLD" and prob_actual >= UMBRAL_SENAL_FUERTE:
             clave_senal = f"ultima_senal_enviada_{sim_actual}"
             ultima = st.session_state.get(clave_senal, 0)
-            if st.session_state.ciclo - ultima > 10:
+            if st.session_state.ciclo - ultima > 10:  # anti-spam
                 datos_t30 = st.session_state.tendencia_historica.get(sim_actual, {}) or {}
                 cambio_t30 = datos_t30.get("cambio_porcentual", 0)
                 tendencia_t30 = datos_t30.get("tendencia", "N/A")
@@ -1773,56 +1678,9 @@ def ejecutar_ciclo(interfaz):
                     cambio_t30, tendencia_t30
                 ):
                     st.session_state[clave_senal] = st.session_state.ciclo
-                    avisar(f"📢 Señal {senal_actual} de {sim_actual} enviada al canal", "info")
+                    avisar(f"📢 Señal {senal_actual} de {sim_actual} enviada al canal (prob {prob_actual:.0f}%)", "info")
 
-    _ejecutar_ordenes_pendientes()
-    if st.session_state.ciclo % 12 == 0:
-        _reconciliar_cartera()
-    for simbolo_salida, precio_salida in [("BTC", btc), ("ETH", eth)]:
-        if st.session_state.posiciones.get(simbolo_salida, 0) > 0:
-            st.session_state.precio_maximo[simbolo_salida] = max(
-                float(st.session_state.precio_maximo.get(simbolo_salida, 0.0) or 0.0),
-                precio_salida)
-        _revisar_salidas(simbolo_salida, precio_salida)
-    ahora = datetime.now()
-    try:
-        inicio_fase = datetime.fromisoformat(st.session_state.inicio_fase)
-    except Exception:
-        inicio_fase = ahora
-        st.session_state.inicio_fase = ahora.isoformat()
-    horas_transcurridas = (ahora - inicio_fase).total_seconds() / 3600
-    horas_restantes = max(0, HORAS_FASE_APRENDIZAJE - horas_transcurridas)
-    if horas_transcurridas >= HORAS_FASE_APRENDIZAJE and st.session_state.fase_actual == "operando":
-        st.session_state.fase_actual = "analizando"
-        enviar_telegram("🧠 **FASE DE ANÁLISIS INICIADA**")
-    if st.session_state.fase_actual == "analizando":
-        resultado = analizar_fase_aprendizaje()
-        if resultado.get("suficiente"):
-            st.session_state.analisis_anterior = resultado
-            mejor_hora_texto = f"{resultado['mejor_hora']}:00" if resultado['mejor_hora'] is not None else "N/A"
-            peor_hora_texto = f"{resultado['peor_hora']}:00" if resultado['peor_hora'] is not None else "N/A"
-            signo_total = "+" if resultado.get('profit_total', 0) >= 0 else ""
-            msg_analisis = (
-                f"📊 **ANÁLISIS DE FASE COMPLETADO**\n\n"
-                f"📈 Operaciones: {resultado['total_operaciones']}\n"
-                f"✅ Ganancias: {resultado['ganancias']}\n"
-                f"❌ Pérdidas: {resultado['perdidas']}\n"
-                f"🎯 Tasa de acierto: {resultado['win_rate']:.1f}%\n"
-                f"💰 Ganancia total: {signo_total}${resultado.get('profit_total', 0):.2f}\n"
-                f"⏰ Mejor hora: {mejor_hora_texto}\n"
-                f"⏰ Peor hora: {peor_hora_texto}\n\n"
-                f"**Ajustes aplicados:**\n"
-                + "\n".join([f"• {a}" for a in resultado['ajustes_aplicados']])
-            )
-            enviar_telegram(msg_analisis)
-        st.session_state.inicio_fase = ahora.isoformat()
-        st.session_state.fase_actual = "operando"
-        st.session_state.rendimiento = {
-            "BTC": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []},
-            "ETH": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []}
-        }
-        guardar_datos()
-        enviar_telegram(f"🔄 **NUEVA FASE DE {HORAS_FASE_APRENDIZAJE}h INICIADA**")
+    # ══════════════════ TABLA ══════════════════
     interfaz["tabla"].subheader("📊 Señales + Volumen + Tendencia 30d")
     interfaz["tabla"].table({
         "Moneda": ["Bitcoin", "Ethereum"],
@@ -1841,46 +1699,69 @@ def ejecutar_ciclo(interfaz):
             tendencia_eth.get("tendencia", "N/A") if tendencia_eth else "N/A"
         ]
     })
-    texto_horario = f"{emoji_horario} **{estado_horario}** → {descripcion_horario}"
-    if st.session_state.get("operar_24_7", False):
-        interfaz["horario"].info(
-            f"🔥 **MODO 24/7 ACTIVADO** — Operando sin restricción de horario | "
-            f"Horario actual: {estado_horario}")
-    elif es_buen_horario:
-        interfaz["horario"].success(texto_horario)
+
+    # ══════════════════ INFO ══════════════════
+    if CANAL_CONFIGURADO:
+        interfaz["horario"].success(
+            f"📡 **MODO SOLO SEÑALES** — Canal configurado | "
+            f"Señales ≥ {UMBRAL_SENAL_FUERTE}% de probabilidad"
+        )
     else:
-        interfaz["horario"].warning(texto_horario)
-    if st.session_state.fase_actual == "operando":
-        interfaz["fase"].info(
-            f"📅 **FASE OPERATIVA** — Próxima auto-evaluación en "
-            f"{horas_restantes:.1f} horas ({HORAS_FASE_APRENDIZAJE}h por ciclo)")
-    else:
-        interfaz["fase"].warning("🧠 **ANALIZANDO FASE**...")
-    if "ultimo_horario_alerta" not in st.session_state:
-        st.session_state.ultimo_horario_alerta = None
-    if st.session_state.ultimo_horario_alerta != estado_horario:
-        zona_mexico = timezone(timedelta(hours=-6))
-        hora_mexico = datetime.now(zona_mexico).strftime('%H:%M')
-        if es_buen_horario:
-            msg_horario = (f"✅ **BUEN HORARIO**\n\n{emoji_horario} **{estado_horario}**\n"
-                           f"{descripcion_horario}\n\n📍 Hora México: {hora_mexico}")
-        else:
-            msg_horario = (f"⚠️ **CAMBIO DE SESIÓN**\n\n{emoji_horario} **{estado_horario}**\n"
-                           f"{descripcion_horario}\n\n📍 Hora México: {hora_mexico}")
-        enviar_telegram(msg_horario)
-        st.session_state.ultimo_horario_alerta = estado_horario
+        interfaz["horario"].error(
+            "❌ **Canal NO configurado** — Define TELEGRAM_CANAL_ID en Secrets"
+        )
+
+    interfaz["fase"].info(
+        f"📅 **Analizando cada {st.session_state.intervalo_actualizacion}s** — "
+        f"{st.session_state.ciclo} análisis realizados"
+    )
+
     texto_info = (
         f"Ciclo: {st.session_state.ciclo} | "
-        f"Toma de ganancia: {st.session_state.toma_ganancia}% | "
-        f"Límite de pérdida: {st.session_state.limite_perdida}% | "
-        f"Detención móvil: {st.session_state.seguimiento}% | "
         f"Miedo/Codicia: {valor_miedo}/100 ({etiqueta_miedo}) | "
-        f"Aprendizaje: {'✅' if st.session_state.modo_aprendizaje else '❌'} | "
-        f"Prob. mínima: {umbral_probabilidad:.1f}% | "
-        f"Modo: {'🔥 24/7' if st.session_state.get('operar_24_7', False) else '⏰ Con horario'} | "
-        f"Operaciones de la fase: {len(st.session_state.operaciones)}"
+        f"Umbral canal: {UMBRAL_SENAL_FUERTE}% | "
+        f"Umbral interno: {umbral_probabilidad:.0f}% | "
+        f"Modo: 📡 SOLO SEÑALES"
     )
     interfaz["info"].caption(texto_info)
+
+    # ══════════════════ CARTERA (informativa) ══════════════════
+    saldo_real = obtener_saldo_bitso()
+    columnas = interfaz["metricas"].columns(4)
+    if saldo_real:
+        mxn_total = float(saldo_real.get("mxn", {}).get("total", 0.0))
+        btc_total = float(saldo_real.get("btc", {}).get("total", 0.0))
+        eth_total = float(saldo_real.get("eth", {}).get("total", 0.0))
+        valor_total_real = mxn_total + (btc_total * btc) + (eth_total * eth)
+        columnas[0].metric("Saldo MXN (Bitso)", f"${mxn_total:,.2f}")
+        columnas[1].metric("Valor total (Bitso)", f"${valor_total_real:,.2f}")
+        columnas[2].metric("BTC / ETH (Bitso)", f"{btc_total:.6f} / {eth_total:.6f}")
+        columnas[3].metric("Ciclos", st.session_state.ciclo)
+        interfaz["cartera"].caption(
+            f"🔗 Datos reales de Bitso — Modo solo señales activo (no opera)"
+        )
+    else:
+        columnas[0].metric("Saldo MXN (simulado)", f"${st.session_state.saldo:,.2f}")
+        columnas[1].metric("Valor total (simulado)", "N/A")
+        columnas[2].metric("BTC / ETH (simulado)",
+                           f"{st.session_state.posiciones.get('BTC', 0):.6f} / "
+                           f"{st.session_state.posiciones.get('ETH', 0):.6f}")
+        columnas[3].metric("Ciclos", st.session_state.ciclo)
+        interfaz["cartera"].warning(
+            "⚠️ No se pudo leer el saldo de Bitso: "
+            + str(st.session_state.get("error_saldo_bitso") or "sin detalle")
+        )
+
+    # ══════════════════ ÚLTIMOS AVISOS ══════════════════
+    contenedor = interfaz["mensajes"].container()
+    with contenedor:
+        st.caption("🛠️ Últimos avisos del bot")
+        if MENSAJES:
+            for hora, nivel, texto in list(MENSAJES)[-8:]:
+                icono = {"success": "✅", "warning": "⚠️", "error": "❌"}.get(nivel, "•")
+                st.caption(f"{hora} {icono} {texto}")
+        else:
+            st.caption("Sin avisos.")
     # ══════════════════ PARTE 10/11: panel (cartera, posiciones, historial) ══════════════════
 
     saldo_real = obtener_saldo_bitso()
