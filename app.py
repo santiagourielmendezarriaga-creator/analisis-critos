@@ -1572,23 +1572,52 @@ st.sidebar.markdown("---")
 with st.sidebar.expander("📝 Registrar venta manual"):
     st.caption("Úsalo solo para ventas que hiciste TÚ desde la app de Bitso. "
                "No mueve dinero: solo anota la operación para que el contador la cuente.")
+
     simbolo_manual = st.selectbox("Moneda", ["ETH", "BTC"], key="manual_simbolo")
     neto_manual = st.number_input("Monto neto recibido (MXN)", min_value=0.0, value=0.0,
                                   step=1.0, key="manual_neto")
     ganancia_manual = st.number_input("Ganancia o pérdida (MXN)", value=0.0, step=1.0,
                                       key="manual_ganancia",
-                                      help="Positivo si ganaste, negativo si perdiste.")
+                                      help="Positivo si ganaste, negativo si perdiste. "
+                                           "⚠️ Si lo dejas en 0, cuenta como FALLO.")
     porcentaje_manual = st.number_input("Porcentaje (opcional, %)", value=0.0, step=0.1,
                                         key="manual_porcentaje")
+
     if st.button("📝 Registrar venta manual", key="manual_boton"):
-        signo_m = "+" if ganancia_manual > 0 else ""
-        resultado_m = "GANANCIA" if ganancia_manual > 0 else "PÉRDIDA"
-        msg_m = (f"🔴 VENTA [MANUAL-REGISTRADA] {simbolo_manual} | registrada a mano | "
-                 f"Neto: ${neto_manual:.2f} | PROFIT: {signo_m}${ganancia_manual:.2f} "
-                 f"({signo_m}{porcentaje_manual:.2f}%) ({resultado_m})")
-        st.session_state.operaciones.append((datetime.now(), msg_m))
+        if ganancia_manual == 0:
+            st.warning("⚠️ La ganancia está en 0: se contará como FALLO. "
+                       "Escribe la ganancia real antes de registrar.")
+        else:
+            signo_m = "+" if ganancia_manual > 0 else ""
+            resultado_m = "GANANCIA" if ganancia_manual > 0 else "PÉRDIDA"
+            msg_m = (f"🔴 VENTA [MANUAL-REGISTRADA] {simbolo_manual} | registrada a mano | "
+                     f"Neto: ${neto_manual:.2f} | PROFIT: {signo_m}${ganancia_manual:.2f} "
+                     f"({signo_m}{porcentaje_manual:.2f}%) ({resultado_m})")
+            st.session_state.operaciones.append((datetime.now(), msg_m))
+            guardar_datos()
+            st.success(f"✅ Venta de {simbolo_manual} registrada en el contador")
+            st.rerun()
+
+    if st.button("↩️ Deshacer último registro manual", key="manual_deshacer"):
+        eliminado = False
+        for i in range(len(st.session_state.operaciones) - 1, -1, -1):
+            if "MANUAL-REGISTRADA" in st.session_state.operaciones[i][1]:
+                st.session_state.operaciones.pop(i)
+                eliminado = True
+                break
+        if eliminado:
+            guardar_datos()
+            st.success("✅ Último registro manual eliminado")
+        else:
+            st.warning("No hay registros manuales que eliminar")
+        st.rerun()
+
+    if st.button("🧽 Borrar TODOS los registros manuales", key="manual_borrar_todos"):
+        st.session_state.operaciones = [
+            (t, m) for t, m in st.session_state.operaciones if "MANUAL-REGISTRADA" not in m
+        ]
         guardar_datos()
-        st.success(f"✅ Venta de {simbolo_manual} registrada en el contador")
+        st.success("✅ Registros manuales borrados")
         st.rerun()
 
 # ===== CARTERA REAL DE BITSO =====
