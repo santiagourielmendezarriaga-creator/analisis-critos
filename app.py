@@ -1454,13 +1454,15 @@ st.sidebar.caption("📌 Las salidas de riesgo se aplican siempre, sin depender 
                    "de la fase. El límite de pérdida sale a mercado y protege incluso con "
                    "'solo señales' activado; la toma de ganancia usa orden Maker.")
 
-# 🆕 ===== SECCIÓN DE TELEGRAM =====
+# ===== SECCIÓN DE TELEGRAM =====
 st.sidebar.markdown("---")
 st.sidebar.markdown("**📡 Telegram**")
+
 if TELEGRAM_CONFIGURADO:
     st.sidebar.success("✅ Chat personal configurado")
 else:
     st.sidebar.warning("⚠️ Falta TELEGRAM_TOKEN / TELEGRAM_CHAT_ID")
+
 if CANAL_CONFIGURADO:
     st.sidebar.success(f"✅ Canal configurado (señales ≥{UMBRAL_SENAL_FUERTE}%)")
 else:
@@ -1469,18 +1471,25 @@ else:
 
 if st.sidebar.button("📨 Probar Telegram (chat personal)"):
     ok = enviar_telegram("🧪 Prueba: chat personal funcionando desde el bot.")
-    st.sidebar.success("✅ Enviado") if ok else st.sidebar.error("❌ Falló el envío")
+    if ok:
+        st.sidebar.success("✅ Enviado al chat personal")
+    else:
+        st.sidebar.error("❌ Falló el envío al chat personal")
 
 if st.sidebar.button("📢 Probar Telegram (canal)"):
     if not CANAL_CONFIGURADO:
-        st.sidebar.error("Canal no configurado")
+        st.sidebar.error("Canal no configurado. Define TELEGRAM_CANAL_ID en Secrets.")
     else:
         ok = enviar_canal_telegram("🧪 Prueba: canal funcionando desde el bot.")
-        st.sidebar.success("✅ Enviado al canal") if ok else st.sidebar.error("❌ Falló el envío")
+        if ok:
+            st.sidebar.success("✅ Enviado al canal")
+        else:
+            st.sidebar.error("❌ Falló el envío al canal")
 
-# 🆕 ===== BOTÓN DE PÁNICO =====
+# ===== BOTÓN DE PÁNICO =====
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🚨 Emergencia**")
+
 if st.sidebar.button("🚨 CANCELAR TODAS LAS ÓRDENES EN BITSO", type="primary"):
     if not LLAVE_API_BITSO or not SECRETO_API_BITSO:
         st.sidebar.error("Sin credenciales de Bitso")
@@ -1506,14 +1515,17 @@ if st.sidebar.button("🚨 CANCELAR TODAS LAS ÓRDENES EN BITSO", type="primary"
             except Exception as e:
                 errores += 1
                 print(f"Error cancelando en {libro}: {e}")
+
         st.session_state.orden_pendiente_BTC = None
         st.session_state.orden_pendiente_ETH = None
+
         if canceladas > 0:
             st.sidebar.success(f"✅ {canceladas} orden(es) cancelada(s)")
         elif errores == 0:
             st.sidebar.info("No había órdenes abiertas")
         else:
             st.sidebar.warning(f"⚠️ {errores} error(es). Revisa Bitso manualmente.")
+
         time.sleep(1)
         st.rerun()
 
@@ -1528,6 +1540,7 @@ def _compra_manual(simbolo, libro):
         st.write("**Máximo por operación:** $" + str(MONTO_MAXIMO_POR_OPERACION))
         st.write("**Máximo por día:** $" + str(MONTO_MAXIMO_DIARIO))
         st.write("**Monto usado hoy:** $" + str(st.session_state.get("monto_del_dia", 0)))
+
         if not precio:
             st.error("❌ No se pudo obtener el precio")
             return
@@ -1537,15 +1550,19 @@ def _compra_manual(simbolo, libro):
         if not MODO_REAL:
             st.error("❌ MODO_REAL está en FALSE. Actívalo en Secrets.")
             return
+
         monto = min(50.0, MONTO_MAXIMO_POR_OPERACION)
         precio_objetivo = precio * 0.998
         cantidad = (monto * 0.999) / precio_objetivo
+
         st.write("**Monto:** $" + str(monto))
         st.write("**Precio objetivo:** $" + str(round(precio_objetivo, 2)))
         st.write("**Cantidad:** " + str(round(cantidad, 8)) + " " + simbolo)
+
         with st.spinner("Enviando orden a Bitso..."):
             orden = colocar_orden_bitso(libro, "buy", str(round(cantidad, 8)),
                                         str(round(precio_objetivo, 2)))
+
         if orden and not orden.get("error"):
             st.success("✅ Orden colocada: " + str(orden.get("oid")))
             st.json(orden)
@@ -1570,7 +1587,7 @@ if st.sidebar.button("🟢 Comprar BTC AHORA"):
 if st.sidebar.button("🟢 Comprar ETH AHORA"):
     _compra_manual("ETH", "eth_mxn")
 
-# 🆕 ===== ENVÍO DE SEÑALES AL CANAL =====
+# ===== ENVÍO DE SEÑALES AL CANAL =====
 def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_onchain,
                           cambio_30d, tendencia_30d):
     """
