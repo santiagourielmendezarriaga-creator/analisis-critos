@@ -104,7 +104,7 @@ def _leer(datos, clave_nueva, clave_vieja, predeterminado):
     if clave_vieja in datos:
         return datos[clave_vieja]
     return predeterminado
-    # ══════════════════ PARTE 2/11: persistencia en Firebase ══════════════════
+# ══════════════════ PARTE 2/11: persistencia en Firebase ══════════════════
 #
 # 🔒 SEGURIDAD: los datos se guardan bajo una RUTA SECRETA, no en /bot.json.
 #    1. Cambia RUTA_SECRETA por tu propia cadena aleatoria.
@@ -206,8 +206,8 @@ def iniciar_estado_nuevo():
     st.session_state.ciclo = 0
     st.session_state.historial_precios = {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)}
     st.session_state.umbral_caida = 0.005
-    st.session_state.limite_perdida = 1.5
-    st.session_state.toma_ganancia = 2.5
+    st.session_state.limite_perdida = 1.0          # 🔧 ANTES 1.5
+    st.session_state.toma_ganancia = 5.0           # 🔧 ANTES 2.5
     st.session_state.seguimiento = 0.5
     st.session_state.umbral_indicadores_activacion = 0.5
     st.session_state.puntaje_experto = 30
@@ -269,9 +269,9 @@ def restaurar_desde_archivo():
         st.session_state.precio_maximo = _leer(datos, "precio_maximo", "highest_price", {"BTC": 0.0, "ETH": 0.0})
         st.session_state.ciclo = _leer(datos, "ciclo", "cycle", 0)
         st.session_state.umbral_caida = datos.get("umbral_caida", 0.005)
-        st.session_state.limite_perdida = _leer(datos, "limite_perdida", "stop_loss", 1.5)
+        st.session_state.limite_perdida = _leer(datos, "limite_perdida", "stop_loss", 1.0)   # 🔧 ANTES 1.5
         st.session_state.toma_ganancia = max(0.5, _a_decimal(
-            _leer(datos, "toma_ganancia", "take_profit", 2.5), 2.5))
+            _leer(datos, "toma_ganancia", "take_profit", 5.0), 5.0))                        # 🔧 ANTES 2.5
         st.session_state.seguimiento = _leer(datos, "seguimiento", "trailing", 0.5)
         st.session_state.umbral_indicadores_activacion = datos.get("umbral_indicadores_activacion", 0.5)
         st.session_state.puntaje_experto = _leer(datos, "puntaje_experto", "expert_score", 30)
@@ -950,7 +950,7 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
         return "BUY", confianza, f"Señal de compra ({puntuacion:.1f})", {}
     else:
         return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
-        # ══════════════════ PARTE 7/11: interfaz, cartera, salidas y contador ══════════════════
+       # ══════════════════ PARTE 7/11: interfaz, cartera, salidas y contador ══════════════════
 
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
@@ -967,8 +967,8 @@ variables_requeridas = {
     "ciclo": 0,
     "historial_precios": {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)},
     "umbral_caida": 0.005,
-    "toma_ganancia": 2.0,
-    "limite_perdida": 1.5,
+    "toma_ganancia": 5.0,           # 🔧 ANTES 2.0
+    "limite_perdida": 1.0,          # 🔧 ANTES 1.5
     "seguimiento": 0.5,
     "umbral_indicadores_activacion": 0.5,
     "puntaje_experto": 30,
@@ -1011,13 +1011,25 @@ for nombre, valor_predeterminado in variables_requeridas.items():
     if nombre not in st.session_state:
         st.session_state[nombre] = valor_predeterminado
 
-st.session_state.toma_ganancia = max(0.5, _a_decimal(st.session_state.get("toma_ganancia", 2.0), 2.0))
+# 🔧 CORRECCIÓN CRÍTICA: forzar los valores deseados SIEMPRE al arrancar,
+#    sin importar lo que Firebase tenga guardado. Así los sliders arrancan
+#    con TP=5% y SL=1% garantizado.
+FORZAR_TP = 5.0
+FORZAR_SL = 1.0
+if st.session_state.get("toma_ganancia") != FORZAR_TP:
+    st.session_state.toma_ganancia = FORZAR_TP
+if st.session_state.get("limite_perdida") != FORZAR_SL:
+    st.session_state.limite_perdida = FORZAR_SL
+
+st.session_state.toma_ganancia = max(0.5, _a_decimal(st.session_state.get("toma_ganancia", FORZAR_TP), FORZAR_TP))
+st.session_state.limite_perdida = max(0.5, _a_decimal(st.session_state.get("limite_perdida", FORZAR_SL), FORZAR_SL))
 st.session_state.confianza_umbral = min(95, max(50, _a_entero(st.session_state.get("confianza_umbral", 65), 65)))
 
 if "datos_cargados" not in st.session_state:
     restaurar_desde_archivo()
     st.session_state.datos_cargados = True
 
+# 🧹 Limpieza automática: si NO estamos en modo real, cancelar órdenes huérfanas en Bitso.
 if (not MODO_REAL) and LLAVE_API_BITSO and SECRETO_API_BITSO:
     try:
         for libro in ("btc_mxn", "eth_mxn"):
