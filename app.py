@@ -1780,6 +1780,52 @@ def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_oncha
         return False
 # ══════════════════ BLOQUE 10/10: ciclo, panel, contador y refresco automático ══════════════════
 
+def _reconciliar_cartera():
+    """
+    ⭐ NUEVO: coteja el registro interno con el saldo real de Bitso. Si el bot cree que
+    tiene una posición pero Bitso ya no la tiene (porque la vendió y perdió el registro
+    de su propia venta), cierra esa posición en el registro para que no queden ventas
+    fantasma ni errores de saldo insuficiente, y la anota en el historial para que el
+    contador de aciertos la cuente.
+    """
+    if not MODO_REAL:
+        return
+    saldos = obtener_saldo_bitso()          # usa la caché de 30 s
+    if not saldos:
+        return
+
+    for simbolo in ["BTC", "ETH"]:
+        cantidad_registro = float(st.session_state.posiciones.get(simbolo, 0.0))
+        if cantidad_registro <= 0:
+            continue
+        # si todavía hay una orden en vuelo, no tocar nada
+        if st.session_state.get(f"orden_pendiente_{simbolo}"):
+            continue
+
+        cantidad_real = float(saldos.get(simbolo.lower(), {}).get("available", 0.0))
+        # solo si desapareció casi todo (venta clara, no redondeo)
+        if cantidad_real > cantidad_registro * 0.05:
+            continue
+
+        entrada = float(st.session_state.precio_entrada.get(simbolo, 0.0))
+        precio_actual = float(st.session_state.ultimo_precio.get(simbolo, 0.0))
+        neto = cantidad_registro * precio_actual * (1 - COMISION)
+        ganancia = neto - (cantidad_registro * entrada)
+        signo = "+" if ganancia > 0 else ""
+        porcentaje_estimado = ((precio_actual / entrada) - 1) * 100 if entrada else 0.0
+
+        st.session_state.posiciones[simbolo] = 0.0
+        st.session_state.precio_entrada[simbolo] = 0.0
+        st.session_state.precio_maximo[simbolo] = 0.0
+        msg = (f"🔴 VENTA [RECONCILIADA] {simbolo} | Bitso ya no tenía el saldo | "
+               f"Neto aprox: ${neto:.2f} | PROFIT: {signo}${ganancia:.2f} "
+               f"({signo}{porcentaje_estimado:.2f}%) (estimado)")
+        st.session_state.operaciones.append((datetime.now(), msg))
+        avisar(f"🔁 Reconcilié {simbolo}: ya no hay saldo en Bitso. "
+               f"Cierre estimado {signo}${ganancia:.2f}", "warning")
+        enviar_telegram(msg)
+        guardar_datos()
+
 def _ejecutar_ordenes_pendientes():
     """Resuelve las órdenes Maker pendientes y las aplica al registro contable."""
     for simbolo in ["BTC", "ETH"]:
@@ -1913,6 +1959,10 @@ def ejecutar_ciclo(interfaz):
     # ===== ÓRDENES MAKER PENDIENTES =====
     _ejecutar_ordenes_pendientes()
 
+    # ⭐ NUEVO: cada 12 ciclos (~1 min) coteja el registro interno con Bitso
+    if st.session_state.ciclo % 12 == 0:
+        _reconciliar_cartera()
+
     # ===== SALIDAS POR REGLAS: LÍMITE DE PÉRDIDA, TOMA DE GANANCIA Y DETENCIÓN MÓVIL =====
     for simbolo_salida, precio_salida in [("BTC", btc), ("ETH", eth)]:
         if st.session_state.posiciones.get(simbolo_salida, 0) > 0:
@@ -2033,7 +2083,7 @@ def ejecutar_ciclo(interfaz):
 
     if saldo_real:
         mxn_real = float(saldo_real.get("mxn", {}).get("available", 0.0))
-        # ⭐ NUEVO: el total incluye lo reservado en órdenes abiertas
+        # el total incluye lo reservado en órdenes abiertas
         mxn_total_real = float(saldo_real.get("mxn", {}).get("total", 0.0))
         reservado = max(0.0, mxn_total_real - mxn_real)
         btc_real = float(saldo_real.get("btc", {}).get("available", 0.0))
@@ -2053,7 +2103,6 @@ def ejecutar_ciclo(interfaz):
             f"📋 Registro interno del bot: ${st.session_state.saldo:,.2f} "
             f"({st.session_state.posiciones.get('BTC', 0):.6f} BTC / "
             f"{st.session_state.posiciones.get('ETH', 0):.6f} ETH)"
-            # ⭐ NUEVO: explica la diferencia entre disponible y total
             + (f" | 🔒 Reservado en órdenes abiertas: ${reservado:,.2f}"
                if reservado > 0.01 else "")
         )
