@@ -1285,7 +1285,7 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
         return "BUY", confianza, f"Señal de compra ({puntuacion:.1f})", {}
     else:
         return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
-     1# ══════════════════ BLOQUE 8/10: interfaz, cartera, salidas y contador ══════════════════
+    # ══════════════════ BLOQUE 8/10: interfaz, cartera, salidas y contador ══════════════════
 
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
@@ -1410,7 +1410,7 @@ def _aplicar_venta(simbolo, precio, cantidad_forzada=None):
 def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0.0,
                      salida_rapida=False, forzar=False):
     if st.session_state.get(f"orden_pendiente_{simbolo}"):
-        avisar(f"⏳ Ya hay una orden pendiente para {simbolo}: no se duplica la venta", "info")
+        avisar(f"⏳ Ya hay una orden pendiente para {simbolo}", "info")
         return False
 
     ultimo_fallo = float(st.session_state.get(f"venta_fallida_{simbolo}", 0.0) or 0.0)
@@ -1425,8 +1425,7 @@ def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0
 
     if not forzar and entrada > 0 and precio < entrada * (1 + minima_ganancia_pct / 100.0):
         ganancia_potencial = ((precio / entrada) - 1) * 100
-        avisar(f"⏸️ {simbolo}: venta por {motivo} frenada; está en {ganancia_potencial:+.2f}% "
-               f"(mínimo {minima_ganancia_pct:.2f}%). Esperando al límite de pérdida.", "warning")
+        avisar(f"⏸️ {simbolo}: venta por {motivo} frenada; está en {ganancia_potencial:+.2f}%", "warning")
         return False
 
     libro = "btc_mxn" if simbolo == "BTC" else "eth_mxn"
@@ -1440,8 +1439,7 @@ def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0
             orden = colocar_orden_bitso(libro, "sell", f"{cantidad:.8f}", "0", tipo="market")
             precio_envio = precio
             if not orden or orden.get("error"):
-                avisar(f"⚠️ La orden a mercado de {simbolo} fue rechazada; "
-                       f"reintentando con límite agresivo -{MARGEN_AGRESIVO_PCT}%", "warning")
+                avisar(f"⚠️ La orden a mercado de {simbolo} fue rechazada", "warning")
                 precio_envio = precio * (1 - MARGEN_AGRESIVO_PCT / 100.0)
                 orden = colocar_orden_bitso(libro, "sell", f"{cantidad:.8f}",
                                             f"{precio_envio:.2f}", tipo="limit")
@@ -1618,7 +1616,7 @@ def ejecutar_compra_profesional(simbolo, precio, confianza, razon, tendencia_30d
     elif probabilidad >= 50:
         monto_base, cantidad_ops = 50.0, 2
     else:
-        avisar(f"⚠️ Probabilidad baja ({probabilidad:.1f}%): compra {simbolo} omitida", "warning")
+        avisar(f"⚠️ Probabilidad baja ({probabilidad:.1f}%)", "warning")
         return
 
     monto = min(monto_base, MONTO_MAXIMO_POR_OPERACION)
