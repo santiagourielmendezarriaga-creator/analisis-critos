@@ -1285,7 +1285,7 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
         return "BUY", confianza, f"Señal de compra ({puntuacion:.1f})", {}
     else:
         return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
-      # ══════════════════ BLOQUE 8/10: interfaz, cartera, salidas y contador ══════════════════
+     1# ══════════════════ BLOQUE 8/10: interfaz, cartera, salidas y contador ══════════════════
 
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
@@ -1314,7 +1314,7 @@ variables_requeridas = {
     "sl_disparado": {"BTC": False, "ETH": False},
     "sl_precio_minimo": {"BTC": 0.0, "ETH": 0.0},
     "indicadores_activados": {"BTC": False, "ETH": False},
-    "modo_solo_senales": False,
+    "modo_solo_senales": True,
     "modo_aprendizaje": False,
     "rendimiento": {
         "BTC": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []},
@@ -1346,6 +1346,9 @@ for nombre, valor_predeterminado in variables_requeridas.items():
     if nombre not in st.session_state:
         st.session_state[nombre] = valor_predeterminado
 
+# 🧹 Limpieza automática: borra señales viejas del historial
+limpiar_senales_del_historial()
+
 st.session_state.toma_ganancia = max(0.5, _a_decimal(st.session_state.get("toma_ganancia", 2.0), 2.0))
 st.session_state.confianza_umbral = min(95, max(50, _a_entero(st.session_state.get("confianza_umbral", 65), 65)))
 
@@ -1369,7 +1372,6 @@ if not TELEGRAM_CONFIGURADO:
 
 # ===== FUNCIONES DE REGISTRO CONTABLE =====
 def _aplicar_compra(simbolo, monto, precio, comision=COMISION):
-    """Suma una compra al registro. El precio de entrada es media ponderada."""
     cantidad = (monto * (1 - comision)) / precio
     cantidad_previa = float(st.session_state.posiciones.get(simbolo, 0.0))
     entrada_previa = float(st.session_state.precio_entrada.get(simbolo, 0.0))
@@ -1390,7 +1392,6 @@ def _aplicar_compra(simbolo, monto, precio, comision=COMISION):
 
 
 def _aplicar_venta(simbolo, precio, cantidad_forzada=None):
-    """Cierra la posición en el registro y devuelve (neto, ganancia)."""
     cantidad = (float(cantidad_forzada) if cantidad_forzada is not None
                 else float(st.session_state.posiciones.get(simbolo, 0.0)))
     if cantidad <= 0:
@@ -1408,12 +1409,6 @@ def _aplicar_venta(simbolo, precio, cantidad_forzada=None):
 
 def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0.0,
                      salida_rapida=False, forzar=False):
-    """
-    Cierra la posición (real o simulada) dejando consistentes el registro, Telegram y
-    el respaldo. Devuelve True si la venta se envió.
-    salida_rapida=True → límite de pérdida y detención móvil: sale a MERCADO.
-    forzar=True        → vende aunque esté en pérdida (venta manual).
-    """
     if st.session_state.get(f"orden_pendiente_{simbolo}"):
         avisar(f"⏳ Ya hay una orden pendiente para {simbolo}: no se duplica la venta", "info")
         return False
@@ -1458,13 +1453,8 @@ def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0
         if not orden or orden.get("error"):
             detalle = orden.get("error") if orden else "sin respuesta"
             st.session_state[f"venta_fallida_{simbolo}"] = time.time()
-            avisar(f"❌ Venta {simbolo} falló: intenté vender {cantidad:.8f} {simbolo} "
-                   f"a ${precio_envio:,.2f} | Bitso: {detalle} | "
-                   f"En pausa {ESPERA_TRAS_FALLO_MIN} min.", "error")
-            enviar_telegram(f"❌ **VENTA {simbolo} RECHAZADA POR BITSO**\n"
-                            f"Intenté vender {cantidad:.8f} {simbolo} a ${precio_envio:,.2f}\n"
-                            f"Bitso: {detalle}\n"
-                            f"Motivo del bot: {motivo_completo}")
+            avisar(f"❌ Venta {simbolo} falló: {detalle}", "error")
+            enviar_telegram(f"❌ **VENTA {simbolo} RECHAZADA POR BITSO**\nBitso: {detalle}")
             return False
 
         st.session_state[f"orden_pendiente_{simbolo}"] = {
@@ -1493,10 +1483,6 @@ def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0
 
 
 def _revisar_salidas(simbolo, precio):
-    """
-    Salidas de riesgo, en orden: límite de pérdida (a mercado), toma de ganancia
-    (Maker) o detención móvil. No dependen del horario ni de la fase.
-    """
     cantidad = float(st.session_state.posiciones.get(simbolo, 0.0))
     if cantidad <= 0:
         return False
@@ -1522,10 +1508,8 @@ def _revisar_salidas(simbolo, precio):
             st.session_state[clave_aviso] = True
             enviar_telegram(
                 f"🔇 **AVISO DE SALIDA {simbolo}**\n"
-                f"Precio ${precio:,.0f} vs entrada ${entrada:,.0f} "
-                f"({((precio/entrada)-1)*100:+.2f}%)\n"
-                f"Modo 'solo señales' activo: el bot NO ejecutó la venta.")
-            avisar(f"🔇 {simbolo}: salida sugerida, pero 'solo señales' la bloquea", "warning")
+                f"Precio ${precio:,.0f} vs entrada ${entrada:,.0f}")
+            avisar(f"🔇 {simbolo}: salida sugerida, bloqueada por 'solo señales'", "warning")
         elif not hay_aviso and st.session_state.get(clave_aviso):
             st.session_state[clave_aviso] = False
         return False
@@ -1541,16 +1525,14 @@ def _revisar_salidas(simbolo, precio):
                                     f"toma de ganancia {st.session_state.toma_ganancia}%",
                                     salida_rapida=False)
     elif maximo >= umbral_ganancia and precio <= umbral_movil:
-        return _cerrar_posicion(
-            simbolo, precio,
-            f"detención móvil {st.session_state.seguimiento}% desde ${maximo:,.0f}",
-            salida_rapida=True)
+        return _cerrar_posicion(simbolo, precio,
+                                f"detención móvil {st.session_state.seguimiento}%",
+                                salida_rapida=True)
 
     return False
 
 
 def _resumen_aciertos():
-    """Cuenta aciertos y fallos de la FASE ACTUAL y calcula el punto de equilibrio."""
     try:
         inicio_fase = datetime.fromisoformat(st.session_state.inicio_fase)
     except Exception:
@@ -1563,6 +1545,8 @@ def _resumen_aciertos():
     porcentajes = []
 
     for marca, msg in st.session_state.operaciones:
+        if "📢" in msg or "SEÑAL" in msg:
+            continue
         if inicio_fase is not None and isinstance(marca, datetime) and marca < inicio_fase:
             continue
         if "VENTA" not in msg:
@@ -1641,11 +1625,11 @@ def ejecutar_compra_profesional(simbolo, precio, confianza, razon, tendencia_30d
     monto_hoy = float(st.session_state.get("monto_del_dia", 0.0))
     restante_dia = MONTO_MAXIMO_DIARIO - monto_hoy
     if monto <= 0 or restante_dia < monto:
-        avisar(f"⚠️ Límite diario alcanzado (${monto_hoy:.2f}/${MONTO_MAXIMO_DIARIO:.2f})", "warning")
+        avisar(f"⚠️ Límite diario alcanzado", "warning")
         return
     cantidad_ops = int(min(cantidad_ops, restante_dia // monto))
     if cantidad_ops < 1:
-        avisar("⚠️ Remanente diario insuficiente para una operación", "warning")
+        avisar("⚠️ Remanente diario insuficiente", "warning")
         return
 
     if st.session_state.posiciones.get(simbolo, 0) > 0:
@@ -1664,8 +1648,7 @@ def ejecutar_compra_profesional(simbolo, precio, confianza, razon, tendencia_30d
         cantidad = (monto * 0.999) / precio_maker
         orden = colocar_orden_bitso(libro, "buy", f"{cantidad:.8f}", f"{precio_maker:.2f}")
         if not orden or orden.get("error"):
-            avisar(f"❌ Orden Maker {simbolo} falló: "
-                   f"{orden.get('error') if orden else 'sin respuesta'}", "error")
+            avisar(f"❌ Orden Maker {simbolo} falló", "error")
             return
         st.session_state[clave_orden] = {
             "oid": orden.get("oid"), "side": "buy", "sym": simbolo,
@@ -1673,7 +1656,7 @@ def ejecutar_compra_profesional(simbolo, precio, confianza, razon, tendencia_30d
             "cant": cantidad_ops, "timestamp": time.time(), "confianza": confianza
         }
         st.session_state[clave_compra] = st.session_state.ciclo
-        avisar(f"⏳ Orden Maker {simbolo} colocada (oid {orden.get('oid')})", "info")
+        avisar(f"⏳ Orden Maker {simbolo} colocada", "info")
         enviar_telegram(f"⏳ ORDEN MAKER {simbolo} | Precio: ${precio_maker:,.2f}")
         guardar_datos()
         return
@@ -1690,7 +1673,7 @@ def ejecutar_compra_profesional(simbolo, precio, confianza, razon, tendencia_30d
                f"Prob: {probabilidad:.1f}% | Razon: {razon}")
         enviar_telegram(msg)
         st.session_state.operaciones.append((datetime.now(), msg))
-        avisar(f"✅ {ejecutadas} compra(s) Maker simulada(s) en {simbolo}", "success")
+        avisar(f"✅ {ejecutadas} compra(s) Maker simulada(s)", "success")
     else:
         avisar(f"⚠️ Saldo insuficiente para comprar {simbolo}", "warning")
       # ===== BARRA LATERAL =====
@@ -1749,6 +1732,38 @@ st.sidebar.caption("💰 La cartera se muestra en el panel principal (se refresc
 st.sidebar.caption("📌 Las salidas de riesgo se aplican siempre, sin depender del horario ni "
                    "de la fase. El límite de pérdida sale a mercado y protege incluso con "
                    "'solo señales' activado; la toma de ganancia usa orden Maker.")
+
+# ===== SECCIÓN DE TELEGRAM =====
+st.sidebar.markdown("---")
+st.sidebar.markdown("**📡 Telegram**")
+
+if TELEGRAM_CONFIGURADO:
+    st.sidebar.success("✅ Chat personal configurado")
+else:
+    st.sidebar.warning("⚠️ Falta TELEGRAM_TOKEN / TELEGRAM_CHAT_ID")
+
+if CANAL_CONFIGURADO:
+    st.sidebar.success(f"✅ Canal configurado (señales ≥{UMBRAL_SENAL_FUERTE}%)")
+else:
+    st.sidebar.info("ℹ️ Canal no configurado (opcional)")
+    st.sidebar.caption("Define `TELEGRAM_CANAL_ID` en Secrets.")
+
+if st.sidebar.button("📨 Probar Telegram (chat personal)"):
+    ok = enviar_telegram("🧪 Prueba: chat personal funcionando desde el bot.")
+    if ok:
+        st.sidebar.success("✅ Enviado al chat personal")
+    else:
+        st.sidebar.error("❌ Falló el envío al chat personal")
+
+if st.sidebar.button("📢 Probar Telegram (canal)"):
+    if not CANAL_CONFIGURADO:
+        st.sidebar.error("Canal no configurado. Define TELEGRAM_CANAL_ID en Secrets.")
+    else:
+        ok = enviar_canal_telegram("🧪 Prueba: canal funcionando desde el bot.")
+        if ok:
+            st.sidebar.success("✅ Enviado al canal")
+        else:
+            st.sidebar.error("❌ Falló el envío al canal")
 
 
 # ===== 🚨 BOTÓN DE PÁNICO =====
@@ -1814,7 +1829,7 @@ if st.sidebar.button("🚨 CANCELAR TODAS LAS ÓRDENES EN BITSO", type="primary"
         st.rerun()
 
 
-# ===== 🧪 BOTÓN DE DIAGNÓSTICO FIREBASE (TEMPORAL) =====
+# ===== 🧪 DIAGNÓSTICO FIREBASE =====
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🧪 Diagnóstico Firebase**")
 
@@ -1830,7 +1845,7 @@ if st.sidebar.button("🧪 Probar conexión con Firebase"):
             st.write(f"Respuesta ruta: `{resp_ruta.status_code}`")
 
             if resp_ruta.status_code == 401 or "Permission denied" in resp_ruta.text:
-                st.error("❌ Error de permisos. Revisa las **Rules** en Firebase Console.")
+                st.error("❌ Error de permisos. Revisa las Rules en Firebase Console.")
                 status.update(label="Fallo de permisos", state="error")
             elif resp_ruta.status_code == 404:
                 st.error(f"❌ Ruta no existe. Verifica que `RUTA_SECRETA = \"{RUTA_SECRETA}\"` coincida con las Rules.")
@@ -1857,6 +1872,90 @@ if st.sidebar.button("🧪 Probar conexión con Firebase"):
         except Exception as e:
             st.error(f"❌ Excepción: {e}")
             status.update(label="Excepción", state="error")
+
+
+# ===== COMPRA MANUAL =====
+def _compra_manual(simbolo, libro):
+    with st.sidebar.expander(f"🔍 Diagnóstico de compra {simbolo}", expanded=True):
+        precio = obtener_precio_bitso(libro)
+        posicion_actual = st.session_state.posiciones.get(simbolo, 0)
+        st.write("**Precio:** " + str(precio))
+        st.write("**Posición actual:** " + str(posicion_actual))
+        st.write("**MODO_REAL:** " + str(MODO_REAL))
+        st.write("**Máximo por operación:** $" + str(MONTO_MAXIMO_POR_OPERACION))
+        st.write("**Máximo por día:** $" + str(MONTO_MAXIMO_DIARIO))
+        st.write("**Monto usado hoy:** $" + str(st.session_state.get("monto_del_dia", 0)))
+
+        if not precio:
+            st.error("❌ No se pudo obtener el precio")
+            return
+        if posicion_actual > 0:
+            st.warning("⚠️ Ya tienes posición: " + str(posicion_actual))
+            return
+        if not MODO_REAL:
+            st.error("❌ MODO_REAL está en FALSE. Actívalo en Secrets.")
+            return
+
+        monto = min(50.0, MONTO_MAXIMO_POR_OPERACION)
+        precio_objetivo = precio * 0.998
+        cantidad = (monto * 0.999) / precio_objetivo
+
+        st.write("**Monto:** $" + str(monto))
+        st.write("**Precio objetivo:** $" + str(round(precio_objetivo, 2)))
+        st.write("**Cantidad:** " + str(round(cantidad, 8)) + " " + simbolo)
+
+        with st.spinner("Enviando orden a Bitso..."):
+            orden = colocar_orden_bitso(libro, "buy", str(round(cantidad, 8)),
+                                        str(round(precio_objetivo, 2)))
+
+        if orden and not orden.get("error"):
+            st.success("✅ Orden colocada: " + str(orden.get("oid")))
+            st.json(orden)
+            st.session_state[f"orden_pendiente_{simbolo}"] = {
+                "oid": orden.get("oid"), "side": "buy", "sym": simbolo,
+                "price": precio_objetivo, "qty": cantidad, "monto": monto,
+                "cant": 1, "timestamp": time.time(), "confianza": 0,
+                "motivo": "compra manual",
+            }
+            msg = f"🟢 ORDEN MAKER [REAL] {simbolo} | {cantidad:.8f} a ${precio_objetivo:,.2f}"
+            enviar_telegram(msg)
+            st.session_state.operaciones.append((datetime.now(), msg))
+            guardar_datos()
+        else:
+            texto_error = orden.get("error", "desconocido") if orden else "sin respuesta"
+            st.error("❌ Error: " + str(texto_error))
+            st.json(orden)
+
+if st.sidebar.button("🟢 Comprar BTC AHORA"):
+    _compra_manual("BTC", "btc_mxn")
+
+if st.sidebar.button("🟢 Comprar ETH AHORA"):
+    _compra_manual("ETH", "eth_mxn")
+
+
+# ===== ENVÍO DE SEÑALES AL CANAL =====
+def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_onchain,
+                          cambio_30d, tendencia_30d):
+    try:
+        probabilidad = calcular_probabilidad(confianza)
+        texto_volumen = f"{volumen_onchain:.2f}B USD" if volumen_onchain is not None else "N/A"
+        emoji_tipo = "🟢" if tipo == "BUY" else "🔴" if tipo == "SELL" else "⚪"
+        msg = (f"📢 **SEÑAL {emoji_tipo} {tipo} — {simbolo}**\n"
+               f"🎯 Probabilidad: {probabilidad:.1f}%\n"
+               f"💰 Precio: ${precio:,.0f} MXN\n"
+               f"📝 Razón: {razon}\n"
+               f"📊 Volumen 24h: {texto_volumen}\n"
+               f"📈 Cambio 30d: {cambio_30d:+.2f}%\n"
+               f"🧭 Tendencia 30d: {tendencia_30d}\n"
+               f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        if CANAL_CONFIGURADO:
+            return enviar_canal_telegram(msg)
+        else:
+            return enviar_telegram(msg)
+    except Exception as e:
+        print(f"Error enviando señal al canal: {e}")
+        return False
 # ══════════════════ BLOQUE 9/10: botones, cartera real, control manual y registro ══════════════════
 
 if st.sidebar.button("Reiniciar simulación"):
