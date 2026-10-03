@@ -1021,7 +1021,8 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
         return "BUY", confianza, f"Señal de compra ({puntuacion:.1f})", {}
     else:
         return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
-      # ══════════════════ BLOQUE 8/10: interfaz, cartera, salidas y contador ══════════════════
+      
+# ══════════════════ BLOQUE 8/10: interfaz, cartera, salidas y contador ══════════════════
 
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
@@ -1102,6 +1103,7 @@ if not TELEGRAM_CONFIGURADO:
         "en los Secrets (App settings → Secrets) para recibir los avisos de ventas y errores."
     )
 
+
 # ===== FUNCIONES DE REGISTRO CONTABLE =====
 def _aplicar_compra(simbolo, monto, precio, comision=COMISION):
     """Suma una compra al registro. El precio de entrada es media ponderada."""
@@ -1123,6 +1125,7 @@ def _aplicar_compra(simbolo, monto, precio, comision=COMISION):
     st.session_state[f"venta_fallida_{simbolo}"] = 0.0
     return cantidad
 
+
 def _aplicar_venta(simbolo, precio, cantidad_forzada=None):
     """Cierra la posición en el registro y devuelve (neto, ganancia)."""
     cantidad = (float(cantidad_forzada) if cantidad_forzada is not None
@@ -1138,6 +1141,7 @@ def _aplicar_venta(simbolo, precio, cantidad_forzada=None):
     st.session_state.precio_maximo[simbolo] = 0.0
     st.session_state.ops_del_dia += 1
     return neto, ganancia
+
 
 def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0.0,
                      salida_rapida=False, forzar=False):
@@ -1224,6 +1228,7 @@ def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0
     avisar(f"✅ Venta {simbolo} ({motivo_completo}): {signo}${ganancia:.2f}", "success")
     return True
 
+
 def _revisar_salidas(simbolo, precio):
     """
     Salidas de riesgo, en orden: límite de pérdida (a mercado), toma de ganancia
@@ -1279,6 +1284,7 @@ def _revisar_salidas(simbolo, precio):
             salida_rapida=True)
 
     return False
+
 
 def _resumen_aciertos():
     """Cuenta aciertos y fallos de la FASE ACTUAL y calcula el punto de equilibrio."""
@@ -1340,6 +1346,7 @@ def _resumen_aciertos():
         "equilibrio": equilibrio, "esperanza": esperanza,
         "acierto_neto": acierto_neto, "fallo_neto": fallo_neto,
     }
+
 
 def ejecutar_compra_profesional(simbolo, precio, confianza, razon, tendencia_30d):
     probabilidad = calcular_probabilidad(confianza)
@@ -1423,8 +1430,7 @@ def ejecutar_compra_profesional(simbolo, precio, confianza, razon, tendencia_30d
         avisar(f"✅ {ejecutadas} compra(s) Maker simulada(s) en {simbolo}", "success")
     else:
         avisar(f"⚠️ Saldo insuficiente para comprar {simbolo}", "warning")
-
-# ===== BARRA LATERAL =====
+      # ===== BARRA LATERAL =====
 st.sidebar.header("⚙️ Configuración Principal")
 st.session_state.umbral_caida = st.sidebar.number_input(
     "Caída para comprar (%)", min_value=0.001, max_value=50.0, step=0.001,
@@ -1480,6 +1486,68 @@ st.sidebar.caption("💰 La cartera se muestra en el panel principal (se refresc
 st.sidebar.caption("📌 Las salidas de riesgo se aplican siempre, sin depender del horario ni "
                    "de la fase. El límite de pérdida sale a mercado y protege incluso con "
                    "'solo señales' activado; la toma de ganancia usa orden Maker.")
+
+# ===== BOTÓN DE PÁNICO =====
+st.sidebar.markdown("---")
+st.sidebar.markdown("**🚨 Emergencia**")
+
+if st.sidebar.button("🚨 CANCELAR TODAS LAS ÓRDENES EN BITSO", type="primary"):
+    if not LLAVE_API_BITSO or not SECRETO_API_BITSO:
+        st.sidebar.error("❌ Sin credenciales de Bitso configuradas")
+    else:
+        canceladas = 0
+        errores = 0
+        detalles = []
+
+        for libro in ("btc_mxn", "eth_mxn"):
+            try:
+                ruta_oa = f"/v3/open_orders/?book={libro}"
+                cab_o, _ = _crear_cabecera_autenticacion("GET", ruta_oa)
+                if not cab_o:
+                    errores += 1
+                    detalles.append(f"{libro}: sin firma")
+                    continue
+
+                r_oa = requests.get(
+                    URL_BASE_BITSO + ruta_oa,
+                    headers={"Authorization": cab_o},
+                    timeout=10
+                )
+                if r_oa.status_code != 200:
+                    errores += 1
+                    detalles.append(f"{libro}: HTTP {r_oa.status_code}")
+                    continue
+
+                abiertas = r_oa.json().get("payload") or []
+                for o in abiertas:
+                    oid = o.get("oid")
+                    if oid and cancelar_orden_bitso(oid):
+                        canceladas += 1
+                    elif oid:
+                        errores += 1
+                        detalles.append(f"{libro} oid {oid}: no canceló")
+
+            except Exception as e:
+                errores += 1
+                detalles.append(f"{libro}: {e}")
+
+        st.session_state.orden_pendiente_BTC = None
+        st.session_state.orden_pendiente_ETH = None
+
+        if canceladas > 0:
+            st.sidebar.success(f"✅ {canceladas} orden(es) cancelada(s) en Bitso")
+        elif errores == 0:
+            st.sidebar.info("ℹ️ No había órdenes abiertas en Bitso")
+        else:
+            st.sidebar.warning(f"⚠️ {errores} error(es). Revisa Bitso manualmente.")
+
+        if detalles:
+            with st.sidebar.expander("Ver detalle"):
+                for d in detalles:
+                    st.caption(f"• {d}")
+
+        time.sleep(1)
+        st.rerun()
 # ══════════════════ BLOQUE 9/10: botones, cartera real, control manual y registro ══════════════════
 
 if st.sidebar.button("Reiniciar simulación"):
