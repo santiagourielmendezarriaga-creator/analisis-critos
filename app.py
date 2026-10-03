@@ -1021,8 +1021,7 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
         return "BUY", confianza, f"Señal de compra ({puntuacion:.1f})", {}
     else:
         return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
-      
-# ══════════════════ BLOQUE 8/10: interfaz, cartera, salidas y contador ══════════════════
+      # ══════════════════ BLOQUE 8/10: interfaz, cartera, salidas y contador ══════════════════
 
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
@@ -1487,7 +1486,8 @@ st.sidebar.caption("📌 Las salidas de riesgo se aplican siempre, sin depender 
                    "de la fase. El límite de pérdida sale a mercado y protege incluso con "
                    "'solo señales' activado; la toma de ganancia usa orden Maker.")
 
-# ===== BOTÓN DE PÁNICO =====
+
+# ===== 🚨 BOTÓN DE PÁNICO =====
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🚨 Emergencia**")
 
@@ -1548,6 +1548,51 @@ if st.sidebar.button("🚨 CANCELAR TODAS LAS ÓRDENES EN BITSO", type="primary"
 
         time.sleep(1)
         st.rerun()
+
+
+# ===== 🧪 BOTÓN DE DIAGNÓSTICO FIREBASE (TEMPORAL) =====
+st.sidebar.markdown("---")
+st.sidebar.markdown("**🧪 Diagnóstico Firebase**")
+
+if st.sidebar.button("🧪 Probar conexión con Firebase"):
+    with st.sidebar.status("Probando...", expanded=True) as status:
+        try:
+            st.write(f"URL base: `{URL_BASE_FIREBASE}`")
+            resp_base = requests.get(f"{URL_BASE_FIREBASE}/.json?shallow=true", timeout=10)
+            st.write(f"Respuesta base: `{resp_base.status_code}`")
+
+            st.write(f"Ruta completa: `{URL_FIREBASE}`")
+            resp_ruta = requests.get(f"{URL_FIREBASE}/.json?shallow=true", timeout=10)
+            st.write(f"Respuesta ruta: `{resp_ruta.status_code}`")
+
+            if resp_ruta.status_code == 401 or "Permission denied" in resp_ruta.text:
+                st.error("❌ Error de permisos. Revisa las **Rules** en Firebase Console.")
+                status.update(label="Fallo de permisos", state="error")
+            elif resp_ruta.status_code == 404:
+                st.error(f"❌ Ruta no existe. Verifica que `RUTA_SECRETA = \"{RUTA_SECRETA}\"` coincida con las Rules.")
+                status.update(label="Ruta no existe", state="error")
+            elif resp_ruta.status_code == 200:
+                st.write("Intentando escribir dato de prueba...")
+                prueba_url = f"{URL_FIREBASE}/test_conexion.json"
+                resp_put = requests.put(
+                    prueba_url,
+                    json={"ok": True, "ts": time.time()},
+                    timeout=10
+                )
+                st.write(f"Respuesta escritura: `{resp_put.status_code}`")
+                if resp_put.status_code == 200:
+                    st.success("✅ ¡Conexión OK! La escritura funcionó.")
+                    status.update(label="Conexión exitosa", state="complete")
+                else:
+                    st.error(f"❌ Falló la escritura: {resp_put.text[:200]}")
+                    status.update(label="Fallo en la escritura", state="error")
+            else:
+                st.warning(f"⚠️ Status inesperado: {resp_ruta.status_code}")
+                status.update(label="Status inesperado", state="error")
+
+        except Exception as e:
+            st.error(f"❌ Excepción: {e}")
+            status.update(label="Excepción", state="error")
 # ══════════════════ BLOQUE 9/10: botones, cartera real, control manual y registro ══════════════════
 
 if st.sidebar.button("Reiniciar simulación"):
