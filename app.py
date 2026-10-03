@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
 🧠 Bot Scalping Extremo + Volumen + Tendencia 30d (Streamlit)
 VERSIÓN FINAL CORREGIDA, EN ESPAÑOL
 
@@ -519,9 +517,10 @@ def obtener_saldo_bitso(usar_cache=True):
         st.session_state["error_saldo_bitso"] = f"Excepción consultando el saldo: {e}"
         print(f"Error consultando saldo: {e}")
         return None
-  # ══════════════════ BLOQUE 5/10: análisis y aprendizaje (parte A) ══════════════════
+   # ══════════════════ BLOQUE 5/10: análisis y aprendizaje (parte A) ══════════════════
 
 def obtener_miedo_codicia():
+    """Lee el índice Fear & Greed. Si falla, devuelve 50 (neutro)."""
     try:
         respuesta = requests.get("https://api.alternative.me/fng/", timeout=5)
         if respuesta.status_code == 200:
@@ -533,6 +532,7 @@ def obtener_miedo_codicia():
 
 
 def obtener_horario_operacion():
+    """Devuelve (estado, emoji, descripción, es_buen_horario)."""
     zona_mexico = timezone(timedelta(hours=-6))
     ahora = datetime.now(zona_mexico)
     hora = ahora.hour
@@ -777,30 +777,10 @@ def evaluar_rendimiento(simbolo):
         return {"accion": "MANTENER"}
 
 
-def limpiar_senales_del_historial():
-    """
-    Elimina del historial de operaciones cualquier entrada que sea una SEÑAL
-    (no una operación real). Se ejecuta una vez al arrancar la app.
-    """
-    if st.session_state.get("_senales_limpiadas"):
-        return
-    operaciones_limpias = []
-    eliminadas = 0
-    for marca, msg in st.session_state.operaciones:
-        if "📢" in msg or "SEÑAL" in msg:
-            eliminadas += 1
-            continue
-        operaciones_limpias.append((marca, msg))
-    if eliminadas > 0:
-        st.session_state.operaciones = operaciones_limpias
-        print(f"🧹 Limpié {eliminadas} señales del historial (no eran operaciones reales)")
-    st.session_state["_senales_limpiadas"] = True
-
-
 def analizar_fase_aprendizaje():
     """
     Analiza SOLO las operaciones reales cerradas (no las señales enviadas al canal).
-    Ignora cualquier entrada con 📢 o SEÑAL.
+    Las señales se identifican con el prefijo 📢 y NO cuentan como operaciones.
     """
     operaciones = st.session_state.operaciones
     if len(operaciones) < 3:
@@ -895,11 +875,11 @@ def analizar_fase_aprendizaje():
     if tasa_acierto < 40:
         st.session_state.confianza_umbral = min(95, st.session_state.confianza_umbral + 5)
         analisis["ajustes_aplicados"].append(
-            f"Umbral subido a {st.session_state.confianza_umbral}%")
+            f"Umbral subido a {st.session_state.confianza_umbral}% (tasa de acierto baja)")
     elif tasa_acierto > 65:
         st.session_state.confianza_umbral = max(50, st.session_state.confianza_umbral - 5)
         analisis["ajustes_aplicados"].append(
-            f"Umbral bajado a {st.session_state.confianza_umbral}%")
+            f"Umbral bajado a {st.session_state.confianza_umbral}% (tasa de acierto alta)")
     else:
         analisis["ajustes_aplicados"].append(
             f"Umbral mantenido en {st.session_state.confianza_umbral}%")
@@ -910,10 +890,10 @@ def analizar_fase_aprendizaje():
             tasa_simbolo = (estadisticas["wins"] / total_simbolo * 100)
             if tasa_simbolo < 30:
                 analisis["ajustes_aplicados"].append(
-                    f"{simbolo} rinde mal ({tasa_simbolo:.0f}%)")
+                    f"{simbolo} rinde mal ({tasa_simbolo:.0f}% | ${estadisticas['profit']:.2f})")
             elif tasa_simbolo > 70:
                 analisis["ajustes_aplicados"].append(
-                    f"{simbolo} rinde bien ({tasa_simbolo:.0f}%)")
+                    f"{simbolo} rinde bien ({tasa_simbolo:.0f}% | ${estadisticas['profit']:.2f})")
 
     if ganancia_promedio > 0:
         st.session_state.toma_ganancia = min(10.0, st.session_state.toma_ganancia * 1.1)
@@ -1285,7 +1265,7 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
         return "BUY", confianza, f"Señal de compra ({puntuacion:.1f})", {}
     else:
         return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
- # ══════════════════ BLOQUE 8/10: interfaz, cartera, salidas y contador ══════════════════
+      # ══════════════════ BLOQUE 8/10: interfaz, cartera, salidas y contador ══════════════════
 
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
@@ -1366,6 +1346,7 @@ if not TELEGRAM_CONFIGURADO:
         "en los Secrets (App settings → Secrets) para recibir los avisos de ventas y errores."
     )
 
+
 # ===== FUNCIONES DE REGISTRO CONTABLE =====
 def _aplicar_compra(simbolo, monto, precio, comision=COMISION):
     """Suma una compra al registro. El precio de entrada es media ponderada."""
@@ -1387,6 +1368,7 @@ def _aplicar_compra(simbolo, monto, precio, comision=COMISION):
     st.session_state[f"venta_fallida_{simbolo}"] = 0.0
     return cantidad
 
+
 def _aplicar_venta(simbolo, precio, cantidad_forzada=None):
     """Cierra la posición en el registro y devuelve (neto, ganancia)."""
     cantidad = (float(cantidad_forzada) if cantidad_forzada is not None
@@ -1402,6 +1384,7 @@ def _aplicar_venta(simbolo, precio, cantidad_forzada=None):
     st.session_state.precio_maximo[simbolo] = 0.0
     st.session_state.ops_del_dia += 1
     return neto, ganancia
+
 
 def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0.0,
                      salida_rapida=False, forzar=False):
@@ -1488,6 +1471,7 @@ def _cerrar_posicion(simbolo, precio, motivo, confianza=0, minima_ganancia_pct=0
     avisar(f"✅ Venta {simbolo} ({motivo_completo}): {signo}${ganancia:.2f}", "success")
     return True
 
+
 def _revisar_salidas(simbolo, precio):
     """
     Salidas de riesgo, en orden: límite de pérdida (a mercado), toma de ganancia
@@ -1543,6 +1527,7 @@ def _revisar_salidas(simbolo, precio):
             salida_rapida=True)
 
     return False
+
 
 def _resumen_aciertos():
     """Cuenta aciertos y fallos de la FASE ACTUAL y calcula el punto de equilibrio."""
@@ -1604,6 +1589,7 @@ def _resumen_aciertos():
         "equilibrio": equilibrio, "esperanza": esperanza,
         "acierto_neto": acierto_neto, "fallo_neto": fallo_neto,
     }
+
 
 def ejecutar_compra_profesional(simbolo, precio, confianza, razon, tendencia_30d):
     probabilidad = calcular_probabilidad(confianza)
@@ -1687,64 +1673,7 @@ def ejecutar_compra_profesional(simbolo, precio, confianza, razon, tendencia_30d
         avisar(f"✅ {ejecutadas} compra(s) Maker simulada(s) en {simbolo}", "success")
     else:
         avisar(f"⚠️ Saldo insuficiente para comprar {simbolo}", "warning")
-
-# ===== BARRA LATERAL =====
-st.sidebar.header("⚙️ Configuración Principal")
-st.session_state.umbral_caida = st.sidebar.number_input(
-    "Caída para comprar (%)", min_value=0.001, max_value=50.0, step=0.001,
-    value=float(st.session_state.umbral_caida))
-
-valor_seguro_toma = max(0.5, float(st.session_state.toma_ganancia))
-st.session_state.toma_ganancia = st.sidebar.number_input(
-    "Toma de ganancia (%)", min_value=0.5, max_value=50.0, step=0.1, value=valor_seguro_toma)
-
-st.session_state.limite_perdida = st.sidebar.number_input(
-    "Límite de pérdida (%)", min_value=0.5, max_value=20.0,
-    value=float(st.session_state.limite_perdida), step=0.5)
-st.session_state.seguimiento = st.sidebar.number_input(
-    "Detención móvil (%)", min_value=0.2, max_value=5.0,
-    value=float(st.session_state.seguimiento), step=0.1)
-st.session_state.umbral_indicadores_activacion = st.sidebar.number_input(
-    "Activar indicadores ±(%)", min_value=0.1, max_value=20.0, step=0.1,
-    value=float(st.session_state.umbral_indicadores_activacion))
-
-st.sidebar.header("🧠 Modo de aprendizaje")
-st.session_state.modo_aprendizaje = st.sidebar.checkbox(
-    "✅ Modo aprendizaje activado", value=st.session_state.modo_aprendizaje)
-
-st.sidebar.header("🎯 Probabilidad mínima")
-valor_seguro_umbral = min(95, max(50, int(st.session_state.confianza_umbral)))
-st.session_state.confianza_umbral = st.sidebar.slider(
-    "Probabilidad mínima para operar (%)",
-    min_value=50, max_value=95, value=valor_seguro_umbral, step=5,
-    help="50% = señales débiles | 65% = equilibrio | 80%+ = solo señales muy fuertes"
-)
-
-st.sidebar.header("🌍 Horario de operación")
-st.session_state.operar_24_7 = st.sidebar.checkbox(
-    "🔥 Operar 24/7 (sin restricción de horario)",
-    value=bool(st.session_state.operar_24_7)
-)
-
-st.sidebar.header("🧠 Indicadores")
-st.session_state.rsi_sobreventa = st.sidebar.number_input(
-    "RSI sobreventa", 20, 40, int(st.session_state.rsi_sobreventa), 1)
-st.session_state.rsi_sobrecompra = st.sidebar.number_input(
-    "RSI sobrecompra", 70, 90, int(st.session_state.rsi_sobrecompra), 1)
-st.session_state.ema_rapida = st.sidebar.number_input(
-    "EMA rápida", 3, 20, int(st.session_state.ema_rapida), 1)
-st.session_state.ema_lenta = st.sidebar.number_input(
-    "EMA lenta", 10, 50, int(st.session_state.ema_lenta), 1)
-
-st.sidebar.header("📡 Modo de operación")
-st.session_state.modo_solo_senales = st.sidebar.checkbox(
-    "🔇 Solo señales (no ejecutar)", value=st.session_state.modo_solo_senales)
-
-st.sidebar.caption("💰 La cartera se muestra en el panel principal (se refresca en cada ciclo).")
-st.sidebar.caption("📌 Las salidas de riesgo se aplican siempre, sin depender del horario ni "
-                   "de la fase. El límite de pérdida sale a mercado y protege incluso con "
-                   "'solo señales' activado; la toma de ganancia usa orden Maker.")
-# ===== BARRA LATERAL =====
+      # ===== BARRA LATERAL =====
 st.sidebar.header("⚙️ Configuración Principal")
 st.session_state.umbral_caida = st.sidebar.number_input(
     "Caída para comprar (%)", min_value=0.001, max_value=50.0, step=0.001,
@@ -1801,7 +1730,8 @@ st.sidebar.caption("📌 Las salidas de riesgo se aplican siempre, sin depender 
                    "de la fase. El límite de pérdida sale a mercado y protege incluso con "
                    "'solo señales' activado; la toma de ganancia usa orden Maker.")
 
-# ===== BOTÓN DE PÁNICO =====
+
+# ===== 🚨 BOTÓN DE PÁNICO =====
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🚨 Emergencia**")
 
@@ -1862,6 +1792,51 @@ if st.sidebar.button("🚨 CANCELAR TODAS LAS ÓRDENES EN BITSO", type="primary"
 
         time.sleep(1)
         st.rerun()
+
+
+# ===== 🧪 BOTÓN DE DIAGNÓSTICO FIREBASE (TEMPORAL) =====
+st.sidebar.markdown("---")
+st.sidebar.markdown("**🧪 Diagnóstico Firebase**")
+
+if st.sidebar.button("🧪 Probar conexión con Firebase"):
+    with st.sidebar.status("Probando...", expanded=True) as status:
+        try:
+            st.write(f"URL base: `{URL_BASE_FIREBASE}`")
+            resp_base = requests.get(f"{URL_BASE_FIREBASE}/.json?shallow=true", timeout=10)
+            st.write(f"Respuesta base: `{resp_base.status_code}`")
+
+            st.write(f"Ruta completa: `{URL_FIREBASE}`")
+            resp_ruta = requests.get(f"{URL_FIREBASE}/.json?shallow=true", timeout=10)
+            st.write(f"Respuesta ruta: `{resp_ruta.status_code}`")
+
+            if resp_ruta.status_code == 401 or "Permission denied" in resp_ruta.text:
+                st.error("❌ Error de permisos. Revisa las **Rules** en Firebase Console.")
+                status.update(label="Fallo de permisos", state="error")
+            elif resp_ruta.status_code == 404:
+                st.error(f"❌ Ruta no existe. Verifica que `RUTA_SECRETA = \"{RUTA_SECRETA}\"` coincida con las Rules.")
+                status.update(label="Ruta no existe", state="error")
+            elif resp_ruta.status_code == 200:
+                st.write("Intentando escribir dato de prueba...")
+                prueba_url = f"{URL_FIREBASE}/test_conexion.json"
+                resp_put = requests.put(
+                    prueba_url,
+                    json={"ok": True, "ts": time.time()},
+                    timeout=10
+                )
+                st.write(f"Respuesta escritura: `{resp_put.status_code}`")
+                if resp_put.status_code == 200:
+                    st.success("✅ ¡Conexión OK! La escritura funcionó.")
+                    status.update(label="Conexión exitosa", state="complete")
+                else:
+                    st.error(f"❌ Falló la escritura: {resp_put.text[:200]}")
+                    status.update(label="Fallo en la escritura", state="error")
+            else:
+                st.warning(f"⚠️ Status inesperado: {resp_ruta.status_code}")
+                status.update(label="Status inesperado", state="error")
+
+        except Exception as e:
+            st.error(f"❌ Excepción: {e}")
+            status.update(label="Excepción", state="error")
 # ══════════════════ BLOQUE 9/10: botones, cartera real, control manual y registro ══════════════════
 
 if st.sidebar.button("Reiniciar simulación"):
