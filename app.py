@@ -519,10 +519,9 @@ def obtener_saldo_bitso(usar_cache=True):
         st.session_state["error_saldo_bitso"] = f"Excepción consultando el saldo: {e}"
         print(f"Error consultando saldo: {e}")
         return None
-   # ══════════════════ BLOQUE 5/10: análisis y aprendizaje (parte A) ══════════════════
+  # ══════════════════ BLOQUE 5/10: análisis y aprendizaje (parte A) ══════════════════
 
 def obtener_miedo_codicia():
-    """Lee el índice Fear & Greed. Si falla, devuelve 50 (neutro)."""
     try:
         respuesta = requests.get("https://api.alternative.me/fng/", timeout=5)
         if respuesta.status_code == 200:
@@ -534,7 +533,6 @@ def obtener_miedo_codicia():
 
 
 def obtener_horario_operacion():
-    """Devuelve (estado, emoji, descripción, es_buen_horario)."""
     zona_mexico = timezone(timedelta(hours=-6))
     ahora = datetime.now(zona_mexico)
     hora = ahora.hour
@@ -779,10 +777,30 @@ def evaluar_rendimiento(simbolo):
         return {"accion": "MANTENER"}
 
 
+def limpiar_senales_del_historial():
+    """
+    Elimina del historial de operaciones cualquier entrada que sea una SEÑAL
+    (no una operación real). Se ejecuta una vez al arrancar la app.
+    """
+    if st.session_state.get("_senales_limpiadas"):
+        return
+    operaciones_limpias = []
+    eliminadas = 0
+    for marca, msg in st.session_state.operaciones:
+        if "📢" in msg or "SEÑAL" in msg:
+            eliminadas += 1
+            continue
+        operaciones_limpias.append((marca, msg))
+    if eliminadas > 0:
+        st.session_state.operaciones = operaciones_limpias
+        print(f"🧹 Limpié {eliminadas} señales del historial (no eran operaciones reales)")
+    st.session_state["_senales_limpiadas"] = True
+
+
 def analizar_fase_aprendizaje():
     """
     Analiza SOLO las operaciones reales cerradas (no las señales enviadas al canal).
-    Las señales se identifican con el prefijo 📢 y NO cuentan como operaciones.
+    Ignora cualquier entrada con 📢 o SEÑAL.
     """
     operaciones = st.session_state.operaciones
     if len(operaciones) < 3:
@@ -877,11 +895,11 @@ def analizar_fase_aprendizaje():
     if tasa_acierto < 40:
         st.session_state.confianza_umbral = min(95, st.session_state.confianza_umbral + 5)
         analisis["ajustes_aplicados"].append(
-            f"Umbral subido a {st.session_state.confianza_umbral}% (tasa de acierto baja)")
+            f"Umbral subido a {st.session_state.confianza_umbral}%")
     elif tasa_acierto > 65:
         st.session_state.confianza_umbral = max(50, st.session_state.confianza_umbral - 5)
         analisis["ajustes_aplicados"].append(
-            f"Umbral bajado a {st.session_state.confianza_umbral}% (tasa de acierto alta)")
+            f"Umbral bajado a {st.session_state.confianza_umbral}%")
     else:
         analisis["ajustes_aplicados"].append(
             f"Umbral mantenido en {st.session_state.confianza_umbral}%")
@@ -892,10 +910,10 @@ def analizar_fase_aprendizaje():
             tasa_simbolo = (estadisticas["wins"] / total_simbolo * 100)
             if tasa_simbolo < 30:
                 analisis["ajustes_aplicados"].append(
-                    f"{simbolo} rinde mal ({tasa_simbolo:.0f}% | ${estadisticas['profit']:.2f})")
+                    f"{simbolo} rinde mal ({tasa_simbolo:.0f}%)")
             elif tasa_simbolo > 70:
                 analisis["ajustes_aplicados"].append(
-                    f"{simbolo} rinde bien ({tasa_simbolo:.0f}% | ${estadisticas['profit']:.2f})")
+                    f"{simbolo} rinde bien ({tasa_simbolo:.0f}%)")
 
     if ganancia_promedio > 0:
         st.session_state.toma_ganancia = min(10.0, st.session_state.toma_ganancia * 1.1)
