@@ -519,7 +519,38 @@ def obtener_saldo_bitso(usar_cache=True):
         st.session_state["error_saldo_bitso"] = f"Excepción consultando el saldo: {e}"
         print(f"Error consultando saldo: {e}")
         return None
-    # ══════════════════ BLOQUE 5/10: análisis y aprendizaje ══════════════════
+   # ══════════════════ BLOQUE 5/10: análisis y aprendizaje (parte A) ══════════════════
+
+def obtener_miedo_codicia():
+    """Lee el índice Fear & Greed. Si falla, devuelve 50 (neutro)."""
+    try:
+        respuesta = requests.get("https://api.alternative.me/fng/", timeout=5)
+        if respuesta.status_code == 200:
+            datos = respuesta.json()
+            return int(datos['data'][0]['value']), datos['data'][0]['value_classification']
+    except Exception:
+        pass
+    return 50, "Neutral"
+
+
+def obtener_horario_operacion():
+    """Devuelve (estado, emoji, descripción, es_buen_horario)."""
+    zona_mexico = timezone(timedelta(hours=-6))
+    ahora = datetime.now(zona_mexico)
+    hora = ahora.hour
+    dia_semana = ahora.weekday()
+    if dia_semana >= 5:
+        return ("FIN DE SEMANA", "🛑", "Mercado con muy poca actividad.", False)
+    if 7 <= hora < 11:
+        return ("MEJOR HORARIO", "🔥", "Europa + USA activos.", True)
+    if (6 <= hora < 7) or (11 <= hora < 14):
+        return ("SESIÓN USA", "✅", "Sesión completa de EE.UU.", True)
+    if 2 <= hora < 6:
+        return ("APERTURA EUROPA", "⚠️", "Europa abre.", True)
+    if hora >= 20 or hora < 2:
+        return ("SESIÓN ASIA", "🚫", "Solo Asia. EVITAR operar.", False)
+    return ("TARDE / TRANSICIÓN", "🟡", "Entre USA y Asia.", False)
+
 
 def analizar_tendencia(historial, periodo=20):
     if len(historial) < periodo:
@@ -544,6 +575,194 @@ def analizar_tendencia(historial, periodo=20):
         return "VOLATIL"
     else:
         return "LATERAL"
+
+
+def obtener_tendencia_historica(simbolo="BTC", dias=30):
+    try:
+        identificador = "bitcoin" if simbolo == "BTC" else "ethereum"
+        url = (f"https://api.coingecko.com/api/v3/coins/{identificador}"
+               f"/market_chart?vs_currency=usd&days={dias}")
+        respuesta = requests.get(url, timeout=5)
+        if respuesta.status_code != 200:
+            return None
+        datos = respuesta.json()
+        precios = [p[1] for p in datos.get("prices", [])]
+        if len(precios) < 2:
+            return None
+        precio_actual = precios[-1]
+        precio_inicial = precios[0]
+        cambio_porcentual = (precio_actual - precio_inicial) / precio_inicial * 100
+        media_30 = sum(precios[-30:]) / 30 if len(precios) >= 30 else sum(precios) / len(precios)
+        if precio_actual > media_30 * 1.01:
+            tendencia = "ALCISTA"
+        elif precio_actual < media_30 * 0.99:
+            tendencia = "BAJISTA"
+        else:
+            tendencia = "LATERAL"
+        return {
+            "cambio_porcentual": cambio_porcentual,
+            "tendencia": tendencia,
+            "precio_actual": precio_actual,
+            "media_30": media_30
+        }
+    except Exception:
+        return None
+
+
+def obtener_volumen_onchain(simbolo="BTC"):
+    ahora = time.time()
+    cache = st.session_state.cache_onchain.get(simbolo, {"valor": None, "timestamp": 0})
+    valor_cache = cache.get("valor") if isinstance(cache, dict) else None
+    marca_cache = cache.get("timestamp", 0) if isinstance(cache, dict) else 0
+    if valor_cache is not None and (ahora - marca_cache) < 60:
+        return valor_cache
+    try:
+        moneda = "bitcoin" if simbolo == "BTC" else "ethereum"
+        url = f"https://api.coingecko.com/api/v3/coins/{moneda}/market_chart?vs_currency=usd&days=1"
+        respuesta = requests.get(url, timeout=5)
+        if respuesta.status_code == 200:
+            datos = respuesta.json()
+            volumenes = datos.get("total_volumes", [])
+            if volumenes:
+                volumen_usd = volumenes[-1][1] / 1e9
+                st.session_state.cache_onchain[simbolo] = {"valor": volumen_usd, "timestamp": ahora}
+                return volumen_usd
+    except Exception:
+        pass
+    return valor_cache
+
+
+def calcular_ema(precios, periodo):
+    if len(precios) < periodo:
+        return None
+    factor = 2 / (periodo + 1)
+    ema = precios[0]
+    for precio in precios[1:]:
+        ema = precio * factor + ema * (1 - factor)
+    return ema
+
+
+def calcular_rsi(precios, periodo=14):
+    if len(precios) < periodo + 1:
+        return 50
+    diferencias = [precios[i] - precios[i-1] for i in range(1, len(precios))]
+    subidas = [d if d > 0 else 0 for d in diferencias]
+    bajadas = [-d if d < 0 else 0 for d in diferencias]
+    promedio_subidas = sum(subidas[-periodo:]) / periodo
+    promedio_bajadas = sum(bajadas[-periodo:]) / periodo
+    if promedio_bajadas == 0:
+        return 100
+    fuerza_relativa = promedio_subidas / promedio_bajadas
+    return 100 - (100 / (1 + fuerza_relativa))
+
+
+def calcular_atr(precios, periodo=14):
+    if len(precios) < periodo + 1:
+        return None
+    atr = 0.0
+    for i in range(1, len(precios)):
+        rango = abs(precios[i] - precios[i-1])
+        if i == 1:
+            atr = rango
+        else:
+            atr = (atr * (periodo - 1) + rango) / periodo
+    return atr
+
+
+def calcular_probabilidad(confianza):
+    return min(100, max(0, confianza * 2.5))
+  # ══════════════════ BLOQUE 5/10: análisis y aprendizaje (parte B) ══════════════════
+
+def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
+    datos_tendencia = st.session_state.tendencia_historica.get(simbolo, {}) or {}
+    cambio_30d = datos_tendencia.get("cambio_porcentual", 0)
+    tendencia_30d = datos_tendencia.get("tendencia", "NEUTRAL")
+    volumen_onchain = obtener_volumen_onchain(simbolo)
+    historial = list(st.session_state.historial_precios.get(simbolo, []))
+    if len(historial) < 30:
+        return "HOLD", 0, "Datos insuficientes", {}
+
+    rsi = calcular_rsi(historial, 14)
+    peso_rsi = 20 if rsi <= 30 else -20 if rsi >= 70 else (50 - rsi) * 0.5
+
+    ema_rapida = calcular_ema(historial, st.session_state.ema_rapida)
+    ema_lenta = calcular_ema(historial, st.session_state.ema_lenta)
+    peso_ema = 0
+    if ema_rapida and ema_lenta:
+        if ema_rapida > ema_lenta:
+            peso_ema = 15
+        elif ema_rapida < ema_lenta:
+            peso_ema = -15
+        if len(historial) > 10:
+            ema_previa = calcular_ema(historial[:-1], st.session_state.ema_rapida)
+            if ema_previa and ema_rapida > ema_previa * 1.001:
+                peso_ema += 5
+            elif ema_previa and ema_rapida < ema_previa * 0.999:
+                peso_ema -= 5
+
+    peso_bandas = 0
+    if len(historial) >= 20:
+        media_20 = sum(historial[-20:]) / 20
+        desviacion_20 = statistics.stdev(historial[-20:]) if len(historial[-20:]) > 1 else 0
+        if precio > media_20 + 2*desviacion_20:
+            peso_bandas = -15
+        elif precio < media_20 - 2*desviacion_20:
+            peso_bandas = 15
+
+    peso_macd = 0
+    if len(historial) >= 26:
+        ema_12 = calcular_ema(historial, 12)
+        ema_26 = calcular_ema(historial, 26)
+        if ema_12 and ema_26:
+            macd = ema_12 - ema_26
+            if len(historial) >= 35:
+                historial_macd = []
+                for i in range(26, len(historial)):
+                    e12 = calcular_ema(historial[:i+1], 12)
+                    e26 = calcular_ema(historial[:i+1], 26)
+                    if e12 and e26:
+                        historial_macd.append(e12 - e26)
+                if len(historial_macd) >= 9:
+                    senal_macd = sum(historial_macd[-9:]) / 9
+                    if macd > senal_macd:
+                        peso_macd = 10
+                    elif macd < senal_macd:
+                        peso_macd = -10
+
+    peso_volumen = 0
+    if volumen_onchain is not None:
+        if volumen_onchain > 2.0:
+            peso_volumen = 10
+        elif volumen_onchain < VOLUMEN_MINIMO_24H:
+            peso_volumen = -5
+
+    peso_tendencia = 15 if tendencia_30d == "ALCISTA" else -15 if tendencia_30d == "BAJISTA" else 0
+    if abs(cambio_30d) > 20:
+        peso_tendencia *= 1.5
+
+    peso_miedo = (10 if valor_miedo_codicia <= 20
+                  else -10 if valor_miedo_codicia >= 80
+                  else (50 - valor_miedo_codicia) * 0.2)
+
+    peso_atr = 0
+    if len(historial) >= 14:
+        atr = calcular_atr(historial, 14)
+        if atr and precio > 0:
+            volatilidad_pct = (atr / precio) * 100
+            if volatilidad_pct > 3:
+                peso_atr = -5
+            elif volatilidad_pct < 1:
+                peso_atr = 5
+
+    puntuacion = (peso_rsi + peso_ema + peso_bandas + peso_macd + peso_volumen
+                  + peso_tendencia + peso_miedo + peso_atr)
+    confianza = abs(puntuacion)
+    if confianza < 20:
+        return "HOLD", confianza, f"Puntuación baja ({confianza:.1f})", {}
+    elif puntuacion > 0:
+        return "BUY", confianza, f"Señal de compra ({puntuacion:.1f})", {}
+    else:
+        return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
 
 
 def evaluar_rendimiento(simbolo):
@@ -571,10 +790,8 @@ def analizar_fase_aprendizaje():
 
     ventas = []
     for marca, msg in operaciones:
-        # 🔧 Ignorar señales enviadas al canal (no son operaciones reales)
         if "📢" in msg or "SEÑAL" in msg:
             continue
-        # 🔧 Solo contar operaciones de venta reales
         if "VENTA" not in msg:
             continue
         ventas.append({"ts": marca, "msg": msg})
@@ -652,7 +869,6 @@ def analizar_fase_aprendizaje():
         "ajustes_aplicados": []
     }
 
-    # 🔧 Solo ajustar parámetros si hay al menos 10 ventas reales
     if total_ventas < 10:
         analisis["ajustes_aplicados"].append(
             f"Sin ajustes: solo {total_ventas} ventas (mínimo 10 para ajustar)")
