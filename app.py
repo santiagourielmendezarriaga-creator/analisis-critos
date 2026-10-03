@@ -1819,6 +1819,10 @@ def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_oncha
         return False
  # ══════════════════ BLOQUE 10A/10: ciclo, panel, contador y refresco ══════════════════
 
+# 🔧 Duración de la auto-evaluación en minutos (antes eran 48 horas)
+MINUTOS_FASE_APRENDIZAJE = 5
+
+
 def _reconciliar_cartera():
     if not MODO_REAL:
         return
@@ -1990,10 +1994,38 @@ def ejecutar_ciclo(interfaz):
 
     estado_horario, emoji_horario, descripcion_horario, es_buen_horario = obtener_horario_operacion()
 
+    # ===== ENVÍO DE SEÑALES FUERTES AL CANAL =====
+    for sim_actual, senal_actual, conf_actual, razon_actual, prob_actual, precio_actual in [
+        ("BTC", senal_btc, confianza_btc, razon_btc, probabilidad_btc, btc),
+        ("ETH", senal_eth, confianza_eth, razon_eth, probabilidad_eth, eth),
+    ]:
+        if senal_actual != "HOLD" and prob_actual >= UMBRAL_SENAL_FUERTE:
+            clave_senal = f"ultima_senal_enviada_{sim_actual}"
+            ultima = st.session_state.get(clave_senal, 0)
+            if st.session_state.ciclo - ultima > 10:
+                datos_t30 = st.session_state.tendencia_historica.get(sim_actual, {}) or {}
+                cambio_t30 = datos_t30.get("cambio_porcentual", 0)
+                tendencia_t30 = datos_t30.get("tendencia", "N/A")
+                vol_onchain = (volumen_onchain_btc if sim_actual == "BTC"
+                               else volumen_onchain_eth)
+                if enviar_senal_telegram(
+                    sim_actual, senal_actual, precio_actual,
+                    razon_actual, conf_actual, vol_onchain,
+                    cambio_t30, tendencia_t30
+                ):
+                    st.session_state[clave_senal] = st.session_state.ciclo
+                    avisar(f"📢 Señal {senal_actual} {sim_actual} enviada al canal", "info")
+                    st.session_state.operaciones.append(
+                        (datetime.now(),
+                         f"📢 SEÑAL {senal_actual} {sim_actual} @ ${precio_actual:,.0f} | Prob {prob_actual:.0f}%")
+                    )
+
+    # ===== ÓRDENES PENDIENTES Y RECONCILIACIÓN =====
     _ejecutar_ordenes_pendientes()
     if st.session_state.ciclo % 12 == 0:
         _reconciliar_cartera()
 
+    # ===== SALIDAS POR REGLAS =====
     for simbolo_salida, precio_salida in [("BTC", btc), ("ETH", eth)]:
         if st.session_state.posiciones.get(simbolo_salida, 0) > 0:
             st.session_state.precio_maximo[simbolo_salida] = max(
@@ -2001,17 +2033,19 @@ def ejecutar_ciclo(interfaz):
                 precio_salida)
         _revisar_salidas(simbolo_salida, precio_salida)
 
+    # ===== FASE DE APRENDIZAJE (cada 5 minutos, no 48 horas) =====
     ahora = datetime.now()
     try:
         inicio_fase = datetime.fromisoformat(st.session_state.inicio_fase)
     except Exception:
         inicio_fase = ahora
         st.session_state.inicio_fase = ahora.isoformat()
-    horas_transcurridas = (ahora - inicio_fase).total_seconds() / 3600
-    horas_restantes = max(0, 48 - horas_transcurridas)
-    if horas_transcurridas >= 48 and st.session_state.fase_actual == "operando":
+    minutos_transcurridos = (ahora - inicio_fase).total_seconds() / 60
+    minutos_restantes = max(0, MINUTOS_FASE_APRENDIZAJE - minutos_transcurridos)
+
+    if minutos_transcurridos >= MINUTOS_FASE_APRENDIZAJE and st.session_state.fase_actual == "operando":
         st.session_state.fase_actual = "analizando"
-        enviar_telegram("🧠 **FASE DE ANÁLISIS INICIADA**")
+
     if st.session_state.fase_actual == "analizando":
         resultado = analizar_fase_aprendizaje()
         if resultado.get("suficiente"):
@@ -2040,8 +2074,8 @@ def ejecutar_ciclo(interfaz):
             "ETH": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []}
         }
         guardar_datos()
-        enviar_telegram("🔄 **NUEVA FASE DE 2 DÍAS INICIADA**")
 
+    # ===== TABLA =====
     interfaz["tabla"].subheader("📊 Señales + Volumen + Tendencia 30d")
     interfaz["tabla"].table({
         "Moneda": ["Bitcoin", "Ethereum"],
@@ -2073,7 +2107,8 @@ def ejecutar_ciclo(interfaz):
 
     if st.session_state.fase_actual == "operando":
         interfaz["fase"].info(
-            f"📅 **FASE OPERATIVA** — Próximo análisis en {horas_restantes:.1f} horas")
+            f"📅 **FASE OPERATIVA** — Próxima revisión en "
+            f"{minutos_restantes:.1f} min ({MINUTOS_FASE_APRENDIZAJE} min por ciclo)")
     else:
         interfaz["fase"].warning("🧠 **ANALIZANDO FASE**...")
 
