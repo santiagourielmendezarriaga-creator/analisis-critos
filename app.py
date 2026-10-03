@@ -519,152 +519,182 @@ def obtener_saldo_bitso(usar_cache=True):
         st.session_state["error_saldo_bitso"] = f"Excepción consultando el saldo: {e}"
         print(f"Error consultando saldo: {e}")
         return None
-      # ══════════════════ BLOQUE 5/10: órdenes de Bitso ══════════════════
+    # ══════════════════ BLOQUE 5/10: análisis y aprendizaje ══════════════════
 
-def colocar_orden_bitso(libro, lado, cantidad_mayor, precio, tipo="limit"):
+def analizar_tendencia(historial, periodo=20):
+    if len(historial) < periodo:
+        return "NEUTRAL"
+    datos = list(historial)[-periodo:]
+    inicio = datos[0]
+    final = datos[-1]
+    if not inicio:
+        return "NEUTRAL"
+    cambio = (final - inicio) / inicio * 100
+    volatilidad = 0
+    for i in range(1, len(datos)):
+        if not datos[i-1]:
+            continue
+        volatilidad += abs((datos[i] - datos[i-1]) / datos[i-1] * 100)
+    volatilidad = volatilidad / len(datos)
+    if cambio > 1.5 and volatilidad < 2:
+        return "ALCISTA"
+    elif cambio < -1.5 and volatilidad < 2:
+        return "BAJISTA"
+    elif volatilidad > 2:
+        return "VOLATIL"
+    else:
+        return "LATERAL"
+
+
+def evaluar_rendimiento(simbolo):
+    rend = st.session_state.rendimiento[simbolo]
+    total = rend["total"]
+    if total < 5:
+        return {"accion": "MANTENER"}
+    proporcion = rend["ganadas"] / total
+    if proporcion > 0.6:
+        return {"accion": "AUMENTAR_RIESGO"}
+    elif proporcion < 0.4:
+        return {"accion": "REDUCIR_RIESGO"}
+    else:
+        return {"accion": "MANTENER"}
+
+
+def analizar_fase_aprendizaje():
     """
-    Coloca una orden en Bitso.
-      tipo="limit"  → orden Maker con precio
-      tipo="market" → orden a mercado, sin precio (llenado inmediato)
-    Las salidas de pánico usan mercado.
+    Analiza SOLO las operaciones reales cerradas (no las señales enviadas al canal).
+    Las señales se identifican con el prefijo 📢 y NO cuentan como operaciones.
     """
-    if not MODO_REAL:
-        print("⚠️ MODO_REAL desactivado.")
-        return None
-    try:
-        ruta = "/v3/orders/"
-        cuerpo = {"book": libro, "side": lado, "type": tipo, "major": str(cantidad_mayor)}
-        if tipo != "market":
-            cuerpo["price"] = str(precio)
-        cuerpo_json = json.dumps(cuerpo, separators=(',', ':'))
-        cabecera, _ = _crear_cabecera_autenticacion("POST", ruta, cuerpo_json)
-        if not cabecera:
-            return None
-        cabeceras = {
-            "Authorization": cabecera,
-            "Content-Type": "application/json"
-        }
-        url = URL_BASE_BITSO + ruta
-        respuesta = requests.post(url, data=cuerpo_json, headers=cabeceras, timeout=15)
-        datos = respuesta.json()
-        if respuesta.status_code == 200 and isinstance(datos, dict) and datos.get("success"):
-            orden = datos.get("payload", {})
-            print(f"✅ Orden {tipo} colocada: {orden.get('oid')}")
-            return orden
-        error = datos.get("error", {}) if isinstance(datos, dict) else {}
-        mensaje_error = error.get("message") or str(datos)[:200] or "Error desconocido"
-        print(f"❌ Error al colocar la orden {tipo}: {mensaje_error}")
-        return {"error": mensaje_error}
-    except Exception as e:
-        print(f"❌ Excepción colocando la orden: {e}")
-        return {"error": str(e)}
+    operaciones = st.session_state.operaciones
+    if len(operaciones) < 3:
+        return {"suficiente": False, "razon": f"Solo {len(operaciones)} eventos."}
 
-def obtener_estado_orden(oid):
-    """Consulta el estado de una orden por su ID."""
-    if not MODO_REAL:
-        return None
-    try:
-        ruta = f"/v3/orders/{oid}/"
-        cabecera, _ = _crear_cabecera_autenticacion("GET", ruta)
-        if not cabecera:
-            return None
-        cabeceras = {"Authorization": cabecera}
-        url = URL_BASE_BITSO + ruta
-        respuesta = requests.get(url, headers=cabeceras, timeout=10)
-        if respuesta.status_code == 200:
-            datos = respuesta.json()
-            if isinstance(datos, dict) and datos.get("success"):
-                carga = datos.get("payload")
-                if isinstance(carga, dict):
-                    return carga
-        return None
-    except Exception as e:
-        print(f"Error consultando la orden {oid}: {e}")
-        return None
+    ventas = []
+    for marca, msg in operaciones:
+        # 🔧 Ignorar señales enviadas al canal (no son operaciones reales)
+        if "📢" in msg or "SEÑAL" in msg:
+            continue
+        # 🔧 Solo contar operaciones de venta reales
+        if "VENTA" not in msg:
+            continue
+        ventas.append({"ts": marca, "msg": msg})
 
-def cancelar_orden_bitso(oid):
-    if not MODO_REAL:
-        return False
-    try:
-        ruta = f"/v3/orders/{oid}/"
-        cabecera, _ = _crear_cabecera_autenticacion("DELETE", ruta)
-        if not cabecera:
-            return False
-        cabeceras = {"Authorization": cabecera}
-        url = URL_BASE_BITSO + ruta
-        respuesta = requests.delete(url, headers=cabeceras, timeout=10)
-        if respuesta.status_code == 200:
-            datos = respuesta.json()
-            if isinstance(datos, dict) and datos.get("success"):
-                print(f"✅ Orden {oid} cancelada")
-                return True
-        return False
-    except Exception as e:
-        print(f"Error cancelando la orden {oid}: {e}")
-        return False
+    if len(ventas) == 0:
+        return {"suficiente": False, "razon": "No hay ventas cerradas."}
 
-def verificar_orden_pendiente(simbolo):
-    """
-    Verifica si hay una orden pendiente para `simbolo`.
-    Devuelve SIEMPRE la orden almacenada (con monto/precio/cantidad/lado), no el payload.
-    El vencimiento de 10 minutos se evalúa SIN depender del estado que devuelva Bitso:
-    antes, si la API no daba un estado legible, la clave quedaba bloqueada para siempre.
-    """
-    clave_orden = f"orden_pendiente_{simbolo}"
-    orden = st.session_state.get(clave_orden)
+    ganancias = 0
+    perdidas = 0
+    ganancias_totales = 0.0
+    horarios = {}
+    simbolos = {
+        "BTC": {"wins": 0, "losses": 0, "profit": 0.0},
+        "ETH": {"wins": 0, "losses": 0, "profit": 0.0}
+    }
 
-    if not isinstance(orden, dict):
-        st.session_state[clave_orden] = None
-        return "sin_orden", None
+    for venta in ventas:
+        msg = venta["msg"]
+        hora = venta["ts"].hour
+        horarios.setdefault(hora, {"wins": 0, "losses": 0, "profit": 0.0})
+        ganancia = 0.0
+        coincidencia = re.search(r"PROFIT:\s*([+-]?\$?[\d,]+\.?\d*)", msg)
+        if coincidencia:
+            texto_ganancia = coincidencia.group(1).replace("$", "").replace(",", "")
+            try:
+                ganancia = float(texto_ganancia)
+            except (TypeError, ValueError):
+                ganancia = 0.0
+        ganancias_totales += ganancia
 
-    oid = orden.get("oid")
-    if not oid:
-        st.session_state[clave_orden] = None
-        return "sin_orden", None
+        if ganancia > 0:
+            ganancias += 1
+            horarios[hora]["wins"] += 1
+            horarios[hora]["profit"] += ganancia
+            for simbolo in simbolos:
+                if simbolo in msg:
+                    simbolos[simbolo]["wins"] += 1
+                    simbolos[simbolo]["profit"] += ganancia
+        else:
+            perdidas += 1
+            horarios[hora]["losses"] += 1
+            horarios[hora]["profit"] += ganancia
+            for simbolo in simbolos:
+                if simbolo in msg:
+                    simbolos[simbolo]["losses"] += 1
+                    simbolos[simbolo]["profit"] += ganancia
 
-    creada = float(orden.get("timestamp", time.time()) or time.time())
-    vencida = (time.time() - creada) > 600
+    total_ventas = ganancias + perdidas
+    tasa_acierto = (ganancias / total_ventas * 100) if total_ventas > 0 else 0
+    ganancia_promedio = ganancias_totales / total_ventas if total_ventas > 0 else 0
 
-    if not MODO_REAL:
-        st.session_state[clave_orden] = None
-        return "ejecutada", orden
+    mejor_hora = None
+    peor_hora = None
+    mejor_ganancia = -999999
+    peor_ganancia = 999999
+    for hora, datos_hora in horarios.items():
+        if datos_hora["profit"] > mejor_ganancia:
+            mejor_ganancia = datos_hora["profit"]
+            mejor_hora = hora
+        if datos_hora["profit"] < peor_ganancia:
+            peor_ganancia = datos_hora["profit"]
+            peor_hora = hora
 
-    estado_orden = None
-    try:
-        estado_orden = obtener_estado_orden(oid)
-    except Exception as e:
-        print(f"Error consultando la orden {oid}: {e}")
+    analisis = {
+        "suficiente": True,
+        "total_operaciones": total_ventas,
+        "ganancias": ganancias,
+        "perdidas": perdidas,
+        "win_rate": tasa_acierto,
+        "profit_total": ganancias_totales,
+        "profit_promedio": ganancia_promedio,
+        "mejor_hora": mejor_hora,
+        "peor_hora": peor_hora,
+        "simbolos": simbolos,
+        "ajustes_aplicados": []
+    }
 
-    if isinstance(estado_orden, dict):
-        estado = estado_orden.get("status")
-        if estado in ["completed", "filled"]:
-            orden = dict(orden)
-            orden["ejecucion"] = estado_orden
-            st.session_state[clave_orden] = None
-            return "ejecutada", orden
-        if estado == "cancelled":
-            st.session_state[clave_orden] = None
-            return "cancelada", None
+    # 🔧 Solo ajustar parámetros si hay al menos 10 ventas reales
+    if total_ventas < 10:
+        analisis["ajustes_aplicados"].append(
+            f"Sin ajustes: solo {total_ventas} ventas (mínimo 10 para ajustar)")
+        return analisis
 
-    if vencida:
-        try:
-            cancelar_orden_bitso(oid)
-        except Exception:
-            pass
-        st.session_state[clave_orden] = None
-        return "cancelada", None
+    if tasa_acierto < 40:
+        st.session_state.confianza_umbral = min(95, st.session_state.confianza_umbral + 5)
+        analisis["ajustes_aplicados"].append(
+            f"Umbral subido a {st.session_state.confianza_umbral}% (tasa de acierto baja)")
+    elif tasa_acierto > 65:
+        st.session_state.confianza_umbral = max(50, st.session_state.confianza_umbral - 5)
+        analisis["ajustes_aplicados"].append(
+            f"Umbral bajado a {st.session_state.confianza_umbral}% (tasa de acierto alta)")
+    else:
+        analisis["ajustes_aplicados"].append(
+            f"Umbral mantenido en {st.session_state.confianza_umbral}%")
 
-    return "pendiente", orden
+    for simbolo, estadisticas in simbolos.items():
+        total_simbolo = estadisticas["wins"] + estadisticas["losses"]
+        if total_simbolo >= 5:
+            tasa_simbolo = (estadisticas["wins"] / total_simbolo * 100)
+            if tasa_simbolo < 30:
+                analisis["ajustes_aplicados"].append(
+                    f"{simbolo} rinde mal ({tasa_simbolo:.0f}% | ${estadisticas['profit']:.2f})")
+            elif tasa_simbolo > 70:
+                analisis["ajustes_aplicados"].append(
+                    f"{simbolo} rinde bien ({tasa_simbolo:.0f}% | ${estadisticas['profit']:.2f})")
 
-def obtener_miedo_codicia():
-    try:
-        respuesta = requests.get("https://api.alternative.me/fng/", timeout=5)
-        if respuesta.status_code == 200:
-            datos = respuesta.json()
-            return int(datos['data'][0]['value']), datos['data'][0]['value_classification']
-    except Exception:
-        pass
-    return 50, "Neutral"
+    if ganancia_promedio > 0:
+        st.session_state.toma_ganancia = min(10.0, st.session_state.toma_ganancia * 1.1)
+        analisis["ajustes_aplicados"].append(
+            f"Toma de ganancia aumentada a {st.session_state.toma_ganancia:.3f}%")
+    elif ganancia_promedio < 0:
+        st.session_state.toma_ganancia = max(0.5, st.session_state.toma_ganancia * 0.9)
+        st.session_state.limite_perdida = max(0.5, st.session_state.limite_perdida * 0.9)
+        analisis["ajustes_aplicados"].append(
+            "Toma de ganancia y límite de pérdida reducidos")
+    else:
+        analisis["ajustes_aplicados"].append(
+            "Toma de ganancia y límite de pérdida sin cambios")
+
+    return analisis
   # ══════════════════ BLOQUE 6/10: análisis y aprendizaje ══════════════════
 
 def analizar_tendencia(historial, periodo=20):
@@ -1930,9 +1960,8 @@ def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_oncha
         return True
     except Exception:
         return False
- # ══════════════════ BLOQUE 10A/10: ciclo, panel, contador y refresco ══════════════════
+# ══════════════════ BLOQUE 10A/10: ciclo, panel, contador y refresco ══════════════════
 
-# 🔧 Duración de la auto-evaluación en minutos (antes eran 48 horas)
 MINUTOS_FASE_APRENDIZAJE = 5
 
 
@@ -2107,7 +2136,7 @@ def ejecutar_ciclo(interfaz):
 
     estado_horario, emoji_horario, descripcion_horario, es_buen_horario = obtener_horario_operacion()
 
-    # ===== ENVÍO DE SEÑALES FUERTES AL CANAL =====
+    # ===== ENVÍO DE SEÑALES AL CANAL (sin guardar en operaciones) =====
     for sim_actual, senal_actual, conf_actual, razon_actual, prob_actual, precio_actual in [
         ("BTC", senal_btc, confianza_btc, razon_btc, probabilidad_btc, btc),
         ("ETH", senal_eth, confianza_eth, razon_eth, probabilidad_eth, eth),
@@ -2128,10 +2157,7 @@ def ejecutar_ciclo(interfaz):
                 ):
                     st.session_state[clave_senal] = st.session_state.ciclo
                     avisar(f"📢 Señal {senal_actual} {sim_actual} enviada al canal", "info")
-                    st.session_state.operaciones.append(
-                        (datetime.now(),
-                         f"📢 SEÑAL {senal_actual} {sim_actual} @ ${precio_actual:,.0f} | Prob {prob_actual:.0f}%")
-                    )
+                    # 🔧 NO se guarda en operaciones (eso era el bug)
 
     # ===== ÓRDENES PENDIENTES Y RECONCILIACIÓN =====
     _ejecutar_ordenes_pendientes()
@@ -2146,7 +2172,7 @@ def ejecutar_ciclo(interfaz):
                 precio_salida)
         _revisar_salidas(simbolo_salida, precio_salida)
 
-    # ===== FASE DE APRENDIZAJE (cada 5 minutos, no 48 horas) =====
+    # ===== FASE DE APRENDIZAJE =====
     ahora = datetime.now()
     try:
         inicio_fase = datetime.fromisoformat(st.session_state.inicio_fase)
