@@ -1285,7 +1285,7 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
         return "BUY", confianza, f"Señal de compra ({puntuacion:.1f})", {}
     else:
         return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
-    # ══════════════════ BLOQUE 8/10: interfaz, cartera, salidas y contador ══════════════════
+   # ══════════════════ BLOQUE 8/10: interfaz, cartera, salidas y contador ══════════════════
 
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
@@ -1346,7 +1346,6 @@ for nombre, valor_predeterminado in variables_requeridas.items():
     if nombre not in st.session_state:
         st.session_state[nombre] = valor_predeterminado
 
-# 🧹 Limpieza automática: borra señales viejas del historial
 limpiar_senales_del_historial()
 
 st.session_state.toma_ganancia = max(0.5, _a_decimal(st.session_state.get("toma_ganancia", 2.0), 2.0))
@@ -1370,7 +1369,6 @@ if not TELEGRAM_CONFIGURADO:
     )
 
 
-# ===== FUNCIONES DE REGISTRO CONTABLE =====
 def _aplicar_compra(simbolo, monto, precio, comision=COMISION):
     cantidad = (monto * (1 - comision)) / precio
     cantidad_previa = float(st.session_state.posiciones.get(simbolo, 0.0))
@@ -1597,7 +1595,7 @@ def ejecutar_compra_profesional(simbolo, precio, confianza, razon, tendencia_30d
     probabilidad = calcular_probabilidad(confianza)
     volumen = obtener_volumen_onchain(simbolo)
     if volumen is not None and volumen < VOLUMEN_MINIMO_24H:
-        avisar(f"⚠️ Volumen 24h bajo ({volumen:.2f}B): compra {simbolo} omitida", "warning")
+        avisar(f"⚠️ Volumen 24h bajo ({volumen:.2f}B)", "warning")
         return
 
     clave_orden = f"orden_pendiente_{simbolo}"
@@ -1731,7 +1729,6 @@ st.sidebar.caption("📌 Las salidas de riesgo se aplican siempre, sin depender 
                    "de la fase. El límite de pérdida sale a mercado y protege incluso con "
                    "'solo señales' activado; la toma de ganancia usa orden Maker.")
 
-# ===== SECCIÓN DE TELEGRAM =====
 st.sidebar.markdown("---")
 st.sidebar.markdown("**📡 Telegram**")
 
@@ -1763,8 +1760,6 @@ if st.sidebar.button("📢 Probar Telegram (canal)"):
         else:
             st.sidebar.error("❌ Falló el envío al canal")
 
-
-# ===== 🚨 BOTÓN DE PÁNICO =====
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🚨 Emergencia**")
 
@@ -1826,8 +1821,6 @@ if st.sidebar.button("🚨 CANCELAR TODAS LAS ÓRDENES EN BITSO", type="primary"
         time.sleep(1)
         st.rerun()
 
-
-# ===== 🧪 DIAGNÓSTICO FIREBASE =====
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🧪 Diagnóstico Firebase**")
 
@@ -1872,7 +1865,6 @@ if st.sidebar.button("🧪 Probar conexión con Firebase"):
             status.update(label="Excepción", state="error")
 
 
-# ===== COMPRA MANUAL =====
 def _compra_manual(simbolo, libro):
     with st.sidebar.expander(f"🔍 Diagnóstico de compra {simbolo}", expanded=True):
         precio = obtener_precio_bitso(libro)
@@ -1931,7 +1923,6 @@ if st.sidebar.button("🟢 Comprar ETH AHORA"):
     _compra_manual("ETH", "eth_mxn")
 
 
-# ===== ENVÍO DE SEÑALES AL CANAL =====
 def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_onchain,
                           cambio_30d, tendencia_30d):
     try:
