@@ -1412,7 +1412,7 @@ if st.sidebar.button("🧪 Probar conexión con Firebase"):
         except Exception as e:
             st.error(f"❌ Excepción: {e}")
             status.update(label="Excepción", state="error")
-          # ══════════════════ BLOQUE 8/10: interfaz, cartera, salidas y contador ══════════════════
+    # ══════════════════ BLOQUE 8/10: interfaz, cartera, salidas y contador ══════════════════
 
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
@@ -1473,10 +1473,21 @@ for nombre, valor_predeterminado in variables_requeridas.items():
     if nombre not in st.session_state:
         st.session_state[nombre] = valor_predeterminado
 
-# 🔧 FIX BUG: limpiar señales del historial
-limpiar_senales_del_historial()
+# 🔧 FIX BUG: limpieza inline (no depende de función externa)
+if not st.session_state.get("_senales_limpiadas"):
+    _ops_limpias = []
+    _eliminadas = 0
+    for _marca, _msg in st.session_state.operaciones:
+        if "📢" in _msg or "SEÑAL" in _msg:
+            _eliminadas += 1
+            continue
+        _ops_limpias.append((_marca, _msg))
+    if _eliminadas > 0:
+        st.session_state.operaciones = _ops_limpias
+        print(f"🧹 Limpié {_eliminadas} señales del historial")
+    st.session_state["_senales_limpiadas"] = True
 
-# 🔧 FIX BUG: forzar TP=5%, SL=1% y umbral=65% (ignorar auto-ajustes)
+# 🔧 FIX BUG: forzar TP=5%, SL=1%, umbral=65% (ignorar auto-ajustes)
 st.session_state.toma_ganancia = 5.0
 st.session_state.limite_perdida = 1.0
 st.session_state.confianza_umbral = 65
