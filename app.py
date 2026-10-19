@@ -693,14 +693,19 @@ def calcular_atr(precios, periodo=14):
 
 def calcular_probabilidad(confianza):
     return min(100, max(0, confianza * 2.5))
-    # ══════════════════ PARTE 6/11: análisis avanzado y aprendizaje ══════════════════
+   # ══════════════════ PARTE 6/11: análisis avanzado y aprendizaje ══════════════════
 
 def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
     datos_tendencia = st.session_state.tendencia_historica.get(simbolo, {}) or {}
     cambio_30d = datos_tendencia.get("cambio_porcentual", 0)
     tendencia_30d = datos_tendencia.get("tendencia", "NEUTRAL")
+    
+    # Tendencia local (calculada en el ciclo con los últimos 20 precios)
+    tendencia_local = st.session_state.tendencia.get(simbolo, "NEUTRAL")
+    
     volumen_onchain = obtener_volumen_onchain(simbolo)
     historial = list(st.session_state.historial_precios.get(simbolo, []))
+    
     if len(historial) < 30:
         return "HOLD", 0, "Datos insuficientes", {}
 
@@ -779,6 +784,21 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
     puntuacion = (peso_rsi + peso_ema + peso_bandas + peso_macd + peso_volumen
                   + peso_tendencia + peso_miedo + peso_atr)
     confianza = abs(puntuacion)
+
+    # ═══════════════════════════════════════════════════════════════
+    # 🛡️ FILTRO DE SEGURIDAD: BLOQUEO POR TENDENCIA
+    # ═══════════════════════════════════════════════════════════════
+    # Si la tendencia es bajista y quiere comprar, bloquea la compra
+    if tendencia_30d == "BAJISTA" or tendencia_local == "BAJISTA":
+        if puntuacion > 0:
+            return "HOLD", 0, "Bloqueado: tendencia BAJISTA (no se compra)", {}
+    
+    # Si la tendencia es alcista y quiere vender, bloquea la venta
+    if tendencia_30d == "ALCISTA" or tendencia_local == "ALCISTA":
+        if puntuacion < 0:
+            return "HOLD", 0, "Bloqueado: tendencia ALCISTA (no se vende)", {}
+
+    # Lógica normal si la tendencia no bloquea
     if confianza < 20:
         return "HOLD", confianza, f"Puntuación baja ({confianza:.1f})", {}
     elif puntuacion > 0:
@@ -876,6 +896,7 @@ def analizar_fase_aprendizaje():
         "ajustes_aplicados": []
     }
 
+    # Solo ajustar parámetros si hay al menos 10 ventas reales
     if total_ventas < 10:
         analisis["ajustes_aplicados"].append(
             f"Sin ajustes: solo {total_ventas} ventas (mínimo 10)")
