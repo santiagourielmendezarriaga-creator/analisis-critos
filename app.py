@@ -1227,55 +1227,209 @@ if st.sidebar.button("🟢 Comprar BTC AHORA"):
 if st.sidebar.button("🟢 Comprar ETH AHORA"):
     _compra_manual("ETH", "eth_mxn")
     # ══════════════════ PARTE 9/11: ciclo principal ══════════════════
-# ===== ENVÍO DE SEÑALES AL CANAL =====
-for sim_actual, senal_actual, conf_actual, razon_actual, prob_actual, precio_actual in [
-    ("BTC", senal_btc, confianza_btc, razon_btc, probabilidad_btc, btc),
-    ("ETH", senal_eth, confianza_eth, razon_eth, probabilidad_eth, eth),
-]:
-    if senal_actual != "HOLD" and prob_actual >= UMBRAL_SENAL_FUERTE:
-        clave_senal = f"ultima_senal_enviada_{sim_actual}"
-        ultima = st.session_state.get(clave_senal, 0)
-        
-        if st.session_state.ciclo - ultima > 10:
-            
-            # 🧠 VALIDACIÓN CON INTELIGENCIA ARTIFICIAL (GEMINI)
-            cache = st.session_state["ia_cache"][sim_actual]
-            ahora = time.time()
-            
-            # Solo pregunta a la IA si pasaron 5 min o si la señal cambió
-            if (ahora - cache.get("ts", 0)) > 300 or cache.get("senal") != senal_actual:
-                datos_t30 = st.session_state.tendencia_historica.get(sim_actual, {}) or {}
-                contexto_str = f"Tendencia 30d: {datos_t30.get('tendencia', 'N/A')}, Volumen: {volumen_onchain_btc if sim_actual == 'BTC' else volumen_onchain_eth}B"
-                
-                senal_ia, razon_ia = consultar_gemini(
-                    sim_actual, precio_actual, senal_actual, razon_actual, contexto_str
-                )
-                
-                st.session_state["ia_cache"][sim_actual] = {
-                    "senal": senal_actual, 
-                    "ts": ahora
-                }
-                
-                if senal_ia != senal_actual:
-                    avisar(f"🧠 IA bloqueó {senal_actual} de {sim_actual}: {razon_ia}", "warning")
-                    continue # Se salta el envío a Telegram
-                    
-                # Si la IA aprueba, le agregamos su opinión a la razón
-                razon_actual = f"{razon_actual} | 🧠 IA: {razon_ia}"
+# ══════════════════ PARTE 9/11: ciclo principal ══════════════════
 
-            # Envío normal a Telegram
-            datos_t30 = st.session_state.tendencia_historica.get(sim_actual, {}) or {}
-            cambio_t30 = datos_t30.get("cambio_porcentual", 0)
-            tendencia_t30 = datos_t30.get("tendencia", "N/A")
-            vol_onchain = (volumen_onchain_btc if sim_actual == "BTC" else volumen_onchain_eth)
+MINUTOS_FASE_APRENDIZAJE = 5
+
+def _respaldos_automaticos():
+    ahora = time.time()
+    if "ultimo_respaldo_auto" not in st.session_state or not st.session_state.ultimo_respaldo_auto:
+        st.session_state.ultimo_respaldo_auto = ahora
+    if (ahora - float(st.session_state.ultimo_respaldo_auto)) / 3600 >= 24:
+        try:
+            clave_respaldo, _ = crear_respaldo()
+            if clave_respaldo:
+                st.session_state.ultimo_respaldo_auto = ahora
+                limpiar_respaldos_viejos(maximo_respaldos=10)
+        except Exception:
+            pass
+
+
+def ejecutar_ciclo(interfaz):
+    btc = obtener_precio_bitso("btc_mxn")
+    eth = obtener_precio_bitso("eth_mxn")
+    if btc is None or eth is None:
+        interfaz["tabla"].error("❌ Error al obtener los precios.")
+        return
+
+    st.session_state.ultimo_precio["BTC"] = btc
+    st.session_state.ultimo_precio["ETH"] = eth
+    st.session_state.historial_precios["BTC"].append(btc)
+    st.session_state.historial_precios["ETH"].append(eth)
+
+    if st.session_state.precio_referencia["BTC"] == 0:
+        st.session_state.precio_referencia["BTC"] = btc
+        st.session_state.precio_referencia["ETH"] = eth
+
+    hoy = datetime.now().day
+    if hoy != st.session_state.ultimo_dia:
+        st.session_state.ops_del_dia = 0
+        st.session_state.ultimo_dia = hoy
+        st.session_state.monto_del_dia = 0.0
+
+    st.session_state.ciclo += 1
+    if st.session_state.ciclo % 5 == 0:
+        guardar_datos()
+
+    _respaldos_automaticos()
+
+    valor_miedo, etiqueta_miedo = obtener_miedo_codicia()
+    ref_btc = st.session_state.precio_referencia["BTC"]
+    ref_eth = st.session_state.precio_referencia["ETH"]
+    cambio_btc = (btc - ref_btc) / ref_btc * 100
+    cambio_eth = (eth - ref_eth) / ref_eth * 100
+
+    st.session_state.tendencia["BTC"] = analizar_tendencia(st.session_state.historial_precios["BTC"])
+    st.session_state.tendencia["ETH"] = analizar_tendencia(st.session_state.historial_precios["ETH"])
+
+    for simbolo in ["BTC", "ETH"]:
+        if st.session_state.ciclo % 60 == 1 or not st.session_state.tendencia_historica.get(simbolo):
+            tendencia = obtener_tendencia_historica(simbolo, 30)
+            if tendencia:
+                st.session_state.tendencia_historica[simbolo] = tendencia
+
+    umbral_ind = st.session_state.umbral_indicadores_activacion
+    st.session_state.indicadores_activados["BTC"] = abs(cambio_btc) >= umbral_ind
+    st.session_state.indicadores_activados["ETH"] = abs(cambio_eth) >= umbral_ind
+
+    volumen_onchain_btc = obtener_volumen_onchain("BTC")
+    volumen_onchain_eth = obtener_volumen_onchain("ETH")
+    tendencia_btc = st.session_state.tendencia_historica.get("BTC", {}) or {}
+    tendencia_eth = st.session_state.tendencia_historica.get("ETH", {}) or {}
+
+    # ⬇️ ESTA ERA LA PARTE QUE SE HABÍA BORRADO ⬇️
+    senal_btc, confianza_btc, razon_btc, _ = analisis_avanzado("BTC", btc, valor_miedo)
+    senal_eth, confianza_eth, razon_eth, _ = analisis_avanzado("ETH", eth, valor_miedo)
+
+    probabilidad_btc = calcular_probabilidad(confianza_btc)
+    probabilidad_eth = calcular_probabilidad(confianza_eth)
+    umbral_probabilidad = st.session_state.confianza_umbral
+
+    estado_horario, emoji_horario, descripcion_horario, es_buen_horario = obtener_horario_operacion()
+
+    # ===== ENVÍO DE SEÑALES AL CANAL (CON VALIDACIÓN DE IA) =====
+    for sim_actual, senal_actual, conf_actual, razon_actual, prob_actual, precio_actual in [
+        ("BTC", senal_btc, confianza_btc, razon_btc, probabilidad_btc, btc),
+        ("ETH", senal_eth, confianza_eth, razon_eth, probabilidad_eth, eth),
+    ]:
+        if senal_actual != "HOLD" and prob_actual >= UMBRAL_SENAL_FUERTE:
+            clave_senal = f"ultima_senal_enviada_{sim_actual}"
+            ultima = st.session_state.get(clave_senal, 0)
             
-            if enviar_senal_telegram(
-                sim_actual, senal_actual, precio_actual,
-                razon_actual, conf_actual, vol_onchain,
-                cambio_t30, tendencia_t30
-            ):
-                st.session_state[clave_senal] = st.session_state.ciclo
-                avisar(f"📢 Señal {senal_actual} {sim_actual} → canal", "info")
+            if st.session_state.ciclo - ultima > 10:
+                
+                # 🧠 VALIDACIÓN CON INTELIGENCIA ARTIFICIAL (GEMINI)
+                cache = st.session_state["ia_cache"][sim_actual]
+                ahora_ia = time.time()
+                
+                # Solo pregunta a la IA si pasaron 5 min o si la señal cambió
+                if (ahora_ia - cache.get("ts", 0)) > 300 or cache.get("senal") != senal_actual:
+                    datos_t30 = st.session_state.tendencia_historica.get(sim_actual, {}) or {}
+                    contexto_str = f"Tendencia 30d: {datos_t30.get('tendencia', 'N/A')}, Volumen: {volumen_onchain_btc if sim_actual == 'BTC' else volumen_onchain_eth}B"
+                    
+                    senal_ia, razon_ia = consultar_gemini(
+                        sim_actual, precio_actual, senal_actual, razon_actual, contexto_str
+                    )
+                    
+                    st.session_state["ia_cache"][sim_actual] = {
+                        "senal": senal_actual, 
+                        "ts": ahora_ia
+                    }
+                    
+                    if senal_ia != senal_actual:
+                        avisar(f"🧠 IA bloqueó {senal_actual} de {sim_actual}: {razon_ia}", "warning")
+                        continue # Se salta el envío a Telegram porque la IA lo bloqueó
+                        
+                    # Si la IA aprueba, le agregamos su opinión a la razón
+                    razon_actual = f"{razon_actual} | 🧠 IA: {razon_ia}"
+
+                # Envío normal a Telegram
+                datos_t30 = st.session_state.tendencia_historica.get(sim_actual, {}) or {}
+                cambio_t30 = datos_t30.get("cambio_porcentual", 0)
+                tendencia_t30 = datos_t30.get("tendencia", "N/A")
+                vol_onchain = (volumen_onchain_btc if sim_actual == "BTC" else volumen_onchain_eth)
+                
+                if enviar_senal_telegram(
+                    sim_actual, senal_actual, precio_actual,
+                    razon_actual, conf_actual, vol_onchain,
+                    cambio_t30, tendencia_t30
+                ):
+                    st.session_state[clave_senal] = st.session_state.ciclo
+                    avisar(f"📢 Señal {senal_actual} {sim_actual} → canal", "info")
+
+    # ===== FASE DE APRENDIZAJE =====
+    ahora = datetime.now()
+    try:
+        inicio_fase = datetime.fromisoformat(st.session_state.inicio_fase)
+    except Exception:
+        inicio_fase = ahora
+        st.session_state.inicio_fase = ahora.isoformat()
+    minutos_transcurridos = (ahora - inicio_fase).total_seconds() / 60
+    minutos_restantes = max(0, MINUTOS_FASE_APRENDIZAJE - minutos_transcurridos)
+
+    if minutos_transcurridos >= MINUTOS_FASE_APRENDIZAJE and st.session_state.fase_actual == "operando":
+        st.session_state.fase_actual = "analizando"
+
+    if st.session_state.fase_actual == "analizando":
+        resultado = analizar_fase_aprendizaje()
+        if resultado.get("suficiente"):
+            st.session_state.analisis_anterior = resultado
+            signo_total = "+" if resultado.get('profit_total', 0) >= 0 else ""
+            msg_analisis = (
+                f"📊 **ANÁLISIS DE FASE**\n\n"
+                f"📈 Operaciones: {resultado['total_operaciones']}\n"
+                f"✅ Ganancias: {resultado['ganancias']}\n"
+                f"❌ Pérdidas: {resultado['perdidas']}\n"
+                f"🎯 Tasa: {resultado['win_rate']:.1f}%\n"
+                f"💰 Total: {signo_total}${resultado.get('profit_total', 0):.2f}\n\n"
+                f"**Ajustes:**\n"
+                + "\n".join([f"• {a}" for a in resultado['ajustes_aplicados']])
+            )
+            enviar_telegram(msg_analisis)
+        st.session_state.inicio_fase = ahora.isoformat()
+        st.session_state.fase_actual = "operando"
+        guardar_datos()
+
+    # ===== TABLA =====
+    interfaz["tabla"].subheader("📊 Señales + Volumen + Tendencia 30d")
+    interfaz["tabla"].table({
+        "Moneda": ["Bitcoin", "Ethereum"],
+        "Precio MXN": [f"${btc:,.0f}", f"${eth:,.0f}"],
+        "Cambio": [f"{cambio_btc:+.2f}%", f"{cambio_eth:+.2f}%"],
+        "Tendencia": [st.session_state.tendencia["BTC"], st.session_state.tendencia["ETH"]],
+        "Señal": [senal_btc, senal_eth],
+        "Prob. de acierto": [f"{probabilidad_btc:.1f}%", f"{probabilidad_eth:.1f}%"],
+        "Umbral canal": [f"{UMBRAL_SENAL_FUERTE}%", f"{UMBRAL_SENAL_FUERTE}%"],
+        "Volumen 24h": [
+            f"{volumen_onchain_btc:.2f}B" if volumen_onchain_btc is not None else "N/A",
+            f"{volumen_onchain_eth:.2f}B" if volumen_onchain_eth is not None else "N/A"
+        ],
+        "Tendencia 30d": [
+            tendencia_btc.get("tendencia", "N/A") if tendencia_btc else "N/A",
+            tendencia_eth.get("tendencia", "N/A") if tendencia_eth else "N/A"
+        ]
+    })
+
+    if CANAL_CONFIGURADO:
+        interfaz["horario"].success(
+            f"📡 **SOLO SEÑALES** — Canal OK | Ciclo: {st.session_state.ciclo}")
+    else:
+        interfaz["horario"].error("❌ Canal NO configurado")
+
+    interfaz["fase"].info(
+        f"📅 **FASE OPERATIVA** — Próxima revisión en "
+        f"{minutos_restantes:.1f} min ({MINUTOS_FASE_APRENDIZAJE} min)")
+
+    modo_texto = "🔥 24/7" if st.session_state.get("operar_24_7", False) else "⏰ Con horario"
+    texto_info = (
+        f"Ciclo: {st.session_state.ciclo} | "
+        f"TP: {st.session_state.toma_ganancia}% | "
+        f"SL: {st.session_state.limite_perdida}% | "
+        f"Umbral: {st.session_state.confianza_umbral}% | "
+        f"Miedo/Codicia: {valor_miedo}/100 | "
+        f"Modo: {modo_texto}"
+    )
+    interfaz["info"].caption(texto_info)
     # ══════════════════ PARTE 10/11: cartera, historial y contadores ══════════════════
 
     saldo_real = obtener_saldo_bitso()
