@@ -694,7 +694,6 @@ def calcular_atr(precios, periodo=14):
 def calcular_probabilidad(confianza):
     return min(100, max(0, confianza * 2.5))
    # ══════════════════ PARTE 6/11: análisis avanzado y aprendizaje ══════════════════
-
 def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
     datos_tendencia = st.session_state.tendencia_historica.get(simbolo, {}) or {}
     cambio_30d = datos_tendencia.get("cambio_porcentual", 0)
@@ -763,7 +762,19 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
         elif volumen_onchain < VOLUMEN_MINIMO_24H:
             peso_volumen = -5
 
-    peso_tendencia = 15 if tendencia_30d == "ALCISTA" else -15 if tendencia_30d == "BAJISTA" else 0
+    # Ajuste de peso de tendencia (Penalización en lugar de bloqueo absoluto)
+    peso_tendencia = 0
+    
+    if tendencia_30d == "BAJISTA":
+        peso_tendencia -= 30 
+    elif tendencia_30d == "ALCISTA":
+        peso_tendencia += 30
+
+    if tendencia_local == "BAJISTA":
+        peso_tendencia -= 15
+    elif tendencia_local == "ALCISTA":
+        peso_tendencia += 15
+
     if abs(cambio_30d) > 20:
         peso_tendencia *= 1.5
 
@@ -785,208 +796,17 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
                   + peso_tendencia + peso_miedo + peso_atr)
     confianza = abs(puntuacion)
 
-    # ═══════════════════════════════════════════════════════════════
-    # 🛡️ FILTRO DE SEGURIDAD: BLOQUEO POR TENDENCIA
-    # ═══════════════════════════════════════════════════════════════
-    # Si la tendencia es bajista y quiere comprar, bloquea la compra
-    if tendencia_30d == "BAJISTA" or tendencia_local == "BAJISTA":
-        if puntuacion > 0:
-            return "HOLD", 0, "Bloqueado: tendencia BAJISTA (no se compra)", {}
-    
-    # Si la tendencia es alcista y quiere vender, bloquea la venta
-    if tendencia_30d == "ALCISTA" or tendencia_local == "ALCISTA":
-        if puntuacion < 0:
-            return "HOLD", 0, "Bloqueado: tendencia ALCISTA (no se vende)", {}
-
-    # Lógica normal si la tendencia no bloquea
+    # Lógica normal
     if confianza < 20:
         return "HOLD", confianza, f"Puntuación baja ({confianza:.1f})", {}
     elif puntuacion > 0:
         return "BUY", confianza, f"Señal de compra ({puntuacion:.1f})", {}
     else:
         return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
-
-
-def analizar_fase_aprendizaje():
-    """
-    Analiza SOLO operaciones reales cerradas.
-    Ignora señales enviadas al canal (tienen 📢 o SEÑAL).
-    """
-    operaciones = st.session_state.operaciones
-    if len(operaciones) < 3:
-        return {"suficiente": False, "razon": f"Solo {len(operaciones)} eventos."}
-
-    ventas = []
-    for marca, msg in operaciones:
-        if "📢" in msg or "SEÑAL" in msg:
-            continue
-        if "VENTA" not in msg:
-            continue
-        ventas.append({"ts": marca, "msg": msg})
-
-    if len(ventas) == 0:
-        return {"suficiente": False, "razon": "No hay ventas cerradas."}
-
-    ganancias = 0
-    perdidas = 0
-    ganancias_totales = 0.0
-    horarios = {}
-    simbolos = {
-        "BTC": {"wins": 0, "losses": 0, "profit": 0.0},
-        "ETH": {"wins": 0, "losses": 0, "profit": 0.0}
-    }
-
-    for venta in ventas:
-        msg = venta["msg"]
-        hora = venta["ts"].hour
-        horarios.setdefault(hora, {"wins": 0, "losses": 0, "profit": 0.0})
-        ganancia = 0.0
-        coincidencia = re.search(r"PROFIT:\s*([+-]?\$?[\d,]+\.?\d*)", msg)
-        if coincidencia:
-            try:
-                ganancia = float(coincidencia.group(1).replace("$", "").replace(",", ""))
-            except (TypeError, ValueError):
-                ganancia = 0.0
-        ganancias_totales += ganancia
-
-        if ganancia > 0:
-            ganancias += 1
-            horarios[hora]["wins"] += 1
-            horarios[hora]["profit"] += ganancia
-            for simbolo in simbolos:
-                if simbolo in msg:
-                    simbolos[simbolo]["wins"] += 1
-                    simbolos[simbolo]["profit"] += ganancia
-        else:
-            perdidas += 1
-            horarios[hora]["losses"] += 1
-            horarios[hora]["profit"] += ganancia
-            for simbolo in simbolos:
-                if simbolo in msg:
-                    simbolos[simbolo]["losses"] += 1
-                    simbolos[simbolo]["profit"] += ganancia
-
-    total_ventas = ganancias + perdidas
-    tasa_acierto = (ganancias / total_ventas * 100) if total_ventas > 0 else 0
-    ganancia_promedio = ganancias_totales / total_ventas if total_ventas > 0 else 0
-
-    mejor_hora = None
-    peor_hora = None
-    mejor_ganancia = -999999
-    peor_ganancia = 999999
-    for hora, datos_hora in horarios.items():
-        if datos_hora["profit"] > mejor_ganancia:
-            mejor_ganancia = datos_hora["profit"]
-            mejor_hora = hora
-        if datos_hora["profit"] < peor_ganancia:
-            peor_ganancia = datos_hora["profit"]
-            peor_hora = hora
-
-    analisis = {
-        "suficiente": True,
-        "total_operaciones": total_ventas,
-        "ganancias": ganancias,
-        "perdidas": perdidas,
-        "win_rate": tasa_acierto,
-        "profit_total": ganancias_totales,
-        "profit_promedio": ganancia_promedio,
-        "mejor_hora": mejor_hora,
-        "peor_hora": peor_hora,
-        "simbolos": simbolos,
-        "ajustes_aplicados": []
-    }
-
-    # Solo ajustar parámetros si hay al menos 10 ventas reales
-    if total_ventas < 10:
-        analisis["ajustes_aplicados"].append(
-            f"Sin ajustes: solo {total_ventas} ventas (mínimo 10)")
-        return analisis
-
-    if tasa_acierto < 40:
-        st.session_state.confianza_umbral = min(95, st.session_state.confianza_umbral + 5)
-        analisis["ajustes_aplicados"].append(
-            f"Umbral subido a {st.session_state.confianza_umbral}%")
-    elif tasa_acierto > 65:
-        st.session_state.confianza_umbral = max(50, st.session_state.confianza_umbral - 5)
-        analisis["ajustes_aplicados"].append(
-            f"Umbral bajado a {st.session_state.confianza_umbral}%")
-    else:
-        analisis["ajustes_aplicados"].append(
-            f"Umbral mantenido en {st.session_state.confianza_umbral}%")
-
-    if ganancia_promedio > 0:
-        st.session_state.toma_ganancia = min(10.0, st.session_state.toma_ganancia * 1.1)
-        analisis["ajustes_aplicados"].append(
-            f"Toma de ganancia aumentada a {st.session_state.toma_ganancia:.3f}%")
-    elif ganancia_promedio < 0:
-        st.session_state.toma_ganancia = max(0.5, st.session_state.toma_ganancia * 0.9)
-        st.session_state.limite_perdida = max(0.5, st.session_state.limite_perdida * 0.9)
-        analisis["ajustes_aplicados"].append(
-            "Toma de ganancia y límite de pérdida reducidos")
-
-    return analisis
     # ══════════════════ PARTE 7/11: interfaz, inicialización y funciones contables ══════════════════
-
-st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
-
-variables_requeridas = {
-    "ultimo_precio": {"BTC": 0.0, "ETH": 0.0},
-    "precio_referencia": {"BTC": 0.0, "ETH": 0.0},
-    "precio_entrada": {"BTC": 0.0, "ETH": 0.0},
-    "precio_maximo": {"BTC": 0.0, "ETH": 0.0},
-    "posiciones": {"BTC": 0.0, "ETH": 0.0},
-    "saldo": 1000.0,
-    "ops_del_dia": 0,
-    "operaciones": [],
-    "ultima_accion": {"BTC": None, "ETH": None},
-    "ciclo": 0,
-    "historial_precios": {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)},
-    "umbral_caida": 0.005,
-    "toma_ganancia": 5.0,
-    "limite_perdida": 1.0,
-    "seguimiento": 0.5,
-    "umbral_indicadores_activacion": 0.5,
-    "rsi_sobreventa": 30,
-    "rsi_sobrecompra": 80,
-    "ema_rapida": 5,
-    "ema_lenta": 12,
-    "indicadores_activados": {"BTC": False, "ETH": False},
-    "modo_solo_senales": True,
-    "modo_aprendizaje": False,
-    "rendimiento": {
-        "BTC": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []},
-        "ETH": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []}
-    },
-    "confianza": {"BTC": 50, "ETH": 50},
-    "tendencia": {"BTC": "NEUTRAL", "ETH": "NEUTRAL"},
-    "historial_operaciones": [],
-    "cache_onchain": {
-        "BTC": {"valor": None, "timestamp": 0},
-        "ETH": {"valor": None, "timestamp": 0}
-    },
-    "tendencia_historica": {"BTC": {}, "ETH": {}},
-    "confianza_umbral": 65,
-    "intervalo_actualizacion": 5,
-    "inicio_fase": datetime.now().isoformat(),
-    "fase_actual": "operando",
-    "analisis_anterior": {},
-    "monto_del_dia": 0.0,
-    "orden_pendiente_BTC": None,
-    "orden_pendiente_ETH": None,
-    "operar_24_7": False,
-    "ultimo_respaldo_auto": time.time(),
-    "ultimo_respaldo_operaciones": 0,
-    "ultimo_dia": datetime.now().day,
-}
-
 for nombre, valor_predeterminado in variables_requeridas.items():
     if nombre not in st.session_state:
         st.session_state[nombre] = valor_predeterminado
-
-# 🔧 FIX: forzar TP=5%, SL=1%, umbral=65% (ignorar auto-ajustes)
-st.session_state.toma_ganancia = 5.0
-st.session_state.limite_perdida = 1.0
-st.session_state.confianza_umbral = 65
 
 # 🔧 Limpieza inline de señales viejas del historial
 if not st.session_state.get("_senales_limpiadas"):
@@ -1009,134 +829,11 @@ if "datos_cargados" not in st.session_state:
         print(f"Error restaurando: {e}")
     st.session_state.datos_cargados = True
 
-# 🔧 Volver a forzar después de restaurar (por si Firebase trae valores viejos)
-st.session_state.toma_ganancia = 5.0
-st.session_state.limite_perdida = 1.0
-st.session_state.confianza_umbral = 65
+# ⚠️ AQUÍ ELIMINAMOS EL FORZADO DE PARÁMETROS
+# (Antes había unas líneas aquí que forzaban TP=5.0, SL=1.0, Umbral=65. 
+#  Asegúrate de que YA NO ESTÉN).
 
 st.title("🧠 Scalping Extremo + Volumen + Tendencia 30d")
-
-if MODO_REAL:
-    st.error("🔴 **MODO REAL ACTIVADO**")
-else:
-    st.info("📡 **MODO SOLO SEÑALES** — No opera, solo envía señales al canal")
-
-
-def _aplicar_compra(simbolo, monto, precio, comision=COMISION):
-    cantidad = (monto * (1 - comision)) / precio
-    cantidad_previa = float(st.session_state.posiciones.get(simbolo, 0.0))
-    entrada_previa = float(st.session_state.precio_entrada.get(simbolo, 0.0))
-    cantidad_nueva = cantidad_previa + cantidad
-    st.session_state.saldo -= monto
-    st.session_state.posiciones[simbolo] = cantidad_nueva
-    if cantidad_nueva > 0:
-        st.session_state.precio_entrada[simbolo] = (
-            ((cantidad_previa * entrada_previa) + (cantidad * precio)) / cantidad_nueva
-            if entrada_previa > 0 else precio
-        )
-    st.session_state.precio_maximo[simbolo] = max(
-        float(st.session_state.precio_maximo.get(simbolo, 0.0)), precio)
-    st.session_state.ops_del_dia += 1
-    return cantidad
-
-
-def _aplicar_venta(simbolo, precio, cantidad_forzada=None):
-    cantidad = (float(cantidad_forzada) if cantidad_forzada is not None
-                else float(st.session_state.posiciones.get(simbolo, 0.0)))
-    if cantidad <= 0:
-        return 0.0, 0.0
-    entrada = float(st.session_state.precio_entrada.get(simbolo, 0.0))
-    neto = cantidad * precio * (1 - COMISION)
-    ganancia = neto - (cantidad * entrada)
-    st.session_state.saldo += neto
-    st.session_state.posiciones[simbolo] = 0.0
-    st.session_state.precio_entrada[simbolo] = 0.0
-    st.session_state.precio_maximo[simbolo] = 0.0
-    st.session_state.ops_del_dia += 1
-    return neto, ganancia
-
-
-def _resumen_aciertos():
-    try:
-        inicio_fase = datetime.fromisoformat(st.session_state.inicio_fase)
-    except Exception:
-        inicio_fase = None
-
-    aciertos = 0
-    fallos = 0
-    ganado = 0.0
-    perdido = 0.0
-    porcentajes = []
-
-    for marca, msg in st.session_state.operaciones:
-        if "📢" in msg or "SEÑAL" in msg:
-            continue
-        if inicio_fase is not None and isinstance(marca, datetime) and marca < inicio_fase:
-            continue
-        if "VENTA" not in msg:
-            continue
-        coincidencia = re.search(r"PROFIT:\s*([+-]?\$?[\d,]+\.?\d*)", msg)
-        if not coincidencia:
-            continue
-        try:
-            ganancia = float(coincidencia.group(1).replace("$", "").replace(",", ""))
-        except (TypeError, ValueError):
-            continue
-
-        if ganancia > 0:
-            aciertos += 1
-            ganado += ganancia
-        else:
-            fallos += 1
-            perdido += abs(ganancia)
-
-        porcentaje = re.search(r"PROFIT:[^(]*\(([+-]?[\d.]+)%\)", msg)
-        if porcentaje:
-            try:
-                porcentajes.append(float(porcentaje.group(1)))
-            except (TypeError, ValueError):
-                pass
-
-    cerradas = aciertos + fallos
-    tasa = (aciertos / cerradas * 100) if cerradas else 0.0
-    comision_ida_vuelta = COMISION * 100 * 2
-    acierto_neto = st.session_state.toma_ganancia - comision_ida_vuelta
-    fallo_neto = st.session_state.limite_perdida + comision_ida_vuelta
-    equilibrio = (fallo_neto / (acierto_neto + fallo_neto) * 100
-                  if (acierto_neto + fallo_neto) > 0 else 100.0)
-    esperanza = 0.0
-    if cerradas:
-        esperanza = (tasa / 100) * acierto_neto - (1 - tasa / 100) * fallo_neto
-
-    return {
-        "aciertos": aciertos, "fallos": fallos, "cerradas": cerradas, "tasa": tasa,
-        "ganado": ganado, "perdido": perdido, "neto": ganado - perdido,
-        "equilibrio": equilibrio, "esperanza": esperanza,
-        "acierto_neto": acierto_neto, "fallo_neto": fallo_neto,
-    }
-
-
-def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_onchain,
-                          cambio_30d, tendencia_30d):
-    try:
-        probabilidad = calcular_probabilidad(confianza)
-        texto_volumen = f"{volumen_onchain:.2f}B USD" if volumen_onchain is not None else "N/A"
-        emoji_tipo = "🟢" if tipo == "BUY" else "🔴" if tipo == "SELL" else "⚪"
-        msg = (f"📢 **SEÑAL {emoji_tipo} {tipo} — {simbolo}**\n"
-               f"🎯 Probabilidad: {probabilidad:.1f}%\n"
-               f"💰 Precio: ${precio:,.0f} MXN\n"
-               f"📝 Razón: {razon}\n"
-               f"📊 Volumen 24h: {texto_volumen}\n"
-               f"📈 Cambio 30d: {cambio_30d:+.2f}%\n"
-               f"🧭 Tendencia 30d: {tendencia_30d}\n"
-               f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        if CANAL_CONFIGURADO:
-            return enviar_canal_telegram(msg)
-        else:
-            return enviar_telegram(msg)
-    except Exception as e:
-        print(f"Error enviando señal: {e}")
-        return False
         # ══════════════════ PARTE 8/11: barra lateral ══════════════════
 
 st.sidebar.header("⚙️ Configuración Principal")
