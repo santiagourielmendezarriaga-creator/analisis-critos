@@ -957,7 +957,7 @@ def analizar_fase_aprendizaje():
             "Toma de ganancia y límite de pérdida reducidos")
 
     return analisis
-   Me# ══════════════════ PARTE 7/11: interfaz, inicialización y funciones contables ══════════════════
+    ══════════════════ PARTE 7/11: interfaz, inicialización y funciones contables ══════════════════
 
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
