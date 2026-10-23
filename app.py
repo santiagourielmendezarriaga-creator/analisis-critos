@@ -957,7 +957,7 @@ def analizar_fase_aprendizaje():
             "Toma de ganancia y límite de pérdida reducidos")
 
     return analisis
-    ══════════════════ PARTE 7/11: interfaz, inicialización y funciones contables ══════════════════
+   # --- PARTE 7/11: interfaz, inicialización y funciones contables ---
 
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
 
@@ -1009,7 +1009,6 @@ variables_requeridas = {
     "ultimo_respaldo_auto": time.time(),
     "ultimo_respaldo_operaciones": 0,
     "ultimo_dia": datetime.now().day,
-    # 🧠 Variables para el control de la IA
     "ia_fecha_actual": datetime.now().date().isoformat(),
     "ia_contador_diario": 0,
     "ia_cache": {"BTC": {"senal": "", "ts": 0}, "ETH": {"senal": "", "ts": 0}}
@@ -1019,7 +1018,7 @@ for nombre, valor_predeterminado in variables_requeridas.items():
     if nombre not in st.session_state:
         st.session_state[nombre] = valor_predeterminado
 
-# 🔧 Limpieza inline de señales viejas del historial
+# Limpieza inline de señales viejas del historial
 if not st.session_state.get("_senales_limpiadas"):
     _ops_limpias = []
     _eliminadas = 0
@@ -1030,7 +1029,7 @@ if not st.session_state.get("_senales_limpiadas"):
         _ops_limpias.append((_marca, _msg))
     if _eliminadas > 0:
         st.session_state.operaciones = _ops_limpias
-        print(f"🧹 Limpié {_eliminadas} señales del historial")
+        print(f"Limpié {_eliminadas} señales del historial")
     st.session_state["_senales_limpiadas"] = True
 
 if "datos_cargados" not in st.session_state:
@@ -1043,9 +1042,9 @@ if "datos_cargados" not in st.session_state:
 st.title("🧠 Scalping Extremo + Volumen + Tendencia 30d")
 
 if MODO_REAL:
-    st.error("🔴 **MODO REAL ACTIVADO** — Órdenes Maker con dinero real")
+    st.error("🔴 MODO REAL ACTIVADO — Órdenes Maker con dinero real")
 else:
-    st.info("📡 **MODO SOLO SEÑALES** — No opera, solo envía señales al canal")
+    st.info("📡 MODO SOLO SEÑALES — No opera, solo envía señales al canal")
 
 
 def _aplicar_compra(simbolo, monto, precio, comision=COMISION):
@@ -1150,7 +1149,7 @@ def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_oncha
         probabilidad = calcular_probabilidad(confianza)
         texto_volumen = f"{volumen_onchain:.2f}B USD" if volumen_onchain is not None else "N/A"
         emoji_tipo = "🟢" if tipo == "BUY" else "🔴" if tipo == "SELL" else "⚪"
-        msg = (f"📢 **SEÑAL {emoji_tipo} {tipo} — {simbolo}**\n"
+        msg = (f"📢 SEÑAL {emoji_tipo} {tipo} — {simbolo}\n"
                f"🎯 Probabilidad: {probabilidad:.1f}%\n"
                f"💰 Precio: ${precio:,.0f} MXN\n"
                f"📝 Razón: {razon}\n"
