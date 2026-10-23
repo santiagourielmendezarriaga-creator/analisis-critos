@@ -693,7 +693,8 @@ def calcular_atr(precios, periodo=14):
 
 def calcular_probabilidad(confianza):
     return min(100, max(0, confianza * 2.5))
-   # ══════════════════ PARTE 6/11: análisis avanzado y aprendizaje ══════════════════
+ # ══════════════════ PARTE 6/11: análisis avanzado y aprendizaje ══════════════════
+
 def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
     datos_tendencia = st.session_state.tendencia_historica.get(simbolo, {}) or {}
     cambio_30d = datos_tendencia.get("cambio_porcentual", 0)
@@ -803,6 +804,126 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
         return "BUY", confianza, f"Señal de compra ({puntuacion:.1f})", {}
     else:
         return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
+
+
+def analizar_fase_aprendizaje():
+    """
+    Analiza SOLO operaciones reales cerradas.
+    Ignora señales enviadas al canal (tienen 📢 o SEÑAL).
+    """
+    operaciones = st.session_state.operaciones
+    if len(operaciones) < 3:
+        return {"suficiente": False, "razon": f"Solo {len(operaciones)} eventos."}
+
+    ventas = []
+    for marca, msg in operaciones:
+        if "📢" in msg or "SEÑAL" in msg:
+            continue
+        if "VENTA" not in msg:
+            continue
+        ventas.append({"ts": marca, "msg": msg})
+
+    if len(ventas) == 0:
+        return {"suficiente": False, "razon": "No hay ventas cerradas."}
+
+    ganancias = 0
+    perdidas = 0
+    ganancias_totales = 0.0
+    horarios = {}
+    simbolos = {
+        "BTC": {"wins": 0, "losses": 0, "profit": 0.0},
+        "ETH": {"wins": 0, "losses": 0, "profit": 0.0}
+    }
+
+    for venta in ventas:
+        msg = venta["msg"]
+        hora = venta["ts"].hour
+        horarios.setdefault(hora, {"wins": 0, "losses": 0, "profit": 0.0})
+        ganancia = 0.0
+        coincidencia = re.search(r"PROFIT:\s*([+-]?\$?[\d,]+\.?\d*)", msg)
+        if coincidencia:
+            try:
+                ganancia = float(coincidencia.group(1).replace("$", "").replace(",", ""))
+            except (TypeError, ValueError):
+                ganancia = 0.0
+        ganancias_totales += ganancia
+
+        if ganancia > 0:
+            ganancias += 1
+            horarios[hora]["wins"] += 1
+            horarios[hora]["profit"] += ganancia
+            for simbolo in simbolos:
+                if simbolo in msg:
+                    simbolos[simbolo]["wins"] += 1
+                    simbolos[simbolo]["profit"] += ganancia
+        else:
+            perdidas += 1
+            horarios[hora]["losses"] += 1
+            horarios[hora]["profit"] += ganancia
+            for simbolo in simbolos:
+                if simbolo in msg:
+                    simbolos[simbolo]["losses"] += 1
+                    simbolos[simbolo]["profit"] += ganancia
+
+    total_ventas = ganancias + perdidas
+    tasa_acierto = (ganancias / total_ventas * 100) if total_ventas > 0 else 0
+    ganancia_promedio = ganancias_totales / total_ventas if total_ventas > 0 else 0
+
+    mejor_hora = None
+    peor_hora = None
+    mejor_ganancia = -999999
+    peor_ganancia = 999999
+    for hora, datos_hora in horarios.items():
+        if datos_hora["profit"] > mejor_ganancia:
+            mejor_ganancia = datos_hora["profit"]
+            mejor_hora = hora
+        if datos_hora["profit"] < peor_ganancia:
+            peor_ganancia = datos_hora["profit"]
+            peor_hora = hora
+
+    analisis = {
+        "suficiente": True,
+        "total_operaciones": total_ventas,
+        "ganancias": ganancias,
+        "perdidas": perdidas,
+        "win_rate": tasa_acierto,
+        "profit_total": ganancias_totales,
+        "profit_promedio": ganancia_promedio,
+        "mejor_hora": mejor_hora,
+        "peor_hora": peor_hora,
+        "simbolos": simbolos,
+        "ajustes_aplicados": []
+    }
+
+    # Solo ajustar parámetros si hay al menos 10 ventas reales
+    if total_ventas < 10:
+        analisis["ajustes_aplicados"].append(
+            f"Sin ajustes: solo {total_ventas} ventas (mínimo 10)")
+        return analisis
+
+    if tasa_acierto < 40:
+        st.session_state.confianza_umbral = min(95, st.session_state.confianza_umbral + 5)
+        analisis["ajustes_aplicados"].append(
+            f"Umbral subido a {st.session_state.confianza_umbral}%")
+    elif tasa_acierto > 65:
+        st.session_state.confianza_umbral = max(50, st.session_state.confianza_umbral - 5)
+        analisis["ajustes_aplicados"].append(
+            f"Umbral bajado a {st.session_state.confianza_umbral}%")
+    else:
+        analisis["ajustes_aplicados"].append(
+            f"Umbral mantenido en {st.session_state.confianza_umbral}%")
+
+    if ganancia_promedio > 0:
+        st.session_state.toma_ganancia = min(10.0, st.session_state.toma_ganancia * 1.1)
+        analisis["ajustes_aplicados"].append(
+            f"Toma de ganancia aumentada a {st.session_state.toma_ganancia:.3f}%")
+    elif ganancia_promedio < 0:
+        st.session_state.toma_ganancia = max(0.5, st.session_state.toma_ganancia * 0.9)
+        st.session_state.limite_perdida = max(0.5, st.session_state.limite_perdida * 0.9)
+        analisis["ajustes_aplicados"].append(
+            "Toma de ganancia y límite de pérdida reducidos")
+
+    return analisis
    # ══════════════════ PARTE 7/11: interfaz, inicialización y funciones contables ══════════════════
 
 st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
