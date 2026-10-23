@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 🧠 Bot Scalping Extremo + Volumen + Tendencia 30d (Streamlit)
-VERSIÓN 11 PARTES — Con Inteligencia Artificial (Gemini)
+VERSIÓN 11 PARTES — Con Inteligencia Artificial (Gemini GenAI SDK)
 """
 
 import streamlit as st
@@ -15,7 +15,8 @@ import hashlib
 import statistics
 from datetime import datetime, timedelta, timezone
 from collections import deque
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 try:
     from streamlit_autorefresh import st_autorefresh as _refresco_automatico
@@ -85,15 +86,21 @@ def _leer(datos, clave_nueva, clave_vieja, predeterminado):
 
 # ===== CONFIGURACIÓN DE LA INTELIGENCIA ARTIFICIAL (GEMINI) =====
 GEMINI_API_KEY = str(_secreto("GEMINI_API_KEY", ""))
+
+# Inicializamos el cliente (solo si hay llave)
+client = None
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+    except Exception as e:
+        print(f"⚠️ Error inicializando cliente Gemini: {e}")
 
 
 def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
-    if not GEMINI_API_KEY:
+    if not client:
         return senal_tecnica, f"{razon} (IA no configurada)"
 
-    # Control de límite diario (máx 400 consultas/día para no agotar la cuota gratuita)
+    # Control de límite diario
     hoy = datetime.now().date().isoformat()
     if st.session_state.get("ia_fecha_actual") != hoy:
         st.session_state["ia_fecha_actual"] = hoy
@@ -103,9 +110,6 @@ def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
         return senal_tecnica, f"{razon} (Límite IA alcanzado)"
 
     try:
-        modelo = genai.GenerativeModel('gemini-1.5-flash')
-        
-        # Prompt mejorado: Le exigimos que actúe como analista real, no que copie
         prompt = f"""
         Eres un analista financiero senior. Tu trabajo es validar las señales de un bot técnico.
         
@@ -125,20 +129,24 @@ def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
         {{"decision": "BUY" | "SELL" | "HOLD", "razon_ia": "Tu análisis breve aquí"}}
         """
         
-        respuesta = modelo.generate_content(
-            prompt,
-            generation_config={"response_mime_type": "application/json"}
+        # Nueva sintaxis del SDK google.genai
+        response = client.models.generate_content(
+            model='gemini-1.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type='application/json',
+                temperature=0.3 # Un poco de temperatura para que no sea tan robótico
+            )
         )
         
         st.session_state["ia_contador_diario"] += 1
         
-        texto_limpio = respuesta.text.replace("```json", "").replace("```", "").strip()
+        texto_limpio = response.text.replace("```json", "").replace("```", "").strip()
         resultado = json.loads(texto_limpio)
         
         decision_ia = resultado.get("decision", senal_tecnica)
         razon_ia = resultado.get("razon_ia", razon)
         
-        # Si la IA devuelve lo mismo que el bot, le agregamos un aviso
         if razon_ia == razon:
             razon_ia = "Confirmado por modelo de lenguaje."
             
