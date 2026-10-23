@@ -803,7 +803,60 @@ def analisis_avanzado(simbolo, precio, valor_miedo_codicia):
         return "BUY", confianza, f"Señal de compra ({puntuacion:.1f})", {}
     else:
         return "SELL", confianza, f"Señal de venta ({puntuacion:.1f})", {}
-    # ══════════════════ PARTE 7/11: interfaz, inicialización y funciones contables ══════════════════
+   # ══════════════════ PARTE 7/11: interfaz, inicialización y funciones contables ══════════════════
+
+st.set_page_config(page_title="Bot Scalping Extremo + Tendencia 30d", layout="wide")
+
+variables_requeridas = {
+    "ultimo_precio": {"BTC": 0.0, "ETH": 0.0},
+    "precio_referencia": {"BTC": 0.0, "ETH": 0.0},
+    "precio_entrada": {"BTC": 0.0, "ETH": 0.0},
+    "precio_maximo": {"BTC": 0.0, "ETH": 0.0},
+    "posiciones": {"BTC": 0.0, "ETH": 0.0},
+    "saldo": 1000.0,
+    "ops_del_dia": 0,
+    "operaciones": [],
+    "ultima_accion": {"BTC": None, "ETH": None},
+    "ciclo": 0,
+    "historial_precios": {"BTC": deque(maxlen=200), "ETH": deque(maxlen=200)},
+    "umbral_caida": 0.005,
+    "toma_ganancia": 5.0,
+    "limite_perdida": 1.0,
+    "seguimiento": 0.5,
+    "umbral_indicadores_activacion": 0.5,
+    "rsi_sobreventa": 30,
+    "rsi_sobrecompra": 80,
+    "ema_rapida": 5,
+    "ema_lenta": 12,
+    "indicadores_activados": {"BTC": False, "ETH": False},
+    "modo_solo_senales": True,
+    "modo_aprendizaje": False,
+    "rendimiento": {
+        "BTC": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []},
+        "ETH": {"ganadas": 0, "perdidas": 0, "total": 0, "ultimas_10": []}
+    },
+    "confianza": {"BTC": 50, "ETH": 50},
+    "tendencia": {"BTC": "NEUTRAL", "ETH": "NEUTRAL"},
+    "historial_operaciones": [],
+    "cache_onchain": {
+        "BTC": {"valor": None, "timestamp": 0},
+        "ETH": {"valor": None, "timestamp": 0}
+    },
+    "tendencia_historica": {"BTC": {}, "ETH": {}},
+    "confianza_umbral": 65,
+    "intervalo_actualizacion": 5,
+    "inicio_fase": datetime.now().isoformat(),
+    "fase_actual": "operando",
+    "analisis_anterior": {},
+    "monto_del_dia": 0.0,
+    "orden_pendiente_BTC": None,
+    "orden_pendiente_ETH": None,
+    "operar_24_7": False,
+    "ultimo_respaldo_auto": time.time(),
+    "ultimo_respaldo_operaciones": 0,
+    "ultimo_dia": datetime.now().day,
+}
+
 for nombre, valor_predeterminado in variables_requeridas.items():
     if nombre not in st.session_state:
         st.session_state[nombre] = valor_predeterminado
@@ -829,12 +882,132 @@ if "datos_cargados" not in st.session_state:
         print(f"Error restaurando: {e}")
     st.session_state.datos_cargados = True
 
-# ⚠️ AQUÍ ELIMINAMOS EL FORZADO DE PARÁMETROS
-# (Antes había unas líneas aquí que forzaban TP=5.0, SL=1.0, Umbral=65. 
-#  Asegúrate de que YA NO ESTÉN).
-
 st.title("🧠 Scalping Extremo + Volumen + Tendencia 30d")
-        # ══════════════════ PARTE 8/11: barra lateral ══════════════════
+
+if MODO_REAL:
+    st.error("🔴 **MODO REAL ACTIVADO** — Órdenes Maker con dinero real")
+else:
+    st.info("📡 **MODO SOLO SEÑALES** — No opera, solo envía señales al canal")
+
+
+def _aplicar_compra(simbolo, monto, precio, comision=COMISION):
+    cantidad = (monto * (1 - comision)) / precio
+    cantidad_previa = float(st.session_state.posiciones.get(simbolo, 0.0))
+    entrada_previa = float(st.session_state.precio_entrada.get(simbolo, 0.0))
+    cantidad_nueva = cantidad_previa + cantidad
+    st.session_state.saldo -= monto
+    st.session_state.posiciones[simbolo] = cantidad_nueva
+    if cantidad_nueva > 0:
+        st.session_state.precio_entrada[simbolo] = (
+            ((cantidad_previa * entrada_previa) + (cantidad * precio)) / cantidad_nueva
+            if entrada_previa > 0 else precio
+        )
+    st.session_state.precio_maximo[simbolo] = max(
+        float(st.session_state.precio_maximo.get(simbolo, 0.0)), precio)
+    st.session_state.ops_del_dia += 1
+    st.session_state.monto_del_dia = float(st.session_state.get("monto_del_dia", 0.0)) + monto
+    st.session_state[f"venta_fallida_{simbolo}"] = 0.0
+    return cantidad
+
+
+def _aplicar_venta(simbolo, precio, cantidad_forzada=None):
+    cantidad = (float(cantidad_forzada) if cantidad_forzada is not None
+                else float(st.session_state.posiciones.get(simbolo, 0.0)))
+    if cantidad <= 0:
+        return 0.0, 0.0
+    entrada = float(st.session_state.precio_entrada.get(simbolo, 0.0))
+    neto = cantidad * precio * (1 - COMISION)
+    ganancia = neto - (cantidad * entrada)
+    st.session_state.saldo += neto
+    st.session_state.posiciones[simbolo] = 0.0
+    st.session_state.precio_entrada[simbolo] = 0.0
+    st.session_state.precio_maximo[simbolo] = 0.0
+    st.session_state.ops_del_dia += 1
+    return neto, ganancia
+
+
+def _resumen_aciertos():
+    try:
+        inicio_fase = datetime.fromisoformat(st.session_state.inicio_fase)
+    except Exception:
+        inicio_fase = None
+
+    aciertos = 0
+    fallos = 0
+    ganado = 0.0
+    perdido = 0.0
+    porcentajes = []
+
+    for marca, msg in st.session_state.operaciones:
+        if "📢" in msg or "SEÑAL" in msg:
+            continue
+        if inicio_fase is not None and isinstance(marca, datetime) and marca < inicio_fase:
+            continue
+        if "VENTA" not in msg:
+            continue
+        coincidencia = re.search(r"PROFIT:\s*([+-]?\$?[\d,]+\.?\d*)", msg)
+        if not coincidencia:
+            continue
+        try:
+            ganancia = float(coincidencia.group(1).replace("$", "").replace(",", ""))
+        except (TypeError, ValueError):
+            continue
+
+        if ganancia > 0:
+            aciertos += 1
+            ganado += ganancia
+        else:
+            fallos += 1
+            perdido += abs(ganancia)
+
+        porcentaje = re.search(r"PROFIT:[^(]*\(([+-]?[\d.]+)%\)", msg)
+        if porcentaje:
+            try:
+                porcentajes.append(float(porcentaje.group(1)))
+            except (TypeError, ValueError):
+                pass
+
+    cerradas = aciertos + fallos
+    tasa = (aciertos / cerradas * 100) if cerradas else 0.0
+    comision_ida_vuelta = COMISION * 100 * 2
+    acierto_neto = st.session_state.toma_ganancia - comision_ida_vuelta
+    fallo_neto = st.session_state.limite_perdida + comision_ida_vuelta
+    equilibrio = (fallo_neto / (acierto_neto + fallo_neto) * 100
+                  if (acierto_neto + fallo_neto) > 0 else 100.0)
+    esperanza = 0.0
+    if cerradas:
+        esperanza = (tasa / 100) * acierto_neto - (1 - tasa / 100) * fallo_neto
+
+    return {
+        "aciertos": aciertos, "fallos": fallos, "cerradas": cerradas, "tasa": tasa,
+        "ganado": ganado, "perdido": perdido, "neto": ganado - perdido,
+        "equilibrio": equilibrio, "esperanza": esperanza,
+        "acierto_neto": acierto_neto, "fallo_neto": fallo_neto,
+    }
+
+
+def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_onchain,
+                          cambio_30d, tendencia_30d):
+    try:
+        probabilidad = calcular_probabilidad(confianza)
+        texto_volumen = f"{volumen_onchain:.2f}B USD" if volumen_onchain is not None else "N/A"
+        emoji_tipo = "🟢" if tipo == "BUY" else "🔴" if tipo == "SELL" else "⚪"
+        msg = (f"📢 **SEÑAL {emoji_tipo} {tipo} — {simbolo}**\n"
+               f"🎯 Probabilidad: {probabilidad:.1f}%\n"
+               f"💰 Precio: ${precio:,.0f} MXN\n"
+               f"📝 Razón: {razon}\n"
+               f"📊 Volumen 24h: {texto_volumen}\n"
+               f"📈 Cambio 30d: {cambio_30d:+.2f}%\n"
+               f"🧭 Tendencia 30d: {tendencia_30d}\n"
+               f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        if CANAL_CONFIGURADO:
+            return enviar_canal_telegram(msg)
+        else:
+            return enviar_telegram(msg)
+    except Exception as e:
+        print(f"Error enviando señal: {e}")
+        return False
+# ══════════════════ PARTE 8/11: barra lateral ══════════════════
 
 st.sidebar.header("⚙️ Configuración Principal")
 
