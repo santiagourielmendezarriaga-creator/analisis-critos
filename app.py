@@ -1,4 +1,8 @@
-# ══════════════════ PARTE 1/11: importaciones y configuración global ══════════════════
+# -*- coding: utf-8 -*-
+"""
+🧠 Bot Scalping Extremo + Volumen + Tendencia 30d (Streamlit)
+VERSIÓN 11 PARTES — Con Inteligencia Artificial (Gemini)
+"""
 
 import streamlit as st
 import requests
@@ -28,12 +32,14 @@ SALIDAS_IGNORAN_SOLO_SENALES = True
 ESPERA_TRAS_FALLO_MIN = 15
 MENSAJES = deque(maxlen=30)
 
+
 def avisar(mensaje, nivel="info"):
     try:
         MENSAJES.append((datetime.now().strftime("%H:%M:%S"), nivel, mensaje))
     except Exception:
         pass
     print(f"[{nivel}] {mensaje}")
+
 
 def _secreto(nombre, predeterminado=None):
     try:
@@ -44,6 +50,7 @@ def _secreto(nombre, predeterminado=None):
     valor = os.environ.get(nombre)
     return predeterminado if valor is None else valor
 
+
 def _a_booleano(valor, predeterminado=False):
     if valor is None:
         return predeterminado
@@ -53,17 +60,20 @@ def _a_booleano(valor, predeterminado=False):
         return valor != 0
     return str(valor).strip().lower() in {"1", "true", "yes", "y", "si", "sí", "on"}
 
+
 def _a_decimal(valor, predeterminado):
     try:
         return float(valor)
     except (TypeError, ValueError):
         return predeterminado
 
+
 def _a_entero(valor, predeterminado):
     try:
         return int(float(valor))
     except (TypeError, ValueError):
         return predeterminado
+
 
 def _leer(datos, clave_nueva, clave_vieja, predeterminado):
     if clave_nueva in datos:
@@ -72,52 +82,71 @@ def _leer(datos, clave_nueva, clave_vieja, predeterminado):
         return datos[clave_vieja]
     return predeterminado
 
-# 🧠 CONFIGURACIÓN DE LA IA (GEMINI)
+
+# ===== CONFIGURACIÓN DE LA INTELIGENCIA ARTIFICIAL (GEMINI) =====
 GEMINI_API_KEY = str(_secreto("GEMINI_API_KEY", ""))
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
+
 def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
     if not GEMINI_API_KEY:
-        return senal_tecnica, razon
+        return senal_tecnica, f"{razon} (IA no configurada)"
 
-    # Control de límite diario (máx 400 consultas/día)
+    # Control de límite diario (máx 400 consultas/día para no agotar la cuota gratuita)
     hoy = datetime.now().date().isoformat()
     if st.session_state.get("ia_fecha_actual") != hoy:
         st.session_state["ia_fecha_actual"] = hoy
         st.session_state["ia_contador_diario"] = 0
     
     if st.session_state.get("ia_contador_diario", 0) >= 400:
-        return senal_tecnica, razon
+        return senal_tecnica, f"{razon} (Límite IA alcanzado)"
 
     try:
         modelo = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"""
-        Eres un analista financiero senior. Mi bot técnico detectó una oportunidad:
-        - Moneda: {simbolo}
-        - Precio: ${precio:,.2f} MXN
-        - Señal Técnica: {senal_tecnica}
-        - Razón Técnica: {razon}
-        - Contexto: {contexto}
         
-        ¿Esta señal es segura para operar o hay riesgo de caída?
+        # Prompt mejorado: Le exigimos que actúe como analista real, no que copie
+        prompt = f"""
+        Eres un analista financiero senior. Tu trabajo es validar las señales de un bot técnico.
+        
+        Datos de la señal:
+        - Moneda: {simbolo}
+        - Precio Actual: ${precio:,.2f} MXN
+        - Señal del Bot: {senal_tecnica}
+        - Análisis Técnico: {razon}
+        - Contexto de Mercado: {contexto}
+        
+        Instrucciones:
+        1. Si la señal es BUY, analiza si es un buen momento para comprar o si hay riesgo de caída.
+        2. Si la señal es SELL, analiza si es buena para vender o si el precio podría subir más.
+        3. Escribe una explicación BREVE (máximo 15 palabras) pero CONCRETA. No repitas los datos del bot. Menciona el riesgo o la oportunidad.
+        
         Responde SOLO con un JSON válido con este formato exacto:
-        {{"decision": "BUY" | "SELL" | "HOLD", "razon_ia": "Explicación muy breve"}}
+        {{"decision": "BUY" | "SELL" | "HOLD", "razon_ia": "Tu análisis breve aquí"}}
         """
         
         respuesta = modelo.generate_content(
             prompt,
             generation_config={"response_mime_type": "application/json"}
         )
+        
         st.session_state["ia_contador_diario"] += 1
         
         texto_limpio = respuesta.text.replace("```json", "").replace("```", "").strip()
         resultado = json.loads(texto_limpio)
         
-        return resultado.get("decision", senal_tecnica), resultado.get("razon_ia", razon)
+        decision_ia = resultado.get("decision", senal_tecnica)
+        razon_ia = resultado.get("razon_ia", razon)
+        
+        # Si la IA devuelve lo mismo que el bot, le agregamos un aviso
+        if razon_ia == razon:
+            razon_ia = "Confirmado por modelo de lenguaje."
+            
+        return decision_ia, razon_ia
+        
     except Exception as e:
         print(f"⚠️ Error consultando a Gemini: {e}")
-        return senal_tecnica, razon
+        return senal_tecnica, f"{razon} (IA offline)"
     # ══════════════════ PARTE 2/11: Firebase ══════════════════
 
 URL_BASE_FIREBASE = "https://bot-cc6c4-default-rtdb.firebaseio.com"
