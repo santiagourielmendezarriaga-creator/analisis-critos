@@ -1407,10 +1407,10 @@ if st.sidebar.button("🟢 Comprar BTC AHORA"):
 
 if st.sidebar.button("🟢 Comprar ETH AHORA"):
     _compra_manual("ETH", "eth_mxn")
-    # ══════════════════ PARTE 9/11: ciclo principal ══════════════════
-# ══════════════════ PARTE 9/11: ciclo principal ══════════════════
+ # ══════════════════ PARTE 9/11: ciclo principal ══════════════════
 
 MINUTOS_FASE_APRENDIZAJE = 5
+
 
 def _respaldos_automaticos():
     ahora = time.time()
@@ -1478,7 +1478,6 @@ def ejecutar_ciclo(interfaz):
     tendencia_btc = st.session_state.tendencia_historica.get("BTC", {}) or {}
     tendencia_eth = st.session_state.tendencia_historica.get("ETH", {}) or {}
 
-    # ⬇️ ESTA ERA LA PARTE QUE SE HABÍA BORRADO ⬇️
     senal_btc, confianza_btc, razon_btc, _ = analisis_avanzado("BTC", btc, valor_miedo)
     senal_eth, confianza_eth, razon_eth, _ = analisis_avanzado("ETH", eth, valor_miedo)
 
@@ -1497,14 +1496,15 @@ def ejecutar_ciclo(interfaz):
             clave_senal = f"ultima_senal_enviada_{sim_actual}"
             ultima = st.session_state.get(clave_senal, 0)
             
-            if st.session_state.ciclo - ultima > 10:
+            # 🛡️ Anti-spam: 180 ciclos (15 minutos) para no saturar el canal
+            if st.session_state.ciclo - ultima > 180:
                 
                 # 🧠 VALIDACIÓN CON INTELIGENCIA ARTIFICIAL (GEMINI)
                 cache = st.session_state["ia_cache"][sim_actual]
                 ahora_ia = time.time()
                 
-                # Solo pregunta a la IA si pasaron 5 min o si la señal cambió
-                if (ahora_ia - cache.get("ts", 0)) > 300 or cache.get("senal") != senal_actual:
+                # Consultar a la IA solo si pasaron 15 min o si la señal cambió
+                if (ahora_ia - cache.get("ts", 0)) > 900 or cache.get("senal") != senal_actual:
                     datos_t30 = st.session_state.tendencia_historica.get(sim_actual, {}) or {}
                     contexto_str = f"Tendencia 30d: {datos_t30.get('tendencia', 'N/A')}, Volumen: {volumen_onchain_btc if sim_actual == 'BTC' else volumen_onchain_eth}B"
                     
@@ -1512,9 +1512,11 @@ def ejecutar_ciclo(interfaz):
                         sim_actual, precio_actual, senal_actual, razon_actual, contexto_str
                     )
                     
+                    # Guardamos la respuesta de la IA en el caché
                     st.session_state["ia_cache"][sim_actual] = {
                         "senal": senal_actual, 
-                        "ts": ahora_ia
+                        "ts": ahora_ia,
+                        "razon_ia": razon_ia
                     }
                     
                     if senal_ia != senal_actual:
@@ -1522,7 +1524,10 @@ def ejecutar_ciclo(interfaz):
                         continue # Se salta el envío a Telegram porque la IA lo bloqueó
                         
                     # Si la IA aprueba, le agregamos su opinión a la razón
-                    razon_actual = f"{razon_actual} | 🧠 IA: {razon_ia}"
+                    razon_final = f"{razon_actual} | 🧠 IA: {razon_ia}"
+                else:
+                    # Si usamos el caché, recuperamos la razón que dio la IA antes
+                    razon_final = f"{razon_actual} | 🧠 IA: {cache.get('razon_ia', 'Confirmado')}"
 
                 # Envío normal a Telegram
                 datos_t30 = st.session_state.tendencia_historica.get(sim_actual, {}) or {}
@@ -1532,7 +1537,7 @@ def ejecutar_ciclo(interfaz):
                 
                 if enviar_senal_telegram(
                     sim_actual, senal_actual, precio_actual,
-                    razon_actual, conf_actual, vol_onchain,
+                    razon_final, conf_actual, vol_onchain,
                     cambio_t30, tendencia_t30
                 ):
                     st.session_state[clave_senal] = st.session_state.ciclo
