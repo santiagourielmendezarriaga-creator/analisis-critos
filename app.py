@@ -97,7 +97,7 @@ if GEMINI_API_KEY:
 
 def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
     if not client:
-        return senal_tecnica, "ERROR GEMINI: Cliente no inicializado o falta API_KEY"
+        return senal_tecnica, "IA no configurada o llave inválida"
 
     hoy = datetime.now().date().isoformat()
     if st.session_state.get("ia_fecha_actual") != hoy:
@@ -105,7 +105,7 @@ def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
         st.session_state["ia_contador_diario"] = 0
     
     if st.session_state.get("ia_contador_diario", 0) >= 400:
-        return senal_tecnica, "ERROR GEMINI: Límite diario de 400 consultas alcanzado"
+        return senal_tecnica, "Límite diario de IA alcanzado"
 
     try:
         prompt = f"""
@@ -127,7 +127,7 @@ def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
         {{"decision": "BUY" | "SELL" | "HOLD", "razon_ia": "Tu análisis breve aquí"}}
         """
         
-        # 🚨 MODELO ACTUALIZADO: gemini-3.8-flash (el 2.5 ya no está para nuevos)
+        # Modelo actualizado
         response = client.models.generate_content(
             model='gemini-3.8-flash',
             contents=prompt,
@@ -153,7 +153,16 @@ def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
     except Exception as e:
         error_msg = str(e)
         print(f"⚠️ Error consultando a Gemini: {error_msg}")
-        return senal_tecnica, f"ERROR GEMINI: {error_msg}"
+        
+        # 🚨 TRADUCCIÓN DE ERRORES PARA QUE SE VEAN BONITOS EN TELEGRAM
+        if "503" in error_msg or "UNAVAILABLE" in error_msg or "high demand" in error_msg:
+            return senal_tecnica, "Servidores de IA saturados. Señal técnica aplicada."
+        elif "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+            return senal_tecnica, "Límite de consultas IA alcanzado. Señal técnica aplicada."
+        elif "404" in error_msg or "NOT_FOUND" in error_msg:
+            return senal_tecnica, "Modelo de IA no disponible. Revisar configuración."
+        else:
+            return senal_tecnica, "IA no disponible temporalmente."
     # ══════════════════ PARTE 2/11: Firebase ══════════════════
 
 URL_BASE_FIREBASE = "https://bot-cc6c4-default-rtdb.firebaseio.com"
