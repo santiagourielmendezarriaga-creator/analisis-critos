@@ -1201,7 +1201,7 @@ def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_oncha
     except Exception as e:
         print(f"Error enviando señal: {e}")
         return False
-# ══════════════════ PARTE 8/11: barra lateral ══════════════════
+# --- PARTE 8/11: barra lateral y configuración ---
 
 st.sidebar.header("⚙️ Configuración Principal")
 
@@ -1259,6 +1259,7 @@ st.session_state.modo_solo_senales = st.sidebar.checkbox(
     "🔇 Solo señales (no ejecutar)", value=_modo_solo_previo)
 
 st.sidebar.caption("💰 La cartera se muestra en el panel principal.")
+st.sidebar.caption("📌 Las salidas de riesgo se aplican siempre, sin depender del horario ni de la fase.")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**📡 Telegram**")
@@ -1291,56 +1292,6 @@ if st.sidebar.button("📢 Probar Telegram (canal)"):
             st.sidebar.error("❌ Falló el envío al canal")
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("**🚨 Emergencia**")
-
-if st.sidebar.button("🚨 CANCELAR TODAS LAS ÓRDENES EN BITSO", type="primary"):
-    if not LLAVE_API_BITSO or not SECRETO_API_BITSO:
-        st.sidebar.error("❌ Sin credenciales de Bitso")
-    else:
-        canceladas = 0
-        errores = 0
-        detalles = []
-        for libro in ("btc_mxn", "eth_mxn"):
-            try:
-                ruta_oa = f"/v3/open_orders/?book={libro}"
-                cab_o, _ = _crear_cabecera_autenticacion("GET", ruta_oa)
-                if not cab_o:
-                    errores += 1
-                    detalles.append(f"{libro}: sin firma")
-                    continue
-                r_oa = requests.get(URL_BASE_BITSO + ruta_oa,
-                                    headers={"Authorization": cab_o}, timeout=10)
-                if r_oa.status_code != 200:
-                    errores += 1
-                    detalles.append(f"{libro}: HTTP {r_oa.status_code}")
-                    continue
-                abiertas = r_oa.json().get("payload") or []
-                for o in abiertas:
-                    oid = o.get("oid")
-                    if oid and cancelar_orden_bitso(oid):
-                        canceladas += 1
-                    elif oid:
-                        errores += 1
-                        detalles.append(f"{libro} {oid}: no canceló")
-            except Exception as e:
-                errores += 1
-                detalles.append(f"{libro}: {e}")
-        st.session_state.orden_pendiente_BTC = None
-        st.session_state.orden_pendiente_ETH = None
-        if canceladas > 0:
-            st.sidebar.success(f"✅ {canceladas} orden(es) cancelada(s)")
-        elif errores == 0:
-            st.sidebar.info("ℹ️ No había órdenes abiertas")
-        else:
-            st.sidebar.warning(f"⚠️ {errores} error(es)")
-        if detalles:
-            with st.sidebar.expander("Ver detalle"):
-                for d in detalles:
-                    st.caption(f"• {d}")
-        time.sleep(1)
-        st.rerun()
-
-st.sidebar.markdown("---")
 st.sidebar.markdown("**🧪 Diagnóstico Firebase**")
 
 if st.sidebar.button("🧪 Probar conexión con Firebase"):
@@ -1349,21 +1300,17 @@ if st.sidebar.button("🧪 Probar conexión con Firebase"):
             st.write(f"URL base: `{URL_BASE_FIREBASE}`")
             resp_base = requests.get(f"{URL_BASE_FIREBASE}/.json?shallow=true", timeout=10)
             st.write(f"Respuesta base: `{resp_base.status_code}`")
-            st.write(f"Ruta completa: `{URL_FIREBASE}`")
+            
+            st.write(f"Ruta: `{URL_FIREBASE}`")
             resp_ruta = requests.get(f"{URL_FIREBASE}/.json?shallow=true", timeout=10)
             st.write(f"Respuesta ruta: `{resp_ruta.status_code}`")
+            
             if resp_ruta.status_code == 401 or "Permission denied" in resp_ruta.text:
-                st.error("❌ Error de permisos. Revisa Rules en Firebase.")
+                st.error("❌ Error de permisos. Revisa las Rules.")
                 status.update(label="Fallo de permisos", state="error")
             elif resp_ruta.status_code == 200:
-                prueba_url = f"{URL_FIREBASE}/test_conexion.json"
-                resp_put = requests.put(prueba_url, json={"ok": True, "ts": time.time()}, timeout=10)
-                if resp_put.status_code == 200:
-                    st.success("✅ Conexión OK")
-                    status.update(label="Conexión exitosa", state="complete")
-                else:
-                    st.error(f"❌ Falló escritura: {resp_put.text[:200]}")
-                    status.update(label="Fallo escritura", state="error")
+                st.success("✅ Conexión OK")
+                status.update(label="Conexión exitosa", state="complete")
             else:
                 st.warning(f"⚠️ Status: {resp_ruta.status_code}")
                 status.update(label="Status inesperado", state="error")
@@ -1371,12 +1318,67 @@ if st.sidebar.button("🧪 Probar conexión con Firebase"):
             st.error(f"❌ {e}")
             status.update(label="Excepción", state="error")
 
-# ===== COMPRA MANUAL =====
+# ===== 🧠 DIAGNÓSTICO DE INTELIGENCIA ARTIFICIAL (GEMINI) =====
+st.sidebar.markdown("---")
+st.sidebar.markdown("**🧠 Diagnóstico de IA (Gemini)**")
+
+if st.sidebar.button("🧪 Probar conexión con Gemini"):
+    if not GEMINI_API_KEY:
+        st.sidebar.error("❌ Falta GEMINI_API_KEY en los Secrets.")
+    else:
+        with st.sidebar.spinner("Consultando a Gemini..."):
+            # Hacemos una consulta de prueba con una señal falsa
+            res_decision, res_razon = consultar_gemini(
+                "BTC", 1500000, "BUY", "Prueba de conexión del sistema", "Tendencia lateral"
+            )
+            
+            # Si el texto contiene errores, mostramos la alerta
+            if "offline" in res_razon or "no configurada" in res_razon:
+                st.sidebar.error("❌ Falló la conexión")
+                st.sidebar.warning(f"Detalle: {res_razon}")
+            else:
+                st.sidebar.success("✅ ¡IA Conectada y respondiendo!")
+                st.sidebar.info(f"Decisión de la IA: {res_decision}")
+                st.sidebar.caption(f"Análisis: {res_razon}")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("**🚨 Emergencia**")
+
+if st.sidebar.button("🚨 CANCELAR TODAS LAS ÓRDENES EN BITSO", type="primary"):
+    if not LLAVE_API_BITSO or not SECRETO_API_BITSO:
+        st.sidebar.error("❌ Sin credenciales de Bitso")
+    else:
+        canceladas = 0
+        errores = 0
+        for libro in ("btc_mxn", "eth_mxn"):
+            try:
+                ruta_oa = f"/v3/open_orders/?book={libro}"
+                cab_o, _ = _crear_cabecera_autenticacion("GET", ruta_oa)
+                if not cab_o:
+                    continue
+                r_oa = requests.get(URL_BASE_BITSO + ruta_oa, headers={"Authorization": cab_o}, timeout=10)
+                if r_oa.status_code == 200:
+                    abiertas = r_oa.json().get("payload") or []
+                    for o in abiertas:
+                        oid = o.get("oid")
+                        if oid and cancelar_orden_bitso(oid):
+                            canceladas += 1
+            except Exception:
+                errores += 1
+        st.session_state.orden_pendiente_BTC = None
+        st.session_state.orden_pendiente_ETH = None
+        if canceladas > 0:
+            st.sidebar.success(f"✅ {canceladas} orden(es) cancelada(s)")
+        elif errores == 0:
+            st.sidebar.info("ℹ️ No había órdenes abiertas")
+        else:
+            st.sidebar.warning(f"⚠️ {errores} error(es)")
+        time.sleep(1)
+        st.rerun()
+
 def _compra_manual(simbolo, libro):
-    with st.sidebar.expander(f"🔍 Diagnóstico de compra {simbolo}", expanded=True):
+    with st.sidebar.expander(f"🔍 Compra manual {simbolo}", expanded=True):
         precio = obtener_precio_bitso(libro)
-        st.write("**Precio:** " + str(precio))
-        st.write("**MODO_REAL:** " + str(MODO_REAL))
         if not precio:
             st.error("❌ No se pudo obtener el precio")
             return
@@ -1386,17 +1388,15 @@ def _compra_manual(simbolo, libro):
         monto = min(50.0, MONTO_MAXIMO_POR_OPERACION)
         precio_objetivo = precio * 0.998
         cantidad = (monto * 0.999) / precio_objetivo
-        st.write(f"**Monto:** ${monto} | **Precio objetivo:** ${round(precio_objetivo, 2)}")
+        st.write(f"**Monto:** ${monto} | **Precio:** ${round(precio_objetivo, 2)}")
         if st.button(f"Confirmar compra {simbolo}", key=f"compra_manual_{simbolo}"):
-            orden = colocar_orden_bitso(libro, "buy", str(round(cantidad, 8)),
-                                        str(round(precio_objetivo, 2)))
+            orden = colocar_orden_bitso(libro, "buy", str(round(cantidad, 8)), str(round(precio_objetivo, 2)))
             if orden and not orden.get("error"):
                 st.success("✅ Orden colocada: " + str(orden.get("oid")))
                 st.session_state[f"orden_pendiente_{simbolo}"] = {
                     "oid": orden.get("oid"), "side": "buy", "sym": simbolo,
                     "price": precio_objetivo, "qty": cantidad, "monto": monto,
-                    "cant": 1, "timestamp": time.time(), "confianza": 0,
-                    "motivo": "compra manual",
+                    "cant": 1, "timestamp": time.time(), "confianza": 0, "motivo": "manual"
                 }
                 guardar_datos()
             else:
