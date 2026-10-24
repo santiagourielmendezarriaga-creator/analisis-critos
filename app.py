@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 🧠 Bot Scalping Extremo + Volumen + Tendencia 30d (Streamlit)
-VERSIÓN 11 PARTES — Con Inteligencia Artificial (Gemini GenAI SDK)
+VERSIÓN 11 PARTES — Con Inteligencia Artificial (Gemini)
 """
 
 import streamlit as st
@@ -87,7 +87,6 @@ def _leer(datos, clave_nueva, clave_vieja, predeterminado):
 # ===== CONFIGURACIÓN DE LA INTELIGENCIA ARTIFICIAL (GEMINI) =====
 GEMINI_API_KEY = str(_secreto("GEMINI_API_KEY", ""))
 
-# Inicializamos el cliente (solo si hay llave)
 client = None
 if GEMINI_API_KEY:
     try:
@@ -98,16 +97,15 @@ if GEMINI_API_KEY:
 
 def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
     if not client:
-        return senal_tecnica, f"{razon} (IA no configurada)"
+        return senal_tecnica, "ERROR GEMINI: Cliente no inicializado o falta API_KEY"
 
-    # Control de límite diario
     hoy = datetime.now().date().isoformat()
     if st.session_state.get("ia_fecha_actual") != hoy:
         st.session_state["ia_fecha_actual"] = hoy
         st.session_state["ia_contador_diario"] = 0
     
     if st.session_state.get("ia_contador_diario", 0) >= 400:
-        return senal_tecnica, f"{razon} (Límite IA alcanzado)"
+        return senal_tecnica, "ERROR GEMINI: Límite diario de 400 consultas alcanzado"
 
     try:
         prompt = f"""
@@ -123,20 +121,20 @@ def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
         Instrucciones:
         1. Si la señal es BUY, analiza si es un buen momento para comprar o si hay riesgo de caída.
         2. Si la señal es SELL, analiza si es buena para vender o si el precio podría subir más.
-        3. Escribe una explicación BREVE (máximo 15 palabras) pero CONCRETA. No repitas los datos del bot. Menciona el riesgo o la oportunidad.
+        3. Escribe una explicación BREVE (máximo 15 palabras) pero CONCRETA.
         
         Responde SOLO con un JSON válido con este formato exacto:
         {{"decision": "BUY" | "SELL" | "HOLD", "razon_ia": "Tu análisis breve aquí"}}
         """
         
-        # Nueva sintaxis del SDK google.genai
+        # Usamos el modelo 1.5-flash que es el más compatible
         response = client.models.generate_content(
             model='gemini-1.5-flash',
             contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type='application/json',
-                temperature=0.3 # Un poco de temperatura para que no sea tan robótico
-            )
+            config={
+                'response_mime_type': 'application/json',
+                'temperature': 0.3
+            }
         )
         
         st.session_state["ia_contador_diario"] += 1
@@ -148,13 +146,15 @@ def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
         razon_ia = resultado.get("razon_ia", razon)
         
         if razon_ia == razon:
-            razon_ia = "Confirmado por modelo de lenguaje."
+            razon_ia = "Confirmado por análisis de IA."
             
         return decision_ia, razon_ia
         
     except Exception as e:
-        print(f"⚠️ Error consultando a Gemini: {e}")
-        return senal_tecnica, f"{razon} (IA offline)"
+        # 🚨 AQUÍ CAPTURAMOS EL ERROR EXACTO DE GOOGLE
+        error_msg = str(e)
+        print(f"⚠️ Error consultando a Gemini: {error_msg}")
+        return senal_tecnica, f"ERROR GEMINI: {error_msg}"
     # ══════════════════ PARTE 2/11: Firebase ══════════════════
 
 URL_BASE_FIREBASE = "https://bot-cc6c4-default-rtdb.firebaseio.com"
@@ -1327,15 +1327,14 @@ if st.sidebar.button("🧪 Probar conexión con Gemini"):
         st.sidebar.error("❌ Falta GEMINI_API_KEY en los Secrets.")
     else:
         with st.sidebar.spinner("Consultando a Gemini..."):
-            # Hacemos una consulta de prueba con una señal falsa
             res_decision, res_razon = consultar_gemini(
                 "BTC", 1500000, "BUY", "Prueba de conexión del sistema", "Tendencia lateral"
             )
             
-            # Si el texto contiene errores, mostramos la alerta
-            if "offline" in res_razon or "no configurada" in res_razon:
+            # 🚨 AQUÍ SE MOSTRARÁ EL ERROR EXACTO
+            if "ERROR GEMINI" in res_razon:
                 st.sidebar.error("❌ Falló la conexión")
-                st.sidebar.warning(f"Detalle: {res_razon}")
+                st.sidebar.warning(f"Detalle técnico: {res_razon}")
             else:
                 st.sidebar.success("✅ ¡IA Conectada y respondiendo!")
                 st.sidebar.info(f"Decisión de la IA: {res_decision}")
