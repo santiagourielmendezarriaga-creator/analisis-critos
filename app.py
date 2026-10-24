@@ -127,9 +127,9 @@ def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
         {{"decision": "BUY" | "SELL" | "HOLD", "razon_ia": "Tu análisis breve aquí"}}
         """
         
-        # 🚨 MODELO ACTUALIZADO: gemini-2.5-flash (el 1.5 ya no existe)
+        # 🚨 MODELO ACTUALIZADO: gemini-3.8-flash (el 2.5 ya no está para nuevos)
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.8-flash',
             contents=prompt,
             config={
                 'response_mime_type': 'application/json',
