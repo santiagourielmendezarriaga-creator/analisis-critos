@@ -127,9 +127,9 @@ def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
         {{"decision": "BUY" | "SELL" | "HOLD", "razon_ia": "Tu análisis breve aquí"}}
         """
         
-        # Usamos el modelo 1.5-flash que es el más compatible
+        # 🚨 MODELO ACTUALIZADO: gemini-2.5-flash (el 1.5 ya no existe)
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-2.5-flash',
             contents=prompt,
             config={
                 'response_mime_type': 'application/json',
@@ -151,7 +151,6 @@ def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
         return decision_ia, razon_ia
         
     except Exception as e:
-        # 🚨 AQUÍ CAPTURAMOS EL ERROR EXACTO DE GOOGLE
         error_msg = str(e)
         print(f"⚠️ Error consultando a Gemini: {error_msg}")
         return senal_tecnica, f"ERROR GEMINI: {error_msg}"
