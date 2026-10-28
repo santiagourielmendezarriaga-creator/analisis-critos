@@ -295,6 +295,23 @@ def consultar_segunda_ia(prov, simbolo, precio, senal_tecnica, razon, contexto):
         return senal_tecnica, f"{nombre} no disponible temporalmente", False
 
 
+def listar_modelos_disponibles(prov):
+    """IDs de modelos de chat que la cuenta puede usar (GET /models, formato OpenAI).
+    Devuelve [] si no se pudo consultar."""
+    try:
+        url = prov["url"].replace("/chat/completions", "/models")
+        respuesta = requests.get(
+            url, headers={"Authorization": f"Bearer {prov['clave']}"}, timeout=10)
+        if respuesta.status_code != 200:
+            return []
+        ids = [m.get("id", "") for m in (respuesta.json().get("data") or []) if isinstance(m, dict)]
+        excluidos = ("whisper", "tts", "orpheus", "guard", "embed", "moderation")
+        return sorted(i for i in ids if i and not any(x in i.lower() for x in excluidos))
+    except Exception as e:
+        print(f"Error listando modelos de {prov.get('nombre')}: {type(e).__name__}")
+        return []
+
+
 def obtener_segunda_opinion(simbolo, precio, senal, razon, contexto):
     """Segunda opinión con caché de 15 min por moneda. Prueba los proveedores en orden y
     se queda con el primero que responda de verdad. Devuelve un dict
@@ -1861,6 +1878,16 @@ for _prov in _proveedores_segunda_opinion():
         else:
             st.sidebar.error(f"❌ {_prov['nombre']} no respondió de verdad")
             st.sidebar.warning(f"Detalle: {_raz}")
+            if "no disponible en" in _raz:
+                _modelos = listar_modelos_disponibles(_prov)
+                if _modelos:
+                    st.sidebar.info(
+                        f"Modelos disponibles en tu cuenta de {_prov['nombre']}:\n\n"
+                        + "\n".join(f"- {m}" for m in _modelos[:20])
+                        + f"\n\nCopia uno en el secret {_prov['id'].upper()}_MODELO.")
+                else:
+                    st.sidebar.caption(
+                        "No pude consultar la lista de modelos; revísala en la consola del proveedor.")
         st.sidebar.caption(f"Modelo configurado: {_prov['modelo']}")
 
 st.sidebar.markdown("---")
