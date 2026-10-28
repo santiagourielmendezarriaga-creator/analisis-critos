@@ -86,6 +86,10 @@ def _leer(datos, clave_nueva, clave_vieja, predeterminado):
 
 # ===== CONFIGURACIÓN DE LA INTELIGENCIA ARTIFICIAL (GEMINI) =====
 GEMINI_API_KEY = str(_secreto("GEMINI_API_KEY", ""))
+# El modelo se puede cambiar desde los Secrets (GEMINI_MODELO) sin tocar el código.
+GEMINI_MODELO = str(_secreto("GEMINI_MODELO", "") or "").strip() or "gemini-3.8-flash"
+DECISIONES_VALIDAS = ("BUY", "SELL", "HOLD")
+LIMITE_DIARIO_IA = 400
 
 client = None
 if GEMINI_API_KEY:
@@ -96,16 +100,21 @@ if GEMINI_API_KEY:
 
 
 def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
+    """Devuelve (decision, razon_ia, validada).
+
+    validada=True solo cuando Gemini respondió de verdad con una decisión válida.
+    Si algo falla, devuelve la señal técnica, un mensaje y validada=False.
+    """
     if not client:
-        return senal_tecnica, "IA no configurada o llave inválida"
+        return senal_tecnica, "IA no configurada o llave inválida", False
 
     hoy = datetime.now().date().isoformat()
     if st.session_state.get("ia_fecha_actual") != hoy:
         st.session_state["ia_fecha_actual"] = hoy
         st.session_state["ia_contador_diario"] = 0
-    
-    if st.session_state.get("ia_contador_diario", 0) >= 400:
-        return senal_tecnica, "Límite diario de IA alcanzado"
+
+    if st.session_state.get("ia_contador_diario", 0) >= LIMITE_DIARIO_IA:
+        return senal_tecnica, "Límite diario de IA alcanzado", False
 
     try:
         prompt = f"""
@@ -126,51 +135,62 @@ def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
         Responde SOLO con un JSON válido con este formato exacto:
         {{"decision": "BUY" | "SELL" | "HOLD", "razon_ia": "Tu análisis breve aquí"}}
         """
-        
-        # Modelo actualizado
+
         response = client.models.generate_content(
-            model='gemini-3.8-flash',
+            model=GEMINI_MODELO,
             contents=prompt,
             config={
                 'response_mime_type': 'application/json',
                 'temperature': 0.3
             }
         )
-        
-        st.session_state["ia_contador_diario"] += 1
-        
+
+        st.session_state["ia_contador_diario"] = st.session_state.get("ia_contador_diario", 0) + 1
+
         texto_limpio = response.text.replace("```json", "").replace("```", "").strip()
         resultado = json.loads(texto_limpio)
-        
-        decision_ia = resultado.get("decision", senal_tecnica)
-        razon_ia = resultado.get("razon_ia", razon)
-        
-        if razon_ia == razon:
+        if not isinstance(resultado, dict):
+            return senal_tecnica, "Respuesta de IA no válida. Señal técnica aplicada.", False
+
+        decision_ia = str(resultado.get("decision", "")).strip().upper()
+        if decision_ia not in DECISIONES_VALIDAS:
+            return senal_tecnica, "Respuesta de IA no válida. Señal técnica aplicada.", False
+
+        razon_ia = str(resultado.get("razon_ia") or "").strip()
+        if not razon_ia or razon_ia == razon:
             razon_ia = "Confirmado por análisis de IA."
-            
-        return decision_ia, razon_ia
-        
+
+        return decision_ia, razon_ia, True
+
     except Exception as e:
         error_msg = str(e)
         print(f"⚠️ Error consultando a Gemini: {error_msg}")
-        
-        # 🚨 TRADUCCIÓN DE ERRORES PARA QUE SE VEAN BONITOS EN TELEGRAM
+
+        # Mensajes cortos y claros para Telegram y el panel
         if "503" in error_msg or "UNAVAILABLE" in error_msg or "high demand" in error_msg:
-            return senal_tecnica, "Servidores de IA saturados. Señal técnica aplicada."
+            return senal_tecnica, "Servidores de IA saturados. Señal técnica aplicada.", False
         elif "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-            return senal_tecnica, "Límite de consultas IA alcanzado. Señal técnica aplicada."
+            return senal_tecnica, "Límite de consultas IA alcanzado. Señal técnica aplicada.", False
         elif "404" in error_msg or "NOT_FOUND" in error_msg:
-            return senal_tecnica, "Modelo de IA no disponible. Revisar configuración."
+            return senal_tecnica, f"Modelo de IA '{GEMINI_MODELO}' no disponible. Revisar configuración.", False
         else:
-            return senal_tecnica, "IA no disponible temporalmente."
+            return senal_tecnica, "IA no disponible temporalmente.", False
+
+
     # ══════════════════ PARTE 2/11: Firebase ══════════════════
 
-URL_BASE_FIREBASE = "https://bot-cc6c4-default-rtdb.firebaseio.com"
-RUTA_SECRETA = "b7k2m9x4q1z8"
-URL_FIREBASE = f"{URL_BASE_FIREBASE}/{RUTA_SECRETA}"
+# La URL y la ruta ya NO viven en el código: se leen de los Secrets.
+#   FIREBASE_URL   = "https://tu-proyecto-default-rtdb.firebaseio.com"
+#   FIREBASE_RUTA  = "ruta-privada-larga-y-aleatoria"
+URL_BASE_FIREBASE = str(_secreto("FIREBASE_URL", "") or "").strip().rstrip("/")
+RUTA_SECRETA = str(_secreto("FIREBASE_RUTA", "") or "").strip().strip("/")
+FIREBASE_CONFIGURADO = bool(URL_BASE_FIREBASE and RUTA_SECRETA)
+URL_FIREBASE = f"{URL_BASE_FIREBASE}/{RUTA_SECRETA}" if FIREBASE_CONFIGURADO else ""
 
 
 def guardar_datos():
+    if not FIREBASE_CONFIGURADO:
+        return False, "Firebase no configurado"
     try:
         datos = {
             "saldo": st.session_state.saldo,
@@ -226,6 +246,8 @@ def guardar_datos():
 
 
 def cargar_datos():
+    if not FIREBASE_CONFIGURADO:
+        return None
     try:
         url = f"{URL_FIREBASE}/bot.json"
         respuesta = requests.get(url, timeout=10)
@@ -355,6 +377,8 @@ def restaurar_desde_archivo():
 
 
 def crear_respaldo():
+    if not FIREBASE_CONFIGURADO:
+        return None, "Firebase no configurado"
     try:
         url = f"{URL_FIREBASE}/bot.json"
         respuesta = requests.get(url, timeout=10)
@@ -383,6 +407,8 @@ def crear_respaldo():
 
 
 def listar_respaldos():
+    if not FIREBASE_CONFIGURADO:
+        return []
     try:
         url = f"{URL_FIREBASE}/backups.json"
         respuesta = requests.get(url, timeout=10)
@@ -1091,6 +1117,12 @@ if MODO_REAL:
 else:
     st.info("📡 MODO SOLO SEÑALES — No opera, solo envía señales al canal")
 
+if not FIREBASE_CONFIGURADO:
+    st.warning(
+        "⚠️ Firebase no está configurado (faltan FIREBASE_URL y FIREBASE_RUTA en los Secrets). "
+        "El bot funciona, pero NO guarda ni restaura su estado entre reinicios."
+    )
+
 
 def _aplicar_compra(simbolo, monto, precio, comision=COMISION):
     cantidad = (monto * (1 - comision)) / precio
@@ -1302,14 +1334,15 @@ if st.sidebar.button("📢 Probar Telegram (canal)"):
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🧪 Diagnóstico Firebase**")
 
-if st.sidebar.button("🧪 Probar conexión con Firebase"):
+if not FIREBASE_CONFIGURADO:
+    st.sidebar.error("❌ Faltan FIREBASE_URL y FIREBASE_RUTA en los Secrets.")
+elif st.sidebar.button("🧪 Probar conexión con Firebase"):
     with st.sidebar.status("Probando...", expanded=True) as status:
         try:
-            st.write(f"URL base: `{URL_BASE_FIREBASE}`")
+            st.write("Ruta privada: configurada ✅ (no se muestra)")
             resp_base = requests.get(f"{URL_BASE_FIREBASE}/.json?shallow=true", timeout=10)
             st.write(f"Respuesta base: `{resp_base.status_code}`")
             
-            st.write(f"Ruta: `{URL_FIREBASE}`")
             resp_ruta = requests.get(f"{URL_FIREBASE}/.json?shallow=true", timeout=10)
             st.write(f"Respuesta ruta: `{resp_ruta.status_code}`")
             
@@ -1334,19 +1367,19 @@ if st.sidebar.button("🧪 Probar conexión con Gemini"):
     if not GEMINI_API_KEY:
         st.sidebar.error("❌ Falta GEMINI_API_KEY en los Secrets.")
     else:
-        with st.sidebar.spinner("Consultando a Gemini..."):
-            res_decision, res_razon = consultar_gemini(
+        with st.spinner("Consultando a Gemini..."):
+            res_decision, res_razon, res_validada = consultar_gemini(
                 "BTC", 1500000, "BUY", "Prueba de conexión del sistema", "Tendencia lateral"
             )
-            
-            # 🚨 AQUÍ SE MOSTRARÁ EL ERROR EXACTO
-            if "ERROR GEMINI" in res_razon:
-                st.sidebar.error("❌ Falló la conexión")
-                st.sidebar.warning(f"Detalle técnico: {res_razon}")
-            else:
-                st.sidebar.success("✅ ¡IA Conectada y respondiendo!")
-                st.sidebar.info(f"Decisión de la IA: {res_decision}")
-                st.sidebar.caption(f"Análisis: {res_razon}")
+
+        if res_validada:
+            st.sidebar.success("✅ ¡IA conectada y respondiendo!")
+            st.sidebar.info(f"Decisión de la IA: {res_decision}")
+            st.sidebar.caption(f"Análisis: {res_razon}")
+        else:
+            st.sidebar.error("❌ Gemini no respondió de verdad")
+            st.sidebar.warning(f"Detalle: {res_razon}")
+        st.sidebar.caption(f"Modelo configurado: {GEMINI_MODELO}")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🚨 Emergencia**")
@@ -1515,7 +1548,7 @@ def ejecutar_ciclo(interfaz):
                     datos_t30 = st.session_state.tendencia_historica.get(sim_actual, {}) or {}
                     contexto_str = f"Tendencia 30d: {datos_t30.get('tendencia', 'N/A')}, Volumen: {volumen_onchain_btc if sim_actual == 'BTC' else volumen_onchain_eth}B"
                     
-                    senal_ia, razon_ia = consultar_gemini(
+                    senal_ia, razon_ia, _ia_validada = consultar_gemini(
                         sim_actual, precio_actual, senal_actual, razon_actual, contexto_str
                     )
                     
