@@ -36,7 +36,7 @@ MENSAJES = deque(maxlen=30)
 
 def avisar(mensaje, nivel="info"):
     try:
-        MENSAJES.append((datetime.now().strftime("%H:%M:%S"), nivel, mensaje))
+        MENSAJES.append((datetime.now(timezone(timedelta(hours=-6))).strftime("%H:%M:%S"), nivel, mensaje))
     except Exception:
         pass
     print(f"[{nivel}] {mensaje}")
@@ -1724,7 +1724,7 @@ def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_oncha
                f"📊 Volumen 24h: {texto_volumen}\n"
                f"📈 Cambio 30d: {cambio_30d:+.2f}%\n"
                f"🧭 Tendencia 30d: {tendencia_30d}\n"
-               f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+               f"⏰ {datetime.now(timezone(timedelta(hours=-6))).strftime('%Y-%m-%d %H:%M:%S')} (CDMX)")
         if opinion:
             msg += f"\n\n{opinion}"
         if CANAL_CONFIGURADO:
