@@ -177,6 +177,123 @@ def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
             return senal_tecnica, "IA no disponible temporalmente.", False
 
 
+# ===== SEGUNDA OPINIÓN: DEEPSEEK =====
+# Opcional. Sin DEEPSEEK_API_KEY en los Secrets, el bot funciona igual que antes.
+DEEPSEEK_API_KEY = str(_secreto("DEEPSEEK_API_KEY", "") or "").strip()
+DEEPSEEK_MODELO = str(_secreto("DEEPSEEK_MODELO", "") or "").strip() or "deepseek-flash"
+DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
+DEEPSEEK_CONFIGURADO = bool(DEEPSEEK_API_KEY)
+LIMITE_DIARIO_DEEPSEEK = 400
+
+
+def consultar_deepseek(simbolo, precio, senal_tecnica, razon, contexto):
+    """Devuelve (decision, razon_ia, validada). Misma idea que consultar_gemini."""
+    if not DEEPSEEK_CONFIGURADO:
+        return senal_tecnica, "DeepSeek no configurado", False
+
+    hoy = datetime.now().date().isoformat()
+    if st.session_state.get("ds_fecha_actual") != hoy:
+        st.session_state["ds_fecha_actual"] = hoy
+        st.session_state["ds_contador_diario"] = 0
+    if st.session_state.get("ds_contador_diario", 0) >= LIMITE_DIARIO_DEEPSEEK:
+        return senal_tecnica, "Límite diario de DeepSeek alcanzado", False
+
+    prompt = f"""
+    Eres un analista financiero senior. Tu trabajo es validar las señales de un bot técnico.
+
+    Datos de la señal:
+    - Moneda: {simbolo}
+    - Precio Actual: ${precio:,.2f} MXN
+    - Señal del Bot: {senal_tecnica}
+    - Análisis Técnico: {razon}
+    - Contexto de Mercado: {contexto}
+
+    Instrucciones:
+    1. Si la señal es BUY, analiza si es un buen momento para comprar o si hay riesgo de caída.
+    2. Si la señal es SELL, analiza si es buena para vender o si el precio podría subir más.
+    3. Escribe una explicación BREVE (máximo 15 palabras) pero CONCRETA.
+
+    Responde SOLO con un JSON válido con este formato exacto:
+    {{"decision": "BUY" | "SELL" | "HOLD", "razon_ia": "Tu análisis breve aquí"}}
+    """
+    try:
+        respuesta = requests.post(
+            DEEPSEEK_URL,
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                     "Content-Type": "application/json"},
+            json={
+                "model": DEEPSEEK_MODELO,
+                "messages": [{"role": "user", "content": prompt}],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.3,
+                "max_tokens": 200,
+                "stream": False,
+            },
+            timeout=20,
+        )
+        codigo = respuesta.status_code
+        if codigo == 401:
+            return senal_tecnica, "Llave de DeepSeek inválida", False
+        if codigo == 402:
+            return senal_tecnica, "Saldo insuficiente en DeepSeek", False
+        if codigo == 429:
+            return senal_tecnica, "Límite de consultas de DeepSeek alcanzado", False
+        if codigo in (500, 502, 503, 504):
+            return senal_tecnica, "Servidores de DeepSeek saturados", False
+        if codigo != 200:
+            return senal_tecnica, f"DeepSeek respondió con error {codigo}", False
+
+        st.session_state["ds_contador_diario"] = st.session_state.get("ds_contador_diario", 0) + 1
+
+        contenido = respuesta.json()["choices"][0]["message"]["content"]
+        texto_limpio = str(contenido).replace("```json", "").replace("```", "").strip()
+        resultado = json.loads(texto_limpio)
+        if not isinstance(resultado, dict):
+            return senal_tecnica, "Respuesta de DeepSeek no válida", False
+
+        decision = str(resultado.get("decision", "")).strip().upper()
+        if decision not in DECISIONES_VALIDAS:
+            return senal_tecnica, "Respuesta de DeepSeek no válida", False
+
+        razon_ia = str(resultado.get("razon_ia") or "").strip() or "Sin detalle."
+        return decision, razon_ia, True
+    except Exception as e:
+        # Nunca se imprime la llave; solo el tipo de error.
+        print(f"⚠️ Error consultando a DeepSeek: {type(e).__name__}")
+        return senal_tecnica, "DeepSeek no disponible temporalmente", False
+
+
+def obtener_segunda_opinion(simbolo, precio, senal, razon, contexto):
+    """Segunda opinión de DeepSeek con caché de 15 min por moneda.
+    Devuelve un dict {decision, razon, validada} o None si DeepSeek no está configurado."""
+    if not DEEPSEEK_CONFIGURADO:
+        return None
+    cache_todo = st.session_state.setdefault("ds_cache", {})
+    cache = cache_todo.get(simbolo) or {}
+    ahora = time.time()
+    if (ahora - cache.get("ts", 0)) <= 900 and cache.get("senal") == senal and cache.get("resultado"):
+        return cache["resultado"]
+    decision, razon_ds, validada = consultar_deepseek(simbolo, precio, senal, razon, contexto)
+    resultado = {"decision": decision, "razon": razon_ds, "validada": validada}
+    cache_todo[simbolo] = {"senal": senal, "ts": ahora, "resultado": resultado}
+    return resultado
+
+
+def formatear_segunda_opinion(senal, gemini_valido, segunda):
+    """Texto para Telegram con la opinión de DeepSeek y si coincide con Gemini."""
+    if not segunda:
+        return ""
+    if not segunda["validada"]:
+        return f"🤖 DeepSeek: sin opinión ({segunda['razon']})"
+    linea = f"🤖 DeepSeek: {segunda['decision']} — {segunda['razon']}"
+    if segunda["decision"] == senal:
+        if gemini_valido:
+            return linea + "\n✅ Gemini y DeepSeek coinciden con la señal."
+        return linea + "\n✅ DeepSeek coincide con la señal (Gemini no pudo validarla)."
+    return (linea + f"\n⚠️ DeepSeek NO coincide con la señal (opina {segunda['decision']}). "
+            "Toma precaución.")
+
+
     # ══════════════════ PARTE 2/11: Firebase ══════════════════
 
 # Igual que antes: URL y ruta con sus valores originales.
@@ -1468,6 +1585,23 @@ if st.sidebar.button("🧪 Probar conexión con Gemini"):
             st.sidebar.warning(f"Detalle: {res_razon}")
         st.sidebar.caption(f"Modelo configurado: {GEMINI_MODELO}")
 
+st.sidebar.markdown("**🤖 Diagnóstico de DeepSeek (2ª opinión)**")
+if not DEEPSEEK_CONFIGURADO:
+    st.sidebar.info("ℹ️ Opcional: agrega DEEPSEEK_API_KEY en los Secrets para activarlo.")
+elif st.sidebar.button("🧪 Probar conexión con DeepSeek"):
+    with st.spinner("Consultando a DeepSeek..."):
+        ds_decision, ds_razon, ds_validada = consultar_deepseek(
+            "BTC", 1500000, "BUY", "Prueba de conexión del sistema", "Tendencia lateral"
+        )
+    if ds_validada:
+        st.sidebar.success("✅ DeepSeek conectado y respondiendo")
+        st.sidebar.info(f"Decisión: {ds_decision}")
+        st.sidebar.caption(f"Análisis: {ds_razon}")
+    else:
+        st.sidebar.error("❌ DeepSeek no respondió de verdad")
+        st.sidebar.warning(f"Detalle: {ds_razon}")
+    st.sidebar.caption(f"Modelo configurado: {DEEPSEEK_MODELO}")
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🚨 Emergencia**")
 
@@ -1643,8 +1777,11 @@ def ejecutar_ciclo(interfaz):
                     st.session_state["ia_cache"][sim_actual] = {
                         "senal": senal_actual, 
                         "ts": ahora_ia,
-                        "razon_ia": razon_ia
+                        "razon_ia": razon_ia,
+                        "decision_ia": senal_ia,
+                        "validada": _ia_validada
                     }
+                    gemini_valido = _ia_validada
                     
                     if senal_ia != senal_actual:
                         avisar(f"🧠 IA bloqueó {senal_actual} de {sim_actual}: {razon_ia}", "warning")
@@ -1653,6 +1790,11 @@ def ejecutar_ciclo(interfaz):
                     # Si la IA aprueba, le agregamos su opinión a la razón
                     razon_final = f"{razon_actual} | 🧠 IA: {razon_ia}"
                 else:
+                    # Si la IA ya bloqueó esta señal, el bloqueo se respeta mientras dure el caché
+                    # (antes solo duraba un ciclo y la señal salía en el siguiente).
+                    if cache.get("decision_ia", senal_actual) != senal_actual:
+                        continue
+                    gemini_valido = bool(cache.get("validada", False))
                     # Si usamos el caché, recuperamos la razón que dio la IA antes
                     razon_final = f"{razon_actual} | 🧠 IA: {cache.get('razon_ia', 'Confirmado')}"
 
@@ -1667,6 +1809,19 @@ def ejecutar_ciclo(interfaz):
                     sim_actual, senal_actual, valor_miedo, etiqueta_miedo, vol_onchain,
                     estado_horario, descripcion_horario, es_buen_horario
                 )
+
+                # 🤖 Segunda opinión (DeepSeek): solo informa, no bloquea la señal
+                try:
+                    contexto_ds = (f"Tendencia 30d: {tendencia_t30}, Cambio 30d: {cambio_t30:+.2f}%, "
+                                   f"Volumen: {vol_onchain}B, Miedo/Codicia: {valor_miedo}/100")
+                    segunda = obtener_segunda_opinion(
+                        sim_actual, precio_actual, senal_actual, razon_actual, contexto_ds)
+                    texto_segunda = formatear_segunda_opinion(senal_actual, gemini_valido, segunda)
+                except Exception as e:
+                    print(f"Error en la segunda opinión: {type(e).__name__}")
+                    texto_segunda = ""
+                if texto_segunda:
+                    opinion_txt = (opinion_txt + "\n\n" + texto_segunda) if opinion_txt else texto_segunda
 
                 if enviar_senal_telegram(
                     sim_actual, senal_actual, precio_actual,
