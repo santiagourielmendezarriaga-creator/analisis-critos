@@ -177,26 +177,56 @@ def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
             return senal_tecnica, "IA no disponible temporalmente.", False
 
 
-# ===== SEGUNDA OPINIÓN: DEEPSEEK =====
-# Opcional. Sin DEEPSEEK_API_KEY en los Secrets, el bot funciona igual que antes.
+# ===== SEGUNDA OPINIÓN (IAs compatibles con OpenAI: Groq gratis y DeepSeek) =====
+# Todo es opcional. Sin llaves en los Secrets, el bot funciona igual que antes.
+# Orden de uso: primero Groq; si falla o no está configurada, DeepSeek.
+GROQ_API_KEY = str(_secreto("GROQ_API_KEY", "") or "").strip()
+GROQ_MODELO = str(_secreto("GROQ_MODELO", "") or "").strip() or "llama-3.3-70b-versatile"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
 DEEPSEEK_API_KEY = str(_secreto("DEEPSEEK_API_KEY", "") or "").strip()
 DEEPSEEK_MODELO = str(_secreto("DEEPSEEK_MODELO", "") or "").strip() or "deepseek-flash"
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-DEEPSEEK_CONFIGURADO = bool(DEEPSEEK_API_KEY)
-LIMITE_DIARIO_DEEPSEEK = 400
+
+LIMITE_DIARIO_SEGUNDA_IA = 400
 
 
-def consultar_deepseek(simbolo, precio, senal_tecnica, razon, contexto):
-    """Devuelve (decision, razon_ia, validada). Misma idea que consultar_gemini."""
-    if not DEEPSEEK_CONFIGURADO:
-        return senal_tecnica, "DeepSeek no configurado", False
+def _proveedores_segunda_opinion():
+    """Proveedores configurados, en orden de prioridad."""
+    lista = []
+    if GROQ_API_KEY:
+        lista.append({"id": "groq", "nombre": "Groq", "url": GROQ_URL,
+                      "clave": GROQ_API_KEY, "modelo": GROQ_MODELO})
+    if DEEPSEEK_API_KEY:
+        lista.append({"id": "deepseek", "nombre": "DeepSeek", "url": DEEPSEEK_URL,
+                      "clave": DEEPSEEK_API_KEY, "modelo": DEEPSEEK_MODELO})
+    return lista
 
+
+SEGUNDA_OPINION_CONFIGURADA = bool(_proveedores_segunda_opinion())
+
+
+def _extraer_json(texto):
+    """Convierte la respuesta de la IA en un dict; tolera ```json y texto alrededor."""
+    limpio = str(texto).replace("```json", "").replace("```", "").strip()
+    try:
+        return json.loads(limpio)
+    except Exception:
+        coincidencia = re.search(r"\{.*\}", limpio, re.S)
+        return json.loads(coincidencia.group(0)) if coincidencia else None
+
+
+def consultar_segunda_ia(prov, simbolo, precio, senal_tecnica, razon, contexto):
+    """Devuelve (decision, razon_ia, validada) usando un proveedor compatible con OpenAI."""
+    nombre = prov["nombre"]
     hoy = datetime.now().date().isoformat()
-    if st.session_state.get("ds_fecha_actual") != hoy:
-        st.session_state["ds_fecha_actual"] = hoy
-        st.session_state["ds_contador_diario"] = 0
-    if st.session_state.get("ds_contador_diario", 0) >= LIMITE_DIARIO_DEEPSEEK:
-        return senal_tecnica, "Límite diario de DeepSeek alcanzado", False
+    clave_fecha = f"{prov['id']}_fecha_actual"
+    clave_cont = f"{prov['id']}_contador_diario"
+    if st.session_state.get(clave_fecha) != hoy:
+        st.session_state[clave_fecha] = hoy
+        st.session_state[clave_cont] = 0
+    if st.session_state.get(clave_cont, 0) >= LIMITE_DIARIO_SEGUNDA_IA:
+        return senal_tecnica, f"Límite diario de {nombre} alcanzado", False
 
     prompt = f"""
     Eres un analista financiero senior. Tu trabajo es validar las señales de un bot técnico.
@@ -216,81 +246,96 @@ def consultar_deepseek(simbolo, precio, senal_tecnica, razon, contexto):
     Responde SOLO con un JSON válido con este formato exacto:
     {{"decision": "BUY" | "SELL" | "HOLD", "razon_ia": "Tu análisis breve aquí"}}
     """
+    cabeceras = {"Authorization": f"Bearer {prov['clave']}", "Content-Type": "application/json"}
+    cuerpo = {
+        "model": prov["modelo"],
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3,
+        "max_tokens": 200,
+        "stream": False,
+    }
     try:
+        # Primero con modo JSON; si el modelo no lo admite (400), se reintenta sin él.
         respuesta = requests.post(
-            DEEPSEEK_URL,
-            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-                     "Content-Type": "application/json"},
-            json={
-                "model": DEEPSEEK_MODELO,
-                "messages": [{"role": "user", "content": prompt}],
-                "response_format": {"type": "json_object"},
-                "temperature": 0.3,
-                "max_tokens": 200,
-                "stream": False,
-            },
-            timeout=20,
-        )
+            prov["url"], headers=cabeceras, timeout=20,
+            json={**cuerpo, "response_format": {"type": "json_object"}})
+        if respuesta.status_code == 400:
+            respuesta = requests.post(prov["url"], headers=cabeceras, timeout=20, json=cuerpo)
+
         codigo = respuesta.status_code
         if codigo == 401:
-            return senal_tecnica, "Llave de DeepSeek inválida", False
+            return senal_tecnica, f"Llave de {nombre} inválida", False
         if codigo == 402:
-            return senal_tecnica, "Saldo insuficiente en DeepSeek", False
+            return senal_tecnica, f"Saldo insuficiente en {nombre}", False
+        if codigo == 404:
+            return senal_tecnica, f"Modelo '{prov['modelo']}' no disponible en {nombre}", False
         if codigo == 429:
-            return senal_tecnica, "Límite de consultas de DeepSeek alcanzado", False
+            return senal_tecnica, f"Límite de consultas de {nombre} alcanzado", False
         if codigo in (500, 502, 503, 504):
-            return senal_tecnica, "Servidores de DeepSeek saturados", False
+            return senal_tecnica, f"Servidores de {nombre} saturados", False
         if codigo != 200:
-            return senal_tecnica, f"DeepSeek respondió con error {codigo}", False
+            return senal_tecnica, f"{nombre} respondió con error {codigo}", False
 
-        st.session_state["ds_contador_diario"] = st.session_state.get("ds_contador_diario", 0) + 1
+        st.session_state[clave_cont] = st.session_state.get(clave_cont, 0) + 1
 
         contenido = respuesta.json()["choices"][0]["message"]["content"]
-        texto_limpio = str(contenido).replace("```json", "").replace("```", "").strip()
-        resultado = json.loads(texto_limpio)
+        resultado = _extraer_json(contenido)
         if not isinstance(resultado, dict):
-            return senal_tecnica, "Respuesta de DeepSeek no válida", False
+            return senal_tecnica, f"Respuesta de {nombre} no válida", False
 
         decision = str(resultado.get("decision", "")).strip().upper()
         if decision not in DECISIONES_VALIDAS:
-            return senal_tecnica, "Respuesta de DeepSeek no válida", False
+            return senal_tecnica, f"Respuesta de {nombre} no válida", False
 
         razon_ia = str(resultado.get("razon_ia") or "").strip() or "Sin detalle."
         return decision, razon_ia, True
     except Exception as e:
         # Nunca se imprime la llave; solo el tipo de error.
-        print(f"⚠️ Error consultando a DeepSeek: {type(e).__name__}")
-        return senal_tecnica, "DeepSeek no disponible temporalmente", False
+        print(f"⚠️ Error consultando a {nombre}: {type(e).__name__}")
+        return senal_tecnica, f"{nombre} no disponible temporalmente", False
 
 
 def obtener_segunda_opinion(simbolo, precio, senal, razon, contexto):
-    """Segunda opinión de DeepSeek con caché de 15 min por moneda.
-    Devuelve un dict {decision, razon, validada} o None si DeepSeek no está configurado."""
-    if not DEEPSEEK_CONFIGURADO:
+    """Segunda opinión con caché de 15 min por moneda. Prueba los proveedores en orden y
+    se queda con el primero que responda de verdad. Devuelve un dict
+    {proveedor, decision, razon, validada} o None si no hay ninguno configurado."""
+    proveedores = _proveedores_segunda_opinion()
+    if not proveedores:
         return None
-    cache_todo = st.session_state.setdefault("ds_cache", {})
+    cache_todo = st.session_state.setdefault("segunda_cache", {})
     cache = cache_todo.get(simbolo) or {}
     ahora = time.time()
     if (ahora - cache.get("ts", 0)) <= 900 and cache.get("senal") == senal and cache.get("resultado"):
         return cache["resultado"]
-    decision, razon_ds, validada = consultar_deepseek(simbolo, precio, senal, razon, contexto)
-    resultado = {"decision": decision, "razon": razon_ds, "validada": validada}
+
+    resultado = None
+    for prov in proveedores:
+        decision, razon_ia, validada = consultar_segunda_ia(
+            prov, simbolo, precio, senal, razon, contexto)
+        candidato = {"proveedor": prov["nombre"], "decision": decision,
+                     "razon": razon_ia, "validada": validada}
+        if resultado is None:
+            resultado = candidato      # si todos fallan, se informa el primer error
+        if validada:
+            resultado = candidato
+            break
     cache_todo[simbolo] = {"senal": senal, "ts": ahora, "resultado": resultado}
     return resultado
 
 
 def formatear_segunda_opinion(senal, gemini_valido, segunda):
-    """Texto para Telegram con la opinión de DeepSeek y si coincide con Gemini."""
+    """Texto para Telegram con la segunda opinión y si coincide con Gemini."""
     if not segunda:
         return ""
+    nombre = segunda.get("proveedor", "IA")
     if not segunda["validada"]:
-        return f"🤖 DeepSeek: sin opinión ({segunda['razon']})"
-    linea = f"🤖 DeepSeek: {segunda['decision']} — {segunda['razon']}"
+        return f"🤖 {nombre}: sin opinión ({segunda['razon']})"
+    linea = f"🤖 {nombre}: {segunda['decision']} — {segunda['razon']}"
     if segunda["decision"] == senal:
         if gemini_valido:
-            return linea + "\n✅ Gemini y DeepSeek coinciden con la señal."
-        return linea + "\n✅ DeepSeek coincide con la señal (Gemini no pudo validarla)."
-    return (linea + f"\n⚠️ DeepSeek NO coincide con la señal (opina {segunda['decision']}). "
+            return linea + f"\n✅ Gemini y {nombre} coinciden con la señal."
+        return linea + f"\n✅ {nombre} coincide con la señal (Gemini no pudo validarla)."
+    return (linea + f"\n⚠️ {nombre} NO coincide con la señal (opina {segunda['decision']}). "
             "Toma precaución.")
 
 
@@ -1338,6 +1383,222 @@ def _resumen_aciertos():
     }
 
 
+# ===== REGISTRO DE RESULTADOS DE LAS SEÑALES =====
+# Cada señal enviada al canal se guarda en Firebase (senales/) y, pasadas 1, 4 y 24 horas,
+# se anota si el precio se movió a favor de la señal. Así se puede medir si de verdad
+# aciertan y si las que tienen coincidencia entre IAs aciertan más.
+# Solo observa y registra: no cambia señales, umbrales ni parámetros del bot.
+HORIZONTES_HORAS = (1, 4, 24)
+SEGUNDOS_ENTRE_EVALUACIONES = 60
+SEGUNDOS_CACHE_ESTADISTICAS = 300
+MUESTRA_MINIMA_CONFIABLE = 30
+
+
+def _url_registro(ruta):
+    return f"{URL_FIREBASE}/{ruta}.json"
+
+
+def coincidencia_ias(senal, gemini_valido, segunda):
+    """'SI' si Gemini y la segunda IA validaron la señal; 'NO' si la segunda IA opinó
+    distinto; 'N/D' si alguna no pudo opinar."""
+    if not segunda or not segunda.get("validada"):
+        return "N/D"
+    if segunda.get("decision") != senal:
+        return "NO"
+    return "SI" if gemini_valido else "N/D"
+
+
+def registrar_senal(simbolo, tipo, precio, probabilidad, gemini_valido, segunda):
+    """Guarda una señal enviada y la deja pendiente de evaluar. Nunca rompe el ciclo."""
+    if not FIREBASE_CONFIGURADO:
+        return None
+    try:
+        ahora = time.time()
+        zona = timezone(timedelta(hours=-6))
+        registro = {
+            "ts": ahora,
+            "fecha": datetime.now(zona).strftime("%Y-%m-%d %H:%M:%S"),
+            "simbolo": simbolo,
+            "tipo": tipo,
+            "precio": precio,
+            "probabilidad": round(float(probabilidad), 1),
+            "gemini_validada": bool(gemini_valido),
+            "segunda_ia": (segunda or {}).get("proveedor"),
+            "segunda_decision": (segunda or {}).get("decision") if segunda and segunda.get("validada") else None,
+            "segunda_validada": bool(segunda and segunda.get("validada")),
+            "coinciden": coincidencia_ias(tipo, gemini_valido, segunda),
+        }
+        respuesta = requests.post(_url_registro("senales"), json=registro, timeout=5)
+        if respuesta.status_code != 200:
+            return None
+        id_senal = respuesta.json().get("name")
+        if not id_senal:
+            return None
+        pendiente = {"ts": ahora, "simbolo": simbolo, "tipo": tipo, "precio": precio}
+        requests.put(_url_registro(f"senales_pendientes/{id_senal}"), json=pendiente, timeout=5)
+        st.session_state.setdefault("senales_pendientes", {})[id_senal] = pendiente
+        return id_senal
+    except Exception as e:
+        print(f"Error registrando la señal: {type(e).__name__}")
+        return None
+
+
+def _cargar_senales_pendientes():
+    """Recupera de Firebase las señales que aún esperan resultados (tras un reinicio)."""
+    try:
+        respuesta = requests.get(_url_registro("senales_pendientes"), timeout=5)
+        if respuesta.status_code == 200:
+            datos = respuesta.json() or {}
+            if isinstance(datos, dict):
+                st.session_state["senales_pendientes"] = {
+                    k: v for k, v in datos.items() if isinstance(v, dict)}
+                st.session_state["senales_pend_cargadas"] = True
+    except Exception as e:
+        print(f"Error cargando señales pendientes: {type(e).__name__}")
+
+
+def evaluar_senales_pendientes(precios):
+    """Anota el resultado de las señales cuyo plazo (1h, 4h, 24h) ya se cumplió.
+
+    precios: {"BTC": precio, "ETH": precio}. Si el bot estuvo apagado y se pasó del plazo,
+    ese horizonte se marca como omitido en vez de usar un precio que ya no corresponde.
+    """
+    if not FIREBASE_CONFIGURADO:
+        return
+    ss = st.session_state
+    if not ss.get("senales_pend_cargadas"):
+        _cargar_senales_pendientes()
+    ahora = time.time()
+    if ahora - ss.get("senales_ultima_eval", 0) < SEGUNDOS_ENTRE_EVALUACIONES:
+        return
+    ss["senales_ultima_eval"] = ahora
+
+    pendientes = ss.get("senales_pendientes", {})
+    for id_senal, pend in list(pendientes.items()):
+        try:
+            hechos = dict(pend.get("hechos") or {})
+            nuevos = {}
+            for horas in HORIZONTES_HORAS:
+                clave = f"{horas}h"
+                if clave in hechos:
+                    continue
+                vence = float(pend["ts"]) + horas * 3600
+                if ahora < vence:
+                    continue
+                tolerancia = max(900, 0.25 * horas * 3600)
+                actual = precios.get(pend.get("simbolo"))
+                if (ahora - vence) > tolerancia or not actual or not pend.get("precio"):
+                    nuevos[clave] = {"omitido": True}
+                    continue
+                cambio = (actual - pend["precio"]) / pend["precio"] * 100
+                a_favor = cambio if pend.get("tipo") == "BUY" else -cambio
+                nuevos[clave] = {
+                    "precio": actual,
+                    "cambio_pct": round(cambio, 3),
+                    "retorno_pct": round(a_favor, 3),
+                    "acierto": a_favor > 0,
+                }
+            if not nuevos:
+                continue
+            respuesta = requests.patch(
+                _url_registro(f"senales/{id_senal}/resultados"), json=nuevos, timeout=5)
+            if respuesta.status_code != 200:
+                continue
+            hechos.update({k: True for k in nuevos})
+            pend["hechos"] = hechos
+            if all(f"{h}h" in hechos for h in HORIZONTES_HORAS):
+                requests.delete(_url_registro(f"senales_pendientes/{id_senal}"), timeout=5)
+                pendientes.pop(id_senal, None)
+            else:
+                requests.patch(_url_registro(f"senales_pendientes/{id_senal}"),
+                               json={"hechos": hechos}, timeout=5)
+        except Exception as e:
+            print(f"Error evaluando una señal: {type(e).__name__}")
+
+
+def _leer_registros_senales(maximo=1000):
+    """Últimas señales registradas (con caché de 5 min). None si nunca se pudo leer."""
+    cache = st.session_state.get("senales_stats_cache")
+    ahora = time.time()
+    if cache and (ahora - cache["ts"]) < SEGUNDOS_CACHE_ESTADISTICAS:
+        return cache["registros"]
+    previos = cache["registros"] if cache else None
+    registros = previos
+    try:
+        respuesta = requests.get(
+            _url_registro("senales"),
+            params={"orderBy": '"$key"', "limitToLast": maximo}, timeout=8)
+        if respuesta.status_code == 200:
+            datos = respuesta.json() or {}
+            valores = datos.values() if isinstance(datos, dict) else datos
+            registros = [v for v in valores if isinstance(v, dict)]
+    except Exception as e:
+        print(f"Error leyendo el registro de señales: {type(e).__name__}")
+    st.session_state["senales_stats_cache"] = {"ts": ahora, "registros": registros}
+    return registros
+
+
+def calcular_estadisticas_senales(registros):
+    """Devuelve (filas, total, sin_resultados) con aciertos por grupo y horizonte."""
+    grupos = [
+        ("Todas", lambda r: True),
+        ("IAs coinciden", lambda r: r.get("coinciden") == "SI"),
+        ("IAs no coinciden", lambda r: r.get("coinciden") == "NO"),
+        ("Sin 2ª opinión", lambda r: r.get("coinciden") == "N/D"),
+    ]
+    filas = []
+    for nombre, filtro in grupos:
+        for horas in HORIZONTES_HORAS:
+            clave = f"{horas}h"
+            resultados = []
+            for r in registros:
+                if not filtro(r):
+                    continue
+                res = (r.get("resultados") or {}).get(clave)
+                if isinstance(res, dict) and not res.get("omitido") and "acierto" in res:
+                    resultados.append(res)
+            n = len(resultados)
+            if n == 0:
+                continue
+            aciertos = sum(1 for x in resultados if x.get("acierto"))
+            retorno = sum(float(x.get("retorno_pct", 0)) for x in resultados) / n
+            filas.append({
+                "Grupo": nombre,
+                "Plazo": clave,
+                "Evaluadas": n,
+                "Aciertos": aciertos,
+                "% acierto": f"{aciertos / n * 100:.1f}%",
+                "Retorno medio": f"{retorno:+.2f}%",
+                "Muestra": "✓" if n >= MUESTRA_MINIMA_CONFIABLE else "⚠️ pocas",
+            })
+    sin_resultados = sum(1 for r in registros if not r.get("resultados"))
+    return filas, len(registros), sin_resultados
+
+
+def _render_resultados_senales(interfaz):
+    cont = interfaz["resultados_senales"]
+    cont.subheader("🧪 Resultados de las señales")
+    if not FIREBASE_CONFIGURADO:
+        cont.caption("Firebase no está configurado: no se puede llevar el registro.")
+        return
+    registros = _leer_registros_senales()
+    if registros is None:
+        cont.caption("No se pudo leer el registro de señales desde Firebase.")
+        return
+    if not registros:
+        cont.caption("Aún no hay señales registradas. Aparecerán aquí cuando el bot envíe la primera.")
+        return
+    filas, total, sin_resultados = calcular_estadisticas_senales(registros)
+    cont.caption(f"{total} señales registradas · {sin_resultados} todavía esperan su primer resultado (1 h).")
+    if filas:
+        cont.table(filas)
+    cont.caption(
+        "Acierto = el precio se movió a favor de la señal (BUY: sube, SELL: baja) pasado el plazo. "
+        "El retorno no descuenta comisiones (≈1.2% ida y vuelta). "
+        f"Con menos de {MUESTRA_MINIMA_CONFIABLE} señales por fila, los porcentajes no son confiables."
+    )
+
+
 TRADUCCION_MIEDO_CODICIA = {
     "Extreme Fear": "Miedo extremo",
     "Fear": "Miedo",
@@ -1585,22 +1846,22 @@ if st.sidebar.button("🧪 Probar conexión con Gemini"):
             st.sidebar.warning(f"Detalle: {res_razon}")
         st.sidebar.caption(f"Modelo configurado: {GEMINI_MODELO}")
 
-st.sidebar.markdown("**🤖 Diagnóstico de DeepSeek (2ª opinión)**")
-if not DEEPSEEK_CONFIGURADO:
-    st.sidebar.info("ℹ️ Opcional: agrega DEEPSEEK_API_KEY en los Secrets para activarlo.")
-elif st.sidebar.button("🧪 Probar conexión con DeepSeek"):
-    with st.spinner("Consultando a DeepSeek..."):
-        ds_decision, ds_razon, ds_validada = consultar_deepseek(
-            "BTC", 1500000, "BUY", "Prueba de conexión del sistema", "Tendencia lateral"
-        )
-    if ds_validada:
-        st.sidebar.success("✅ DeepSeek conectado y respondiendo")
-        st.sidebar.info(f"Decisión: {ds_decision}")
-        st.sidebar.caption(f"Análisis: {ds_razon}")
-    else:
-        st.sidebar.error("❌ DeepSeek no respondió de verdad")
-        st.sidebar.warning(f"Detalle: {ds_razon}")
-    st.sidebar.caption(f"Modelo configurado: {DEEPSEEK_MODELO}")
+st.sidebar.markdown("**🤖 Diagnóstico de la 2ª opinión (Groq / DeepSeek)**")
+if not SEGUNDA_OPINION_CONFIGURADA:
+    st.sidebar.info("ℹ️ Opcional: agrega GROQ_API_KEY (gratis) o DEEPSEEK_API_KEY en los Secrets.")
+for _prov in _proveedores_segunda_opinion():
+    if st.sidebar.button(f"🧪 Probar conexión con {_prov['nombre']}", key=f"probar_{_prov['id']}"):
+        with st.spinner(f"Consultando a {_prov['nombre']}..."):
+            _dec, _raz, _ok = consultar_segunda_ia(
+                _prov, "BTC", 1500000, "BUY", "Prueba de conexión del sistema", "Tendencia lateral")
+        if _ok:
+            st.sidebar.success(f"✅ {_prov['nombre']} conectado y respondiendo")
+            st.sidebar.info(f"Decisión: {_dec}")
+            st.sidebar.caption(f"Análisis: {_raz}")
+        else:
+            st.sidebar.error(f"❌ {_prov['nombre']} no respondió de verdad")
+            st.sidebar.warning(f"Detalle: {_raz}")
+        st.sidebar.caption(f"Modelo configurado: {_prov['modelo']}")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🚨 Emergencia**")
@@ -1810,7 +2071,8 @@ def ejecutar_ciclo(interfaz):
                     estado_horario, descripcion_horario, es_buen_horario
                 )
 
-                # 🤖 Segunda opinión (DeepSeek): solo informa, no bloquea la señal
+                # 🤖 Segunda opinión (Groq/DeepSeek): solo informa, no bloquea la señal
+                segunda = None
                 try:
                     contexto_ds = (f"Tendencia 30d: {tendencia_t30}, Cambio 30d: {cambio_t30:+.2f}%, "
                                    f"Volumen: {vol_onchain}B, Miedo/Codicia: {valor_miedo}/100")
@@ -1830,6 +2092,15 @@ def ejecutar_ciclo(interfaz):
                 ):
                     st.session_state[clave_senal] = st.session_state.ciclo
                     avisar(f"📢 Señal {senal_actual} {sim_actual} → canal", "info")
+                    # 🧪 Registro para medir después si acertó
+                    registrar_senal(sim_actual, senal_actual, precio_actual, prob_actual,
+                                    gemini_valido, segunda)
+
+    # ===== EVALUACIÓN DE SEÑALES ANTERIORES (1h, 4h, 24h) =====
+    try:
+        evaluar_senales_pendientes({"BTC": btc, "ETH": eth})
+    except Exception as e:
+        print(f"Error en la evaluación de señales: {type(e).__name__}")
 
     # ===== FASE DE APRENDIZAJE =====
     ahora = datetime.now()
@@ -1994,6 +2265,12 @@ def ejecutar_ciclo(interfaz):
         else:
             interfaz["aciertos"].success(texto_ac)
 
+    # ===== RESULTADOS DE LAS SEÑALES =====
+    try:
+        _render_resultados_senales(interfaz)
+    except Exception as e:
+        print(f"Error mostrando resultados de señales: {type(e).__name__}")
+
     # ===== ESTADO =====
     modo_str = "📡 Solo señales" if st.session_state.modo_solo_senales else "⚠️ Modo automático"
     interfaz["estado"].info(
@@ -2025,6 +2302,7 @@ def _panel():
         "posiciones": st.empty(),
         "historial": st.container(),
         "aciertos": st.container(),
+        "resultados_senales": st.container(),
         "ultima_senal": st.empty(),
         "estado": st.empty(),
         "mensajes": st.empty(),
