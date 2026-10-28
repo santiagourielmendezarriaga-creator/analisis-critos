@@ -208,7 +208,8 @@ SEGUNDA_OPINION_CONFIGURADA = bool(_proveedores_segunda_opinion())
 
 def _extraer_json(texto):
     """Convierte la respuesta de la IA en un dict; tolera ```json y texto alrededor."""
-    limpio = str(texto).replace("```json", "").replace("```", "").strip()
+    limpio = re.sub(r"<think>.*?</think>", "", str(texto), flags=re.S)
+    limpio = limpio.replace("```json", "").replace("```", "").strip()
     try:
         return json.loads(limpio)
     except Exception:
@@ -251,16 +252,21 @@ def consultar_segunda_ia(prov, simbolo, precio, senal_tecnica, razon, contexto):
         "model": prov["modelo"],
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
-        "max_tokens": 200,
+        # Los modelos que "piensan" (gpt-oss, qwen) gastan tokens razonando antes de
+        # responder; con un límite bajo la respuesta llegaba vacía.
+        "max_tokens": 1500,
         "stream": False,
     }
+    if "gpt-oss" in str(prov["modelo"]).lower():
+        cuerpo["reasoning_effort"] = "low"
     try:
         # Primero con modo JSON; si el modelo no lo admite (400), se reintenta sin él.
         respuesta = requests.post(
             prov["url"], headers=cabeceras, timeout=20,
             json={**cuerpo, "response_format": {"type": "json_object"}})
         if respuesta.status_code == 400:
-            respuesta = requests.post(prov["url"], headers=cabeceras, timeout=20, json=cuerpo)
+            basico = {k: v for k, v in cuerpo.items() if k != "reasoning_effort"}
+            respuesta = requests.post(prov["url"], headers=cabeceras, timeout=20, json=basico)
 
         codigo = respuesta.status_code
         if codigo == 401:
@@ -278,7 +284,12 @@ def consultar_segunda_ia(prov, simbolo, precio, senal_tecnica, razon, contexto):
 
         st.session_state[clave_cont] = st.session_state.get(clave_cont, 0) + 1
 
-        contenido = respuesta.json()["choices"][0]["message"]["content"]
+        eleccion = respuesta.json()["choices"][0]
+        contenido = (eleccion.get("message") or {}).get("content") or ""
+        if not str(contenido).strip():
+            if eleccion.get("finish_reason") == "length":
+                return senal_tecnica, f"{nombre} se quedó sin espacio para responder (modelo muy lento o razonador)", False
+            return senal_tecnica, f"Respuesta de {nombre} vacía", False
         resultado = _extraer_json(contenido)
         if not isinstance(resultado, dict):
             return senal_tecnica, f"Respuesta de {nombre} no válida", False
