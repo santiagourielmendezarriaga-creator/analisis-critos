@@ -179,13 +179,14 @@ def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
 
     # ══════════════════ PARTE 2/11: Firebase ══════════════════
 
-# La URL y la ruta ya NO viven en el código: se leen de los Secrets.
-#   FIREBASE_URL   = "https://tu-proyecto-default-rtdb.firebaseio.com"
-#   FIREBASE_RUTA  = "ruta-privada-larga-y-aleatoria"
-URL_BASE_FIREBASE = str(_secreto("FIREBASE_URL", "") or "").strip().rstrip("/")
-RUTA_SECRETA = str(_secreto("FIREBASE_RUTA", "") or "").strip().strip("/")
+# Igual que antes: URL y ruta con sus valores originales.
+# Si defines FIREBASE_URL / FIREBASE_RUTA en los Secrets, esos valores tienen prioridad.
+URL_BASE_FIREBASE = (str(_secreto("FIREBASE_URL", "") or "").strip().rstrip("/")
+                     or "https://bot-cc6c4-default-rtdb.firebaseio.com")
+RUTA_SECRETA = (str(_secreto("FIREBASE_RUTA", "") or "").strip().strip("/")
+                or "b7k2m9x4q1z8")
 FIREBASE_CONFIGURADO = bool(URL_BASE_FIREBASE and RUTA_SECRETA)
-URL_FIREBASE = f"{URL_BASE_FIREBASE}/{RUTA_SECRETA}" if FIREBASE_CONFIGURADO else ""
+URL_FIREBASE = f"{URL_BASE_FIREBASE}/{RUTA_SECRETA}"
 
 
 def guardar_datos():
