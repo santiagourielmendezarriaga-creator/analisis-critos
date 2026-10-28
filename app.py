@@ -1221,8 +1221,92 @@ def _resumen_aciertos():
     }
 
 
+TRADUCCION_MIEDO_CODICIA = {
+    "Extreme Fear": "Miedo extremo",
+    "Fear": "Miedo",
+    "Neutral": "Neutral",
+    "Greed": "Codicia",
+    "Extreme Greed": "Codicia extrema",
+}
+
+
+def generar_opinion_mercado(simbolo, tipo, valor_miedo, etiqueta_miedo, volumen_onchain,
+                            estado_horario, descripcion_horario, es_buen_horario):
+    """Opinión breve y educativa: ¿las condiciones del mercado acompañan a esta señal?
+
+    Solo LEE datos que el bot ya tiene; no cambia ninguna señal, umbral ni parámetro.
+    Si algo falla devuelve "" y la señal se envía igual, sin opinión.
+    """
+    try:
+        compra = (tipo == "BUY")
+        accion = "compra" if compra else "venta"
+        a_favor = 0
+        en_contra = 0
+
+        def _voto(favor, contra):
+            nonlocal a_favor, en_contra
+            if favor:
+                a_favor += 1
+            elif contra:
+                en_contra += 1
+
+        lineas = ["🧾 OPINIÓN DEL MERCADO"]
+
+        # 1) Ánimo del mercado (Miedo/Codicia). Miedo favorece comprar; codicia favorece vender.
+        _voto(valor_miedo <= 30 if compra else valor_miedo >= 70,
+              valor_miedo >= 75 if compra else valor_miedo <= 25)
+        nombre_animo = TRADUCCION_MIEDO_CODICIA.get(etiqueta_miedo, etiqueta_miedo)
+        lineas.append(f"• Ánimo: {nombre_animo} ({valor_miedo}/100)")
+
+        # 2) Tendencias (30 días y local)
+        datos_t30 = st.session_state.tendencia_historica.get(simbolo, {}) or {}
+        t30 = datos_t30.get("tendencia", "N/A")
+        tlocal = st.session_state.tendencia.get(simbolo, "NEUTRAL")
+        buena = "ALCISTA" if compra else "BAJISTA"
+        mala = "BAJISTA" if compra else "ALCISTA"
+        _voto(t30 == buena, t30 == mala)
+        _voto(tlocal == buena, tlocal == mala)
+        lineas.append(f"• Tendencia: 30d {t30} · local {tlocal}")
+
+        # 3) RSI
+        historial = list(st.session_state.historial_precios.get(simbolo, []))
+        if len(historial) >= 15:
+            rsi = calcular_rsi(historial, 14)
+            _voto(rsi <= 35 if compra else rsi >= 65,
+                  rsi >= 70 if compra else rsi <= 30)
+            estado_rsi = "sobreventa" if rsi <= 30 else "sobrecompra" if rsi >= 70 else "neutral"
+            lineas.append(f"• RSI: {rsi:.0f} ({estado_rsi})")
+
+        # 4) Volumen 24h
+        if volumen_onchain is not None:
+            _voto(volumen_onchain > 2.0, volumen_onchain < VOLUMEN_MINIMO_24H)
+            nivel_vol = ("alto" if volumen_onchain > 2.0
+                         else "bajo" if volumen_onchain < VOLUMEN_MINIMO_24H else "normal")
+            lineas.append(f"• Volumen 24h: {volumen_onchain:.2f}B USD ({nivel_vol})")
+
+        # 5) Horario de operación
+        _voto(bool(es_buen_horario), estado_horario in ("FIN DE SEMANA", "SESIÓN ASIA"))
+        lineas.append(f"• Horario: {estado_horario} — {descripcion_horario}")
+
+        neto = a_favor - en_contra
+        if neto >= 3:
+            veredicto = "Condiciones favorables"
+        elif neto >= 1:
+            veredicto = "Condiciones mixtas, con cautela"
+        else:
+            veredicto = "Condiciones poco favorables, mejor esperar confirmación"
+        txt_favor = "factor a favor" if a_favor == 1 else "factores a favor"
+        lineas.append(f"⚖️ {veredicto} ({a_favor} {txt_favor} y {en_contra} en contra "
+                      f"de esta señal de {accion}).")
+        lineas.append("⚠️ Informativo y educativo; no es asesoría financiera.")
+        return "\n".join(lineas)
+    except Exception as e:
+        print(f"Error generando opinión del mercado: {e}")
+        return ""
+
+
 def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_onchain,
-                          cambio_30d, tendencia_30d):
+                          cambio_30d, tendencia_30d, opinion=""):
     try:
         probabilidad = calcular_probabilidad(confianza)
         texto_volumen = f"{volumen_onchain:.2f}B USD" if volumen_onchain is not None else "N/A"
@@ -1235,6 +1319,8 @@ def enviar_senal_telegram(simbolo, tipo, precio, razon, confianza, volumen_oncha
                f"📈 Cambio 30d: {cambio_30d:+.2f}%\n"
                f"🧭 Tendencia 30d: {tendencia_30d}\n"
                f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        if opinion:
+            msg += f"\n\n{opinion}"
         if CANAL_CONFIGURADO:
             return enviar_canal_telegram(msg)
         else:
@@ -1575,11 +1661,17 @@ def ejecutar_ciclo(interfaz):
                 cambio_t30 = datos_t30.get("cambio_porcentual", 0)
                 tendencia_t30 = datos_t30.get("tendencia", "N/A")
                 vol_onchain = (volumen_onchain_btc if sim_actual == "BTC" else volumen_onchain_eth)
-                
+
+                # 🧾 Opinión del mercado que acompaña a la señal
+                opinion_txt = generar_opinion_mercado(
+                    sim_actual, senal_actual, valor_miedo, etiqueta_miedo, vol_onchain,
+                    estado_horario, descripcion_horario, es_buen_horario
+                )
+
                 if enviar_senal_telegram(
                     sim_actual, senal_actual, precio_actual,
                     razon_final, conf_actual, vol_onchain,
-                    cambio_t30, tendencia_t30
+                    cambio_t30, tendencia_t30, opinion_txt
                 ):
                     st.session_state[clave_senal] = st.session_state.ciclo
                     avisar(f"📢 Señal {senal_actual} {sim_actual} → canal", "info")
