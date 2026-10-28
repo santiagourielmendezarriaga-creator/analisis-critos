@@ -177,26 +177,56 @@ def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
             return senal_tecnica, "IA no disponible temporalmente.", False
 
 
-# ===== SEGUNDA OPINIÓN: DEEPSEEK =====
-# Opcional. Sin DEEPSEEK_API_KEY en los Secrets, el bot funciona igual que antes.
+# ===== SEGUNDA OPINIÓN (IAs compatibles con OpenAI: Groq gratis y DeepSeek) =====
+# Todo es opcional. Sin llaves en los Secrets, el bot funciona igual que antes.
+# Orden de uso: primero Groq; si falla o no está configurada, DeepSeek.
+GROQ_API_KEY = str(_secreto("GROQ_API_KEY", "") or "").strip()
+GROQ_MODELO = str(_secreto("GROQ_MODELO", "") or "").strip() or "llama-3.3-70b-versatile"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
 DEEPSEEK_API_KEY = str(_secreto("DEEPSEEK_API_KEY", "") or "").strip()
 DEEPSEEK_MODELO = str(_secreto("DEEPSEEK_MODELO", "") or "").strip() or "deepseek-flash"
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-DEEPSEEK_CONFIGURADO = bool(DEEPSEEK_API_KEY)
-LIMITE_DIARIO_DEEPSEEK = 400
+
+LIMITE_DIARIO_SEGUNDA_IA = 400
 
 
-def consultar_deepseek(simbolo, precio, senal_tecnica, razon, contexto):
-    """Devuelve (decision, razon_ia, validada). Misma idea que consultar_gemini."""
-    if not DEEPSEEK_CONFIGURADO:
-        return senal_tecnica, "DeepSeek no configurado", False
+def _proveedores_segunda_opinion():
+    """Proveedores configurados, en orden de prioridad."""
+    lista = []
+    if GROQ_API_KEY:
+        lista.append({"id": "groq", "nombre": "Groq", "url": GROQ_URL,
+                      "clave": GROQ_API_KEY, "modelo": GROQ_MODELO})
+    if DEEPSEEK_API_KEY:
+        lista.append({"id": "deepseek", "nombre": "DeepSeek", "url": DEEPSEEK_URL,
+                      "clave": DEEPSEEK_API_KEY, "modelo": DEEPSEEK_MODELO})
+    return lista
 
+
+SEGUNDA_OPINION_CONFIGURADA = bool(_proveedores_segunda_opinion())
+
+
+def _extraer_json(texto):
+    """Convierte la respuesta de la IA en un dict; tolera ```json y texto alrededor."""
+    limpio = str(texto).replace("```json", "").replace("```", "").strip()
+    try:
+        return json.loads(limpio)
+    except Exception:
+        coincidencia = re.search(r"\{.*\}", limpio, re.S)
+        return json.loads(coincidencia.group(0)) if coincidencia else None
+
+
+def consultar_segunda_ia(prov, simbolo, precio, senal_tecnica, razon, contexto):
+    """Devuelve (decision, razon_ia, validada) usando un proveedor compatible con OpenAI."""
+    nombre = prov["nombre"]
     hoy = datetime.now().date().isoformat()
-    if st.session_state.get("ds_fecha_actual") != hoy:
-        st.session_state["ds_fecha_actual"] = hoy
-        st.session_state["ds_contador_diario"] = 0
-    if st.session_state.get("ds_contador_diario", 0) >= LIMITE_DIARIO_DEEPSEEK:
-        return senal_tecnica, "Límite diario de DeepSeek alcanzado", False
+    clave_fecha = f"{prov['id']}_fecha_actual"
+    clave_cont = f"{prov['id']}_contador_diario"
+    if st.session_state.get(clave_fecha) != hoy:
+        st.session_state[clave_fecha] = hoy
+        st.session_state[clave_cont] = 0
+    if st.session_state.get(clave_cont, 0) >= LIMITE_DIARIO_SEGUNDA_IA:
+        return senal_tecnica, f"Límite diario de {nombre} alcanzado", False
 
     prompt = f"""
     Eres un analista financiero senior. Tu trabajo es validar las señales de un bot técnico.
@@ -216,81 +246,96 @@ def consultar_deepseek(simbolo, precio, senal_tecnica, razon, contexto):
     Responde SOLO con un JSON válido con este formato exacto:
     {{"decision": "BUY" | "SELL" | "HOLD", "razon_ia": "Tu análisis breve aquí"}}
     """
+    cabeceras = {"Authorization": f"Bearer {prov['clave']}", "Content-Type": "application/json"}
+    cuerpo = {
+        "model": prov["modelo"],
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3,
+        "max_tokens": 200,
+        "stream": False,
+    }
     try:
+        # Primero con modo JSON; si el modelo no lo admite (400), se reintenta sin él.
         respuesta = requests.post(
-            DEEPSEEK_URL,
-            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-                     "Content-Type": "application/json"},
-            json={
-                "model": DEEPSEEK_MODELO,
-                "messages": [{"role": "user", "content": prompt}],
-                "response_format": {"type": "json_object"},
-                "temperature": 0.3,
-                "max_tokens": 200,
-                "stream": False,
-            },
-            timeout=20,
-        )
+            prov["url"], headers=cabeceras, timeout=20,
+            json={**cuerpo, "response_format": {"type": "json_object"}})
+        if respuesta.status_code == 400:
+            respuesta = requests.post(prov["url"], headers=cabeceras, timeout=20, json=cuerpo)
+
         codigo = respuesta.status_code
         if codigo == 401:
-            return senal_tecnica, "Llave de DeepSeek inválida", False
+            return senal_tecnica, f"Llave de {nombre} inválida", False
         if codigo == 402:
-            return senal_tecnica, "Saldo insuficiente en DeepSeek", False
+            return senal_tecnica, f"Saldo insuficiente en {nombre}", False
+        if codigo == 404:
+            return senal_tecnica, f"Modelo '{prov['modelo']}' no disponible en {nombre}", False
         if codigo == 429:
-            return senal_tecnica, "Límite de consultas de DeepSeek alcanzado", False
+            return senal_tecnica, f"Límite de consultas de {nombre} alcanzado", False
         if codigo in (500, 502, 503, 504):
-            return senal_tecnica, "Servidores de DeepSeek saturados", False
+            return senal_tecnica, f"Servidores de {nombre} saturados", False
         if codigo != 200:
-            return senal_tecnica, f"DeepSeek respondió con error {codigo}", False
+            return senal_tecnica, f"{nombre} respondió con error {codigo}", False
 
-        st.session_state["ds_contador_diario"] = st.session_state.get("ds_contador_diario", 0) + 1
+        st.session_state[clave_cont] = st.session_state.get(clave_cont, 0) + 1
 
         contenido = respuesta.json()["choices"][0]["message"]["content"]
-        texto_limpio = str(contenido).replace("```json", "").replace("```", "").strip()
-        resultado = json.loads(texto_limpio)
+        resultado = _extraer_json(contenido)
         if not isinstance(resultado, dict):
-            return senal_tecnica, "Respuesta de DeepSeek no válida", False
+            return senal_tecnica, f"Respuesta de {nombre} no válida", False
 
         decision = str(resultado.get("decision", "")).strip().upper()
         if decision not in DECISIONES_VALIDAS:
-            return senal_tecnica, "Respuesta de DeepSeek no válida", False
+            return senal_tecnica, f"Respuesta de {nombre} no válida", False
 
         razon_ia = str(resultado.get("razon_ia") or "").strip() or "Sin detalle."
         return decision, razon_ia, True
     except Exception as e:
         # Nunca se imprime la llave; solo el tipo de error.
-        print(f"⚠️ Error consultando a DeepSeek: {type(e).__name__}")
-        return senal_tecnica, "DeepSeek no disponible temporalmente", False
+        print(f"⚠️ Error consultando a {nombre}: {type(e).__name__}")
+        return senal_tecnica, f"{nombre} no disponible temporalmente", False
 
 
 def obtener_segunda_opinion(simbolo, precio, senal, razon, contexto):
-    """Segunda opinión de DeepSeek con caché de 15 min por moneda.
-    Devuelve un dict {decision, razon, validada} o None si DeepSeek no está configurado."""
-    if not DEEPSEEK_CONFIGURADO:
+    """Segunda opinión con caché de 15 min por moneda. Prueba los proveedores en orden y
+    se queda con el primero que responda de verdad. Devuelve un dict
+    {proveedor, decision, razon, validada} o None si no hay ninguno configurado."""
+    proveedores = _proveedores_segunda_opinion()
+    if not proveedores:
         return None
-    cache_todo = st.session_state.setdefault("ds_cache", {})
+    cache_todo = st.session_state.setdefault("segunda_cache", {})
     cache = cache_todo.get(simbolo) or {}
     ahora = time.time()
     if (ahora - cache.get("ts", 0)) <= 900 and cache.get("senal") == senal and cache.get("resultado"):
         return cache["resultado"]
-    decision, razon_ds, validada = consultar_deepseek(simbolo, precio, senal, razon, contexto)
-    resultado = {"decision": decision, "razon": razon_ds, "validada": validada}
+
+    resultado = None
+    for prov in proveedores:
+        decision, razon_ia, validada = consultar_segunda_ia(
+            prov, simbolo, precio, senal, razon, contexto)
+        candidato = {"proveedor": prov["nombre"], "decision": decision,
+                     "razon": razon_ia, "validada": validada}
+        if resultado is None:
+            resultado = candidato      # si todos fallan, se informa el primer error
+        if validada:
+            resultado = candidato
+            break
     cache_todo[simbolo] = {"senal": senal, "ts": ahora, "resultado": resultado}
     return resultado
 
 
 def formatear_segunda_opinion(senal, gemini_valido, segunda):
-    """Texto para Telegram con la opinión de DeepSeek y si coincide con Gemini."""
+    """Texto para Telegram con la segunda opinión y si coincide con Gemini."""
     if not segunda:
         return ""
+    nombre = segunda.get("proveedor", "IA")
     if not segunda["validada"]:
-        return f"🤖 DeepSeek: sin opinión ({segunda['razon']})"
-    linea = f"🤖 DeepSeek: {segunda['decision']} — {segunda['razon']}"
+        return f"🤖 {nombre}: sin opinión ({segunda['razon']})"
+    linea = f"🤖 {nombre}: {segunda['decision']} — {segunda['razon']}"
     if segunda["decision"] == senal:
         if gemini_valido:
-            return linea + "\n✅ Gemini y DeepSeek coinciden con la señal."
-        return linea + "\n✅ DeepSeek coincide con la señal (Gemini no pudo validarla)."
-    return (linea + f"\n⚠️ DeepSeek NO coincide con la señal (opina {segunda['decision']}). "
+            return linea + f"\n✅ Gemini y {nombre} coinciden con la señal."
+        return linea + f"\n✅ {nombre} coincide con la señal (Gemini no pudo validarla)."
+    return (linea + f"\n⚠️ {nombre} NO coincide con la señal (opina {segunda['decision']}). "
             "Toma precaución.")
 
 
@@ -1585,22 +1630,22 @@ if st.sidebar.button("🧪 Probar conexión con Gemini"):
             st.sidebar.warning(f"Detalle: {res_razon}")
         st.sidebar.caption(f"Modelo configurado: {GEMINI_MODELO}")
 
-st.sidebar.markdown("**🤖 Diagnóstico de DeepSeek (2ª opinión)**")
-if not DEEPSEEK_CONFIGURADO:
-    st.sidebar.info("ℹ️ Opcional: agrega DEEPSEEK_API_KEY en los Secrets para activarlo.")
-elif st.sidebar.button("🧪 Probar conexión con DeepSeek"):
-    with st.spinner("Consultando a DeepSeek..."):
-        ds_decision, ds_razon, ds_validada = consultar_deepseek(
-            "BTC", 1500000, "BUY", "Prueba de conexión del sistema", "Tendencia lateral"
-        )
-    if ds_validada:
-        st.sidebar.success("✅ DeepSeek conectado y respondiendo")
-        st.sidebar.info(f"Decisión: {ds_decision}")
-        st.sidebar.caption(f"Análisis: {ds_razon}")
-    else:
-        st.sidebar.error("❌ DeepSeek no respondió de verdad")
-        st.sidebar.warning(f"Detalle: {ds_razon}")
-    st.sidebar.caption(f"Modelo configurado: {DEEPSEEK_MODELO}")
+st.sidebar.markdown("**🤖 Diagnóstico de la 2ª opinión (Groq / DeepSeek)**")
+if not SEGUNDA_OPINION_CONFIGURADA:
+    st.sidebar.info("ℹ️ Opcional: agrega GROQ_API_KEY (gratis) o DEEPSEEK_API_KEY en los Secrets.")
+for _prov in _proveedores_segunda_opinion():
+    if st.sidebar.button(f"🧪 Probar conexión con {_prov['nombre']}", key=f"probar_{_prov['id']}"):
+        with st.spinner(f"Consultando a {_prov['nombre']}..."):
+            _dec, _raz, _ok = consultar_segunda_ia(
+                _prov, "BTC", 1500000, "BUY", "Prueba de conexión del sistema", "Tendencia lateral")
+        if _ok:
+            st.sidebar.success(f"✅ {_prov['nombre']} conectado y respondiendo")
+            st.sidebar.info(f"Decisión: {_dec}")
+            st.sidebar.caption(f"Análisis: {_raz}")
+        else:
+            st.sidebar.error(f"❌ {_prov['nombre']} no respondió de verdad")
+            st.sidebar.warning(f"Detalle: {_raz}")
+        st.sidebar.caption(f"Modelo configurado: {_prov['modelo']}")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🚨 Emergencia**")
@@ -1810,7 +1855,7 @@ def ejecutar_ciclo(interfaz):
                     estado_horario, descripcion_horario, es_buen_horario
                 )
 
-                # 🤖 Segunda opinión (DeepSeek): solo informa, no bloquea la señal
+                # 🤖 Segunda opinión (Groq/DeepSeek): solo informa, no bloquea la señal
                 try:
                     contexto_ds = (f"Tendencia 30d: {tendencia_t30}, Cambio 30d: {cambio_t30:+.2f}%, "
                                    f"Volumen: {vol_onchain}B, Miedo/Codicia: {valor_miedo}/100")
