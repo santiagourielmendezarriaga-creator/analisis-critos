@@ -1383,6 +1383,222 @@ def _resumen_aciertos():
     }
 
 
+# ===== REGISTRO DE RESULTADOS DE LAS SEÑALES =====
+# Cada señal enviada al canal se guarda en Firebase (senales/) y, pasadas 1, 4 y 24 horas,
+# se anota si el precio se movió a favor de la señal. Así se puede medir si de verdad
+# aciertan y si las que tienen coincidencia entre IAs aciertan más.
+# Solo observa y registra: no cambia señales, umbrales ni parámetros del bot.
+HORIZONTES_HORAS = (1, 4, 24)
+SEGUNDOS_ENTRE_EVALUACIONES = 60
+SEGUNDOS_CACHE_ESTADISTICAS = 300
+MUESTRA_MINIMA_CONFIABLE = 30
+
+
+def _url_registro(ruta):
+    return f"{URL_FIREBASE}/{ruta}.json"
+
+
+def coincidencia_ias(senal, gemini_valido, segunda):
+    """'SI' si Gemini y la segunda IA validaron la señal; 'NO' si la segunda IA opinó
+    distinto; 'N/D' si alguna no pudo opinar."""
+    if not segunda or not segunda.get("validada"):
+        return "N/D"
+    if segunda.get("decision") != senal:
+        return "NO"
+    return "SI" if gemini_valido else "N/D"
+
+
+def registrar_senal(simbolo, tipo, precio, probabilidad, gemini_valido, segunda):
+    """Guarda una señal enviada y la deja pendiente de evaluar. Nunca rompe el ciclo."""
+    if not FIREBASE_CONFIGURADO:
+        return None
+    try:
+        ahora = time.time()
+        zona = timezone(timedelta(hours=-6))
+        registro = {
+            "ts": ahora,
+            "fecha": datetime.now(zona).strftime("%Y-%m-%d %H:%M:%S"),
+            "simbolo": simbolo,
+            "tipo": tipo,
+            "precio": precio,
+            "probabilidad": round(float(probabilidad), 1),
+            "gemini_validada": bool(gemini_valido),
+            "segunda_ia": (segunda or {}).get("proveedor"),
+            "segunda_decision": (segunda or {}).get("decision") if segunda and segunda.get("validada") else None,
+            "segunda_validada": bool(segunda and segunda.get("validada")),
+            "coinciden": coincidencia_ias(tipo, gemini_valido, segunda),
+        }
+        respuesta = requests.post(_url_registro("senales"), json=registro, timeout=5)
+        if respuesta.status_code != 200:
+            return None
+        id_senal = respuesta.json().get("name")
+        if not id_senal:
+            return None
+        pendiente = {"ts": ahora, "simbolo": simbolo, "tipo": tipo, "precio": precio}
+        requests.put(_url_registro(f"senales_pendientes/{id_senal}"), json=pendiente, timeout=5)
+        st.session_state.setdefault("senales_pendientes", {})[id_senal] = pendiente
+        return id_senal
+    except Exception as e:
+        print(f"Error registrando la señal: {type(e).__name__}")
+        return None
+
+
+def _cargar_senales_pendientes():
+    """Recupera de Firebase las señales que aún esperan resultados (tras un reinicio)."""
+    try:
+        respuesta = requests.get(_url_registro("senales_pendientes"), timeout=5)
+        if respuesta.status_code == 200:
+            datos = respuesta.json() or {}
+            if isinstance(datos, dict):
+                st.session_state["senales_pendientes"] = {
+                    k: v for k, v in datos.items() if isinstance(v, dict)}
+                st.session_state["senales_pend_cargadas"] = True
+    except Exception as e:
+        print(f"Error cargando señales pendientes: {type(e).__name__}")
+
+
+def evaluar_senales_pendientes(precios):
+    """Anota el resultado de las señales cuyo plazo (1h, 4h, 24h) ya se cumplió.
+
+    precios: {"BTC": precio, "ETH": precio}. Si el bot estuvo apagado y se pasó del plazo,
+    ese horizonte se marca como omitido en vez de usar un precio que ya no corresponde.
+    """
+    if not FIREBASE_CONFIGURADO:
+        return
+    ss = st.session_state
+    if not ss.get("senales_pend_cargadas"):
+        _cargar_senales_pendientes()
+    ahora = time.time()
+    if ahora - ss.get("senales_ultima_eval", 0) < SEGUNDOS_ENTRE_EVALUACIONES:
+        return
+    ss["senales_ultima_eval"] = ahora
+
+    pendientes = ss.get("senales_pendientes", {})
+    for id_senal, pend in list(pendientes.items()):
+        try:
+            hechos = dict(pend.get("hechos") or {})
+            nuevos = {}
+            for horas in HORIZONTES_HORAS:
+                clave = f"{horas}h"
+                if clave in hechos:
+                    continue
+                vence = float(pend["ts"]) + horas * 3600
+                if ahora < vence:
+                    continue
+                tolerancia = max(900, 0.25 * horas * 3600)
+                actual = precios.get(pend.get("simbolo"))
+                if (ahora - vence) > tolerancia or not actual or not pend.get("precio"):
+                    nuevos[clave] = {"omitido": True}
+                    continue
+                cambio = (actual - pend["precio"]) / pend["precio"] * 100
+                a_favor = cambio if pend.get("tipo") == "BUY" else -cambio
+                nuevos[clave] = {
+                    "precio": actual,
+                    "cambio_pct": round(cambio, 3),
+                    "retorno_pct": round(a_favor, 3),
+                    "acierto": a_favor > 0,
+                }
+            if not nuevos:
+                continue
+            respuesta = requests.patch(
+                _url_registro(f"senales/{id_senal}/resultados"), json=nuevos, timeout=5)
+            if respuesta.status_code != 200:
+                continue
+            hechos.update({k: True for k in nuevos})
+            pend["hechos"] = hechos
+            if all(f"{h}h" in hechos for h in HORIZONTES_HORAS):
+                requests.delete(_url_registro(f"senales_pendientes/{id_senal}"), timeout=5)
+                pendientes.pop(id_senal, None)
+            else:
+                requests.patch(_url_registro(f"senales_pendientes/{id_senal}"),
+                               json={"hechos": hechos}, timeout=5)
+        except Exception as e:
+            print(f"Error evaluando una señal: {type(e).__name__}")
+
+
+def _leer_registros_senales(maximo=1000):
+    """Últimas señales registradas (con caché de 5 min). None si nunca se pudo leer."""
+    cache = st.session_state.get("senales_stats_cache")
+    ahora = time.time()
+    if cache and (ahora - cache["ts"]) < SEGUNDOS_CACHE_ESTADISTICAS:
+        return cache["registros"]
+    previos = cache["registros"] if cache else None
+    registros = previos
+    try:
+        respuesta = requests.get(
+            _url_registro("senales"),
+            params={"orderBy": '"$key"', "limitToLast": maximo}, timeout=8)
+        if respuesta.status_code == 200:
+            datos = respuesta.json() or {}
+            valores = datos.values() if isinstance(datos, dict) else datos
+            registros = [v for v in valores if isinstance(v, dict)]
+    except Exception as e:
+        print(f"Error leyendo el registro de señales: {type(e).__name__}")
+    st.session_state["senales_stats_cache"] = {"ts": ahora, "registros": registros}
+    return registros
+
+
+def calcular_estadisticas_senales(registros):
+    """Devuelve (filas, total, sin_resultados) con aciertos por grupo y horizonte."""
+    grupos = [
+        ("Todas", lambda r: True),
+        ("IAs coinciden", lambda r: r.get("coinciden") == "SI"),
+        ("IAs no coinciden", lambda r: r.get("coinciden") == "NO"),
+        ("Sin 2ª opinión", lambda r: r.get("coinciden") == "N/D"),
+    ]
+    filas = []
+    for nombre, filtro in grupos:
+        for horas in HORIZONTES_HORAS:
+            clave = f"{horas}h"
+            resultados = []
+            for r in registros:
+                if not filtro(r):
+                    continue
+                res = (r.get("resultados") or {}).get(clave)
+                if isinstance(res, dict) and not res.get("omitido") and "acierto" in res:
+                    resultados.append(res)
+            n = len(resultados)
+            if n == 0:
+                continue
+            aciertos = sum(1 for x in resultados if x.get("acierto"))
+            retorno = sum(float(x.get("retorno_pct", 0)) for x in resultados) / n
+            filas.append({
+                "Grupo": nombre,
+                "Plazo": clave,
+                "Evaluadas": n,
+                "Aciertos": aciertos,
+                "% acierto": f"{aciertos / n * 100:.1f}%",
+                "Retorno medio": f"{retorno:+.2f}%",
+                "Muestra": "✓" if n >= MUESTRA_MINIMA_CONFIABLE else "⚠️ pocas",
+            })
+    sin_resultados = sum(1 for r in registros if not r.get("resultados"))
+    return filas, len(registros), sin_resultados
+
+
+def _render_resultados_senales(interfaz):
+    cont = interfaz["resultados_senales"]
+    cont.subheader("🧪 Resultados de las señales")
+    if not FIREBASE_CONFIGURADO:
+        cont.caption("Firebase no está configurado: no se puede llevar el registro.")
+        return
+    registros = _leer_registros_senales()
+    if registros is None:
+        cont.caption("No se pudo leer el registro de señales desde Firebase.")
+        return
+    if not registros:
+        cont.caption("Aún no hay señales registradas. Aparecerán aquí cuando el bot envíe la primera.")
+        return
+    filas, total, sin_resultados = calcular_estadisticas_senales(registros)
+    cont.caption(f"{total} señales registradas · {sin_resultados} todavía esperan su primer resultado (1 h).")
+    if filas:
+        cont.table(filas)
+    cont.caption(
+        "Acierto = el precio se movió a favor de la señal (BUY: sube, SELL: baja) pasado el plazo. "
+        "El retorno no descuenta comisiones (≈1.2% ida y vuelta). "
+        f"Con menos de {MUESTRA_MINIMA_CONFIABLE} señales por fila, los porcentajes no son confiables."
+    )
+
+
 TRADUCCION_MIEDO_CODICIA = {
     "Extreme Fear": "Miedo extremo",
     "Fear": "Miedo",
@@ -1856,6 +2072,7 @@ def ejecutar_ciclo(interfaz):
                 )
 
                 # 🤖 Segunda opinión (Groq/DeepSeek): solo informa, no bloquea la señal
+                segunda = None
                 try:
                     contexto_ds = (f"Tendencia 30d: {tendencia_t30}, Cambio 30d: {cambio_t30:+.2f}%, "
                                    f"Volumen: {vol_onchain}B, Miedo/Codicia: {valor_miedo}/100")
@@ -1875,6 +2092,15 @@ def ejecutar_ciclo(interfaz):
                 ):
                     st.session_state[clave_senal] = st.session_state.ciclo
                     avisar(f"📢 Señal {senal_actual} {sim_actual} → canal", "info")
+                    # 🧪 Registro para medir después si acertó
+                    registrar_senal(sim_actual, senal_actual, precio_actual, prob_actual,
+                                    gemini_valido, segunda)
+
+    # ===== EVALUACIÓN DE SEÑALES ANTERIORES (1h, 4h, 24h) =====
+    try:
+        evaluar_senales_pendientes({"BTC": btc, "ETH": eth})
+    except Exception as e:
+        print(f"Error en la evaluación de señales: {type(e).__name__}")
 
     # ===== FASE DE APRENDIZAJE =====
     ahora = datetime.now()
@@ -2039,6 +2265,12 @@ def ejecutar_ciclo(interfaz):
         else:
             interfaz["aciertos"].success(texto_ac)
 
+    # ===== RESULTADOS DE LAS SEÑALES =====
+    try:
+        _render_resultados_senales(interfaz)
+    except Exception as e:
+        print(f"Error mostrando resultados de señales: {type(e).__name__}")
+
     # ===== ESTADO =====
     modo_str = "📡 Solo señales" if st.session_state.modo_solo_senales else "⚠️ Modo automático"
     interfaz["estado"].info(
@@ -2070,6 +2302,7 @@ def _panel():
         "posiciones": st.empty(),
         "historial": st.container(),
         "aciertos": st.container(),
+        "resultados_senales": st.container(),
         "ultima_senal": st.empty(),
         "estado": st.empty(),
         "mensajes": st.empty(),
