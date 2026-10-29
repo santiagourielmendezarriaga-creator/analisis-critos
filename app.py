@@ -1779,7 +1779,7 @@ def coincidencia_ias(senal, gemini_valido, segunda):
     return "SI" if gemini_valido else "NO"
 
 
-def registrar_senal(simbolo, tipo, precio, probabilidad, gemini_valido, segunda):
+def registrar_senal(simbolo, tipo, precio, probabilidad, gemini_valido, segunda, motor="actual"):
     """Guarda una señal enviada y la deja pendiente de evaluar. Nunca rompe el ciclo."""
     if not FIREBASE_CONFIGURADO:
         return None
@@ -1798,6 +1798,7 @@ def registrar_senal(simbolo, tipo, precio, probabilidad, gemini_valido, segunda)
             "segunda_decision": (segunda or {}).get("decision") if segunda and segunda.get("validada") else None,
             "segunda_validada": bool(segunda and segunda.get("validada")),
             "coinciden": coincidencia_ias(tipo, gemini_valido, segunda),
+            "motor": motor,
         }
         respuesta = requests.post(_url_registro("senales"), json=registro, timeout=5)
         if respuesta.status_code != 200:
@@ -1911,11 +1912,15 @@ def _leer_registros_senales(maximo=1000):
 
 def calcular_estadisticas_senales(registros):
     """Devuelve (filas, total, sin_resultados) con aciertos por grupo y horizonte."""
+    def _actual(r):
+        return r.get("motor", "actual") == "actual"   # las anteriores al motor v2 no traen el campo
+
     grupos = [
-        ("Todas", lambda r: True),
-        ("IAs coinciden", lambda r: r.get("coinciden") == "SI"),
-        ("IAs no coinciden", lambda r: r.get("coinciden") == "NO"),
-        ("Sin 2ª opinión", lambda r: r.get("coinciden") == "N/D"),
+        ("Todas", _actual),
+        ("IAs coinciden", lambda r: _actual(r) and r.get("coinciden") == "SI"),
+        ("IAs no coinciden", lambda r: _actual(r) and r.get("coinciden") == "NO"),
+        ("Sin 2ª opinión", lambda r: _actual(r) and r.get("coinciden") == "N/D"),
+        ("🧪 Motor v2 (velas 1 h)", lambda r: r.get("motor") == "v2"),
     ]
     filas = []
     for nombre, filtro in grupos:
@@ -1968,6 +1973,99 @@ def _render_resultados_senales(interfaz):
         "El retorno no descuenta comisiones (≈1.2% ida y vuelta). "
         f"Con menos de {MUESTRA_MINIMA_CONFIABLE} señales por fila, los porcentajes no son confiables."
     )
+
+
+# ===== MOTOR v2 EN PARALELO (SOLO REGISTRA, NO ENVÍA NI OPERA) =====
+# El motor actual calcula sus indicadores con precios cada pocos segundos (≈17 min de historia)
+# y luego se mide a 1, 4 y 24 horas. El v2 usa velas de 1 hora (CoinGecko, últimos 14 días),
+# que sí corresponden a esos plazos. Sus señales se guardan en el mismo registro con
+# motor="v2" para compararlas con las del motor actual. No pasan por Telegram, IAs ni trading.
+V2_DIAS = 14
+V2_MOVIMIENTO_MINIMO_PCT = 0.5
+V2_MINUTOS_ENTRE_CHEQUEOS = 15
+V2_HORAS_ENTRE_REPETIDAS = 4
+V2_SEGUNDOS_CACHE_VELAS = 1800
+
+
+def obtener_velas_horarias(simbolo):
+    """Cierres horarios en MXN de los últimos días (CoinGecko), con caché de 30 min."""
+    cache_todo = st.session_state.setdefault("v2_velas", {})
+    cache = cache_todo.get(simbolo) or {}
+    ahora = time.time()
+    if cache.get("precios") and (ahora - cache.get("ts", 0)) < V2_SEGUNDOS_CACHE_VELAS:
+        return cache["precios"]
+    try:
+        identificador = "bitcoin" if simbolo == "BTC" else "ethereum"
+        url = (f"https://api.coingecko.com/api/v3/coins/{identificador}"
+               f"/market_chart?vs_currency=mxn&days={V2_DIAS}")
+        respuesta = requests.get(url, timeout=8)
+        if respuesta.status_code == 200:
+            precios = [float(p[1]) for p in respuesta.json().get("prices", []) if len(p) > 1]
+            if len(precios) >= 72:
+                cache_todo[simbolo] = {"precios": precios, "ts": ahora}
+                return precios
+    except Exception as e:
+        print(f"Error obteniendo velas horarias: {type(e).__name__}")
+    # Si falla, se reintenta en 5 min y mientras tanto se usa lo último que se tenía
+    if cache:
+        cache["ts"] = ahora - V2_SEGUNDOS_CACHE_VELAS + 300
+    return cache.get("precios")
+
+
+def analisis_horario(precios):
+    """Motor v2. precios: cierres horarios (antiguos → recientes).
+    Devuelve (señal, fuerza 0-100, razón). Sigue la tendencia de horas/días y evita
+    comprar con RSI alto o vender con RSI bajo (no perseguir el movimiento)."""
+    if len(precios) < 72:
+        return "HOLD", 0, "Datos insuficientes"
+    ema_corta = calcular_ema(precios, 12)
+    ema_larga = calcular_ema(precios, 48)
+    if not ema_corta or not ema_larga:
+        return "HOLD", 0, "Datos insuficientes"
+    rsi = calcular_rsi(precios, 14)
+    cambio_24h = (precios[-1] / precios[-25] - 1) * 100
+    brecha = (ema_corta / ema_larga - 1) * 100
+    fuerza = min(100.0, 40 + abs(brecha) * 25 + abs(cambio_24h) * 3)
+    detalle = f"EMA12/48h {brecha:+.2f}%, 24h {cambio_24h:+.2f}%, RSI {rsi:.0f}"
+    # Mercado lateral (movimientos menores a 0.5%) = ruido: no se opina
+    if brecha >= V2_MOVIMIENTO_MINIMO_PCT and cambio_24h >= V2_MOVIMIENTO_MINIMO_PCT and rsi <= 65:
+        return "BUY", fuerza, detalle
+    if brecha <= -V2_MOVIMIENTO_MINIMO_PCT and cambio_24h <= -V2_MOVIMIENTO_MINIMO_PCT and rsi >= 35:
+        return "SELL", fuerza, detalle
+    return "HOLD", 0, detalle
+
+
+def registrar_senales_v2(precios_actuales):
+    """Cada 15 min evalúa el motor v2 y registra la señal si es nueva (cambió de dirección
+    o pasaron 4 h). Nunca rompe el ciclo ni toca Telegram, IAs u órdenes."""
+    if not FIREBASE_CONFIGURADO:
+        return
+    estado_todo = st.session_state.setdefault("v2_estado", {})
+    ahora = time.time()
+    for simbolo in ("BTC", "ETH"):
+        try:
+            estado = estado_todo.setdefault(simbolo, {"ultima": "", "ts": 0.0, "chequeo": 0.0})
+            if ahora - estado["chequeo"] < V2_MINUTOS_ENTRE_CHEQUEOS * 60:
+                continue
+            estado["chequeo"] = ahora
+            velas = obtener_velas_horarias(simbolo)
+            precio = precios_actuales.get(simbolo)
+            if not velas or not precio:
+                continue
+            senal, fuerza, razon = analisis_horario(velas + [precio])
+            if senal == "HOLD":
+                estado["ultima"] = "HOLD"
+                continue
+            repetida = (senal == estado["ultima"]
+                        and (ahora - estado["ts"]) < V2_HORAS_ENTRE_REPETIDAS * 3600)
+            if repetida:
+                continue
+            if registrar_senal(simbolo, senal, precio, fuerza, None, None, motor="v2"):
+                estado["ultima"] = senal
+                estado["ts"] = ahora
+                avisar(f"🧪 v2 registró {senal} {simbolo} ({razon})", "info")
+        except Exception as e:
+            print(f"Error en el motor v2: {type(e).__name__}")
 
 
 TRADUCCION_MIEDO_CODICIA = {
@@ -2470,6 +2568,9 @@ def ejecutar_ciclo(interfaz):
                             auto_cerrar_por_senal(sim_actual, precio_actual)
                     except Exception as e:
                         print(f"Error en la operación automática: {type(e).__name__}")
+
+    # ===== MOTOR v2 EN PARALELO (solo registra) =====
+    registrar_senales_v2({"BTC": btc, "ETH": eth})
 
     # ===== EVALUACIÓN DE SEÑALES ANTERIORES (1h, 4h, 24h) =====
     try:
