@@ -1411,6 +1411,346 @@ def _resumen_aciertos():
     }
 
 
+# ===== OPERACIÓN AUTOMÁTICA CON AYUDA DE LAS IA (DINERO REAL) =====
+# Solo se activa con los secretos OPERAR_AUTOMATICO = true Y MODO_REAL = true (más Firebase).
+# Entra con las señales >= UMBRAL_SENAL_FUERTE que ya pasaron el flujo de IAs (Gemini puede
+# bloquearlas) y sale por TP/SL fijos (parámetros de raíz) o por una señal contraria.
+OPERAR_AUTOMATICO = _a_booleano(_secreto("OPERAR_AUTOMATICO", False), False)
+MONTO_AUTOMATICO = max(1.0, min(_a_decimal(_secreto("MONTO_AUTOMATICO", 50.0), 50.0),
+                                MONTO_MAXIMO_POR_OPERACION))
+AUTO_TP_PCT = 5.0
+AUTO_SL_PCT = 1.0
+AUTO_MAX_PERDIDAS_SEGUIDAS = 2
+AUTO_LIBROS = {"BTC": "btc_mxn", "ETH": "eth_mxn"}
+
+
+def _auto_ruta():
+    return f"{URL_FIREBASE}/automatico.json"
+
+
+def _auto_estado():
+    """Estado propio de la operación automática (pausa, pérdidas seguidas, costo de entrada).
+    Devuelve None si no se pudo leer: en ese caso NO se opera (nunca se asume un estado vacío)."""
+    est = st.session_state.get("auto_estado")
+    if isinstance(est, dict):
+        return est
+    try:
+        r = requests.get(_auto_ruta(), timeout=10)
+        if r.status_code != 200:
+            return None
+        datos = r.json()
+    except Exception:
+        return None
+    est = {"pausado": False, "motivo": "", "perdidas_seguidas": 0,
+           "costo": {"BTC": 0.0, "ETH": 0.0}}
+    if isinstance(datos, dict):
+        est["pausado"] = _a_booleano(datos.get("pausado", False), False)
+        est["motivo"] = str(datos.get("motivo", "") or "")
+        est["perdidas_seguidas"] = _a_entero(datos.get("perdidas_seguidas", 0), 0)
+        costo = datos.get("costo")
+        if isinstance(costo, dict):
+            for s in ("BTC", "ETH"):
+                est["costo"][s] = _a_decimal(costo.get(s, 0.0), 0.0)
+    st.session_state["auto_estado"] = est
+    return est
+
+
+def _auto_guardar(est):
+    try:
+        requests.put(_auto_ruta(), json=est, timeout=10)
+    except Exception as e:
+        print(f"Error guardando estado automático: {type(e).__name__}")
+
+
+def _auto_aviso(texto, nivel="warning"):
+    avisar(texto, nivel)
+    enviar_telegram(texto)
+
+
+def _auto_pausar(est, motivo):
+    est["pausado"] = True
+    est["motivo"] = motivo
+    _auto_guardar(est)
+    _auto_aviso(f"⏸️ Operación automática PAUSADA: {motivo}")
+
+
+def _auto_redondear(cantidad):
+    return int(max(0.0, cantidad) * 1e8) / 1e8
+
+
+def obtener_trades_orden(oid):
+    try:
+        ruta = f"/v3/order_trades/{oid}/"
+        cabecera, _ = _crear_cabecera_autenticacion("GET", ruta)
+        if not cabecera:
+            return None
+        r = requests.get(URL_BASE_BITSO + ruta, headers={"Authorization": cabecera}, timeout=10)
+        if r.status_code == 200:
+            datos = r.json()
+            if isinstance(datos, dict) and datos.get("success"):
+                return datos.get("payload") or []
+    except Exception:
+        pass
+    return None
+
+
+def _auto_fills(oid, simbolo):
+    """Lee lo realmente ejecutado de una orden. None si no se pudo confirmar."""
+    trades = None
+    for _ in range(4):
+        trades = obtener_trades_orden(oid)
+        if trades:
+            break
+        time.sleep(1)
+    if not trades:
+        return None
+    moneda = simbolo.lower()
+    mayor = menor = com_mxn = com_mayor = 0.0
+    for t in trades:
+        mayor += abs(float(t.get("major", 0) or 0))
+        menor += abs(float(t.get("minor", 0) or 0))
+        monto_com = abs(float(t.get("fees_amount", 0) or 0))
+        moneda_com = str(t.get("fees_currency", "")).lower()
+        if moneda_com == "mxn":
+            com_mxn += monto_com
+        elif moneda_com == moneda:
+            com_mayor += monto_com
+    if mayor <= 0:
+        return None
+    return {"mayor": mayor, "menor": menor, "com_mxn": com_mxn, "com_mayor": com_mayor,
+            "precio": menor / mayor}
+
+
+def _auto_puede_operar():
+    if not OPERAR_AUTOMATICO:
+        return False, ""
+    if not MODO_REAL:
+        return False, "OPERAR_AUTOMATICO está activo pero MODO_REAL=false: no se opera."
+    if not (LLAVE_API_BITSO and SECRETO_API_BITSO):
+        return False, "Faltan las llaves de Bitso."
+    if not FIREBASE_CONFIGURADO:
+        return False, "Sin Firebase no se opera con dinero real (no se podría recordar la posición)."
+    return True, ""
+
+
+def auto_comprar(simbolo, precio, probabilidad, gemini_valido, segunda, senal="BUY"):
+    ok, motivo = _auto_puede_operar()
+    if not ok:
+        if motivo:
+            avisar(motivo, "warning")
+        return
+    est = _auto_estado()
+    if est is None:
+        avisar("No se pudo leer el estado de la operación automática; no se compra.", "warning")
+        return
+    if est.get("pausado"):
+        avisar(f"Operación automática en pausa ({est.get('motivo') or 'manual'}): no se compra {simbolo}.", "info")
+        return
+    if float(st.session_state.posiciones.get(simbolo, 0.0)) > 0 \
+            or st.session_state.get(f"orden_pendiente_{simbolo}"):
+        return  # ya hay posición u orden: una a la vez por moneda
+    monto = MONTO_AUTOMATICO
+    if float(st.session_state.get("monto_del_dia", 0.0)) + monto > MONTO_MAXIMO_DIARIO:
+        avisar(f"Tope diario alcanzado (${MONTO_MAXIMO_DIARIO:,.0f}): no se compra {simbolo}.", "info")
+        return
+    saldo = obtener_saldo_bitso(usar_cache=False)
+    if saldo is None:
+        avisar("No pude leer el saldo de Bitso; no se compra.", "warning")
+        return
+    if float(saldo.get("mxn", {}).get("available", 0.0)) < monto:
+        avisar(f"Saldo MXN insuficiente para ${monto:,.0f}: no se compra {simbolo}.", "warning")
+        return
+    # El costo máximo queda por debajo del monto (la comisión de Bitso se cobra en la moneda)
+    cantidad = _auto_redondear(monto * (1 - COMISION - 0.002) / precio)
+    if cantidad <= 0:
+        return
+    orden = colocar_orden_bitso(AUTO_LIBROS[simbolo], "buy", f"{cantidad:.8f}", precio, tipo="market")
+    if not orden or orden.get("error") or not orden.get("oid"):
+        _auto_aviso(f"❌ Compra automática de {simbolo} falló: "
+                    f"{(orden or {}).get('error', 'sin respuesta')}")
+        return
+    oid = orden["oid"]
+    fill = _auto_fills(oid, simbolo)
+    if fill is None:
+        _auto_pausar(est, f"No pude confirmar la compra {oid} de {simbolo}. Revisa Bitso.")
+        return
+    qty = fill["mayor"] - fill["com_mayor"]
+    costo = fill["menor"] + fill["com_mxn"]
+    st.session_state.posiciones[simbolo] = float(st.session_state.posiciones.get(simbolo, 0.0)) + qty
+    st.session_state.precio_entrada[simbolo] = fill["precio"]
+    st.session_state.precio_maximo[simbolo] = fill["precio"]
+    st.session_state.ops_del_dia += 1
+    st.session_state.monto_del_dia = float(st.session_state.get("monto_del_dia", 0.0)) + costo
+    est["costo"][simbolo] = costo
+    _auto_guardar(est)
+    st.session_state.operaciones.append((
+        datetime.now(),
+        f"COMPRA {simbolo} AUTO ${costo:,.2f} @ ${fill['precio']:,.2f} | cant {qty:.8f}"))
+    guardado, detalle = guardar_datos()
+    coincide = coincidencia_ias(senal, gemini_valido, segunda)
+    _auto_aviso(
+        f"🟢 COMPRA AUTOMÁTICA {simbolo}\n"
+        f"💵 Gastado: ${costo:,.2f} MXN @ ${fill['precio']:,.2f}\n"
+        f"🎯 Fuerza de la señal: {probabilidad:.1f}% | 🤝 IAs coinciden: {coincide}\n"
+        f"🛡️ Salida: +{AUTO_TP_PCT}% / -{AUTO_SL_PCT}% (o señal contraria)"
+        + ("" if guardado else f"\n⚠️ No se pudo guardar el estado: {detalle}"),
+        "success")
+
+
+def _auto_vender(simbolo, precio, motivo):
+    """True si la posición quedó cerrada (o se limpió); False si falló y hay que reintentar."""
+    est = _auto_estado()
+    if est is None:
+        return False
+    registrada = float(st.session_state.posiciones.get(simbolo, 0.0))
+    if registrada <= 0:
+        return True
+    saldo = obtener_saldo_bitso(usar_cache=False)
+    if saldo is None:
+        return False
+    datos_moneda = saldo.get(simbolo.lower(), {})
+    if float(datos_moneda.get("total", 0.0)) < registrada * 0.5:
+        # La moneda ya no está en Bitso (¿venta manual?): se limpia para no quedar atorado
+        st.session_state.posiciones[simbolo] = 0.0
+        st.session_state.precio_entrada[simbolo] = 0.0
+        st.session_state.precio_maximo[simbolo] = 0.0
+        est["costo"][simbolo] = 0.0
+        _auto_guardar(est)
+        guardar_datos()
+        _auto_aviso(f"⚠️ La posición {simbolo} registrada ya no está en Bitso; la di por cerrada.")
+        return True
+    cantidad = _auto_redondear(min(registrada, float(datos_moneda.get("available", 0.0))))
+    if cantidad <= 0:
+        avisar(f"{simbolo}: fondos reservados en otra orden; reintento luego.", "warning")
+        return False
+    orden = colocar_orden_bitso(AUTO_LIBROS[simbolo], "sell", f"{cantidad:.8f}", precio, tipo="market")
+    if not orden or orden.get("error") or not orden.get("oid"):
+        avisar(f"Venta automática de {simbolo} falló: {(orden or {}).get('error', 'sin respuesta')}", "error")
+        return False
+    fill = _auto_fills(orden["oid"], simbolo)
+    if fill is None:
+        _auto_pausar(est, f"No pude confirmar la venta {orden['oid']} de {simbolo}. Revisa Bitso.")
+        return True  # la orden se envió: no se repite
+    ingreso = fill["menor"] - fill["com_mxn"]
+    base = float(est["costo"].get(simbolo, 0.0)) * min(1.0, cantidad / registrada)
+    if base <= 0:
+        base = cantidad * float(st.session_state.precio_entrada.get(simbolo, 0.0))
+    ganancia = ingreso - base
+    pct = (ganancia / base * 100) if base > 0 else 0.0
+    restante = registrada - cantidad
+    if restante < 1e-7:
+        restante = 0.0
+    st.session_state.posiciones[simbolo] = restante
+    if restante == 0.0:
+        st.session_state.precio_entrada[simbolo] = 0.0
+        st.session_state.precio_maximo[simbolo] = 0.0
+        est["costo"][simbolo] = 0.0
+    else:
+        est["costo"][simbolo] = float(est["costo"].get(simbolo, 0.0)) - base
+    st.session_state.ops_del_dia += 1
+    st.session_state.operaciones.append((
+        datetime.now(),
+        f"VENTA {simbolo} AUTO ({motivo}) @ ${fill['precio']:,.2f} | PROFIT: {ganancia:+.2f} ({pct:+.2f}%)"))
+    if ganancia < 0:
+        est["perdidas_seguidas"] = int(est.get("perdidas_seguidas", 0)) + 1
+    else:
+        est["perdidas_seguidas"] = 0
+    _auto_guardar(est)
+    guardado, detalle = guardar_datos()
+    _auto_aviso(
+        f"{'✅' if ganancia >= 0 else '🔻'} VENTA AUTOMÁTICA {simbolo} ({motivo})\n"
+        f"💰 Resultado: {ganancia:+,.2f} MXN ({pct:+.2f}%)"
+        + ("" if guardado else f"\n⚠️ No se pudo guardar el estado: {detalle}"),
+        "success" if ganancia >= 0 else "warning")
+    if est["perdidas_seguidas"] >= AUTO_MAX_PERDIDAS_SEGUIDAS:
+        _auto_pausar(est, f"{est['perdidas_seguidas']} pérdidas seguidas. Revisa antes de reanudar.")
+    return True
+
+
+def auto_cerrar_por_senal(simbolo, precio):
+    ok, _ = _auto_puede_operar()
+    if ok and float(st.session_state.posiciones.get(simbolo, 0.0)) > 0:
+        _auto_vender(simbolo, precio, "señal de venta")
+
+
+def auto_revisar_salidas(precios):
+    """Se llama en cada ciclo, aunque haya pausa: las salidas siempre se protegen."""
+    ok, _ = _auto_puede_operar()
+    if not ok:
+        return
+    for simbolo, precio in precios.items():
+        cantidad = float(st.session_state.posiciones.get(simbolo, 0.0))
+        entrada = float(st.session_state.precio_entrada.get(simbolo, 0.0))
+        if cantidad <= 0 or entrada <= 0 or not precio:
+            continue
+        cambio = (precio - entrada) / entrada * 100
+        if cambio >= AUTO_TP_PCT:
+            motivo = "toma de ganancia"
+        elif cambio <= -AUTO_SL_PCT:
+            motivo = "límite de pérdida"
+        else:
+            continue
+        clave = f"venta_fallida_{simbolo}"
+        if time.time() - float(st.session_state.get(clave, 0.0) or 0.0) < 20:
+            continue
+        try:
+            if not _auto_vender(simbolo, precio, motivo):
+                st.session_state[clave] = time.time()
+        except Exception as e:
+            st.session_state[clave] = time.time()
+            print(f"Error en la venta automática: {type(e).__name__}")
+
+
+def _render_auto(interfaz, precios):
+    if not OPERAR_AUTOMATICO:
+        return
+    est = st.session_state.get("auto_estado") or {}
+    if not MODO_REAL:
+        interfaz["automatico"].warning("🤖 Operación automática: activada pero MODO_REAL=false, no opera.")
+        return
+    lineas = []
+    for simbolo in ("BTC", "ETH"):
+        cant = float(st.session_state.posiciones.get(simbolo, 0.0))
+        entrada = float(st.session_state.precio_entrada.get(simbolo, 0.0))
+        if cant > 0 and entrada > 0 and precios.get(simbolo):
+            cambio = (precios[simbolo] - entrada) / entrada * 100
+            lineas.append(f"{simbolo}: {cant:.8f} @ ${entrada:,.0f} ({cambio:+.2f}%)")
+    posiciones = " · ".join(lineas) if lineas else "sin posiciones"
+    texto = (f"🤖 Operación automática REAL — ${MONTO_AUTOMATICO:,.0f} por operación | "
+             f"hoy ${float(st.session_state.get('monto_del_dia', 0.0)):,.0f}/${MONTO_MAXIMO_DIARIO:,.0f} | "
+             f"{posiciones}")
+    if est.get("pausado"):
+        interfaz["automatico"].warning(f"⏸️ PAUSADA ({est.get('motivo') or 'manual'}) — " + texto)
+    else:
+        interfaz["automatico"].success(texto)
+
+
+def _auto_sidebar():
+    if not OPERAR_AUTOMATICO:
+        return
+    st.sidebar.header("🤖 Operación automática")
+    est = _auto_estado()
+    if est is None:
+        st.sidebar.error("No pude leer el estado en Firebase: no opera.")
+        return
+    if est.get("pausado"):
+        st.sidebar.warning(f"⏸️ Pausada: {est.get('motivo') or 'manual'}")
+        if st.sidebar.button("▶️ Reanudar operación automática"):
+            est["pausado"] = False
+            est["motivo"] = ""
+            est["perdidas_seguidas"] = 0
+            _auto_guardar(est)
+            st.rerun()
+    else:
+        st.sidebar.success("▶️ Activa")
+        if st.sidebar.button("⏸️ Pausar operación automática"):
+            est["pausado"] = True
+            est["motivo"] = "pausa manual"
+            _auto_guardar(est)
+            st.rerun()
+    st.sidebar.caption("Las ventas por TP/SL siguen activas aunque esté en pausa.")
+
+
 # ===== REGISTRO DE RESULTADOS DE LAS SEÑALES =====
 # Cada señal enviada al canal se guarda en Firebase (senales/) y, pasadas 1, 4 y 24 horas,
 # se anota si el precio se movió a favor de la señal. Así se puede medir si de verdad
@@ -1791,6 +2131,9 @@ _modo_solo_previo = st.session_state.get("modo_solo_senales", True)
 st.session_state.modo_solo_senales = st.sidebar.checkbox(
     "🔇 Solo señales (no ejecutar)", value=_modo_solo_previo)
 
+st.sidebar.caption("ℹ️ Esta casilla no afecta a la operación automática; esa se controla con el secreto OPERAR_AUTOMATICO y su botón de pausa.")
+_auto_sidebar()
+
 st.sidebar.caption("💰 La cartera se muestra en el panel principal.")
 st.sidebar.caption("📌 Las salidas de riesgo se aplican siempre, sin depender del horario ni de la fase.")
 
@@ -2133,12 +2476,27 @@ def ejecutar_ciclo(interfaz):
                     # 🧪 Registro para medir después si acertó
                     registrar_senal(sim_actual, senal_actual, precio_actual, prob_actual,
                                     gemini_valido, segunda)
+                    # 🤖 Operación automática (solo si OPERAR_AUTOMATICO está activo)
+                    try:
+                        if senal_actual == "BUY":
+                            auto_comprar(sim_actual, precio_actual, prob_actual,
+                                         gemini_valido, segunda, senal_actual)
+                        elif senal_actual == "SELL":
+                            auto_cerrar_por_senal(sim_actual, precio_actual)
+                    except Exception as e:
+                        print(f"Error en la operación automática: {type(e).__name__}")
 
     # ===== EVALUACIÓN DE SEÑALES ANTERIORES (1h, 4h, 24h) =====
     try:
         evaluar_senales_pendientes({"BTC": btc, "ETH": eth})
     except Exception as e:
         print(f"Error en la evaluación de señales: {type(e).__name__}")
+
+    # ===== SALIDAS AUTOMÁTICAS (TP/SL) =====
+    try:
+        auto_revisar_salidas({"BTC": btc, "ETH": eth})
+    except Exception as e:
+        print(f"Error en las salidas automáticas: {type(e).__name__}")
 
     # ===== FASE DE APRENDIZAJE =====
     ahora = datetime.now()
@@ -2309,6 +2667,12 @@ def ejecutar_ciclo(interfaz):
     except Exception as e:
         print(f"Error mostrando resultados de señales: {type(e).__name__}")
 
+    # ===== OPERACIÓN AUTOMÁTICA =====
+    try:
+        _render_auto(interfaz, {"BTC": btc, "ETH": eth})
+    except Exception as e:
+        print(f"Error mostrando la operación automática: {type(e).__name__}")
+
     # ===== ESTADO =====
     modo_str = "📡 Solo señales" if st.session_state.modo_solo_senales else "⚠️ Modo automático"
     interfaz["estado"].info(
@@ -2342,6 +2706,7 @@ def _panel():
         "aciertos": st.container(),
         "resultados_senales": st.container(),
         "ultima_senal": st.empty(),
+        "automatico": st.empty(),
         "estado": st.empty(),
         "mensajes": st.empty(),
     }
