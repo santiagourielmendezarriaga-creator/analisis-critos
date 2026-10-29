@@ -359,12 +359,13 @@ def formatear_segunda_opinion(senal, gemini_valido, segunda):
     if not segunda["validada"]:
         return f"🤖 {nombre}: sin opinión ({segunda['razon']})"
     linea = f"🤖 {nombre}: {segunda['decision']} — {segunda['razon']}"
-    if segunda["decision"] == senal:
-        if gemini_valido:
-            return linea + f"\n✅ Gemini y {nombre} coinciden con la señal."
-        return linea + f"\n✅ {nombre} coincide con la señal (Gemini no pudo validarla)."
-    return (linea + f"\n⚠️ {nombre} NO coincide con la señal (opina {segunda['decision']}). "
-            "Toma precaución.")
+    if segunda["decision"] != senal:
+        return linea + f"\n⚠️ {nombre} NO coincide con la señal (opina {segunda['decision']})."
+    if gemini_valido is True:
+        return linea + f"\n✅ {nombre} y Gemini coinciden con la señal."
+    if gemini_valido is False:
+        return linea + f"\n✅ {nombre} coincide con la señal, pero ⚠️ Gemini opina distinto. Toma precaución."
+    return linea + f"\n✅ {nombre} coincide con la señal (Gemini no pudo opinar)."
 
 
     # ══════════════════ PARTE 2/11: Firebase ══════════════════
@@ -1767,13 +1768,15 @@ def _url_registro(ruta):
 
 
 def coincidencia_ias(senal, gemini_valido, segunda):
-    """'SI' si Gemini y la segunda IA validaron la señal; 'NO' si la segunda IA opinó
-    distinto; 'N/D' si alguna no pudo opinar."""
+    """'SI' si Groq/DeepSeek y Gemini coinciden con la señal; 'NO' si alguna opinó
+    distinto; 'N/D' si alguna no pudo opinar. gemini_valido: True/False/None."""
     if not segunda or not segunda.get("validada"):
         return "N/D"
     if segunda.get("decision") != senal:
         return "NO"
-    return "SI" if gemini_valido else "N/D"
+    if gemini_valido is None:
+        return "N/D"
+    return "SI" if gemini_valido else "NO"
 
 
 def registrar_senal(simbolo, tipo, precio, probabilidad, gemini_valido, segunda):
@@ -2402,67 +2405,49 @@ def ejecutar_ciclo(interfaz):
             # 🛡️ Anti-spam: 180 ciclos (15 minutos) para no saturar el canal
             if st.session_state.ciclo - ultima > 180:
                 
-                # 🧠 VALIDACIÓN CON INTELIGENCIA ARTIFICIAL (GEMINI)
-                cache = st.session_state["ia_cache"][sim_actual]
-                ahora_ia = time.time()
-                
-                # Consultar a la IA solo si pasaron 15 min o si la señal cambió
-                if (ahora_ia - cache.get("ts", 0)) > 900 or cache.get("senal") != senal_actual:
-                    datos_t30 = st.session_state.tendencia_historica.get(sim_actual, {}) or {}
-                    contexto_str = f"Tendencia 30d: {datos_t30.get('tendencia', 'N/A')}, Volumen: {volumen_onchain_btc if sim_actual == 'BTC' else volumen_onchain_eth}B"
-                    
-                    senal_ia, razon_ia, _ia_validada = consultar_gemini(
-                        sim_actual, precio_actual, senal_actual, razon_actual, contexto_str
-                    )
-                    
-                    # Guardamos la respuesta de la IA en el caché
-                    st.session_state["ia_cache"][sim_actual] = {
-                        "senal": senal_actual, 
-                        "ts": ahora_ia,
-                        "razon_ia": razon_ia,
-                        "decision_ia": senal_ia,
-                        "validada": _ia_validada
-                    }
-                    gemini_valido = _ia_validada
-                    
-                    if senal_ia != senal_actual:
-                        avisar(f"🧠 IA bloqueó {senal_actual} de {sim_actual}: {razon_ia}", "warning")
-                        continue # Se salta el envío a Telegram porque la IA lo bloqueó
-                        
-                    # Si la IA aprueba, le agregamos su opinión a la razón
-                    razon_final = f"{razon_actual} | 🧠 IA: {razon_ia}"
-                else:
-                    # Si la IA ya bloqueó esta señal, el bloqueo se respeta mientras dure el caché
-                    # (antes solo duraba un ciclo y la señal salía en el siguiente).
-                    if cache.get("decision_ia", senal_actual) != senal_actual:
-                        continue
-                    gemini_valido = bool(cache.get("validada", False))
-                    # Si usamos el caché, recuperamos la razón que dio la IA antes
-                    razon_final = f"{razon_actual} | 🧠 IA: {cache.get('razon_ia', 'Confirmado')}"
-
-                # Envío normal a Telegram
                 datos_t30 = st.session_state.tendencia_historica.get(sim_actual, {}) or {}
                 cambio_t30 = datos_t30.get("cambio_porcentual", 0)
                 tendencia_t30 = datos_t30.get("tendencia", "N/A")
                 vol_onchain = (volumen_onchain_btc if sim_actual == "BTC" else volumen_onchain_eth)
 
-                # 🧾 Opinión del mercado que acompaña a la señal
-                opinion_txt = generar_opinion_mercado(
-                    sim_actual, senal_actual, valor_miedo, etiqueta_miedo, vol_onchain,
-                    estado_horario, descripcion_horario, es_buen_horario
-                )
-
-                # 🤖 Segunda opinión (Groq/DeepSeek): solo informa, no bloquea la señal
+                # 🛡️ GROQ/DEEPSEEK DECIDEN: si opinan distinto, la señal se bloquea
                 segunda = None
                 try:
                     contexto_ds = (f"Tendencia 30d: {tendencia_t30}, Cambio 30d: {cambio_t30:+.2f}%, "
                                    f"Volumen: {vol_onchain}B, Miedo/Codicia: {valor_miedo}/100")
                     segunda = obtener_segunda_opinion(
                         sim_actual, precio_actual, senal_actual, razon_actual, contexto_ds)
-                    texto_segunda = formatear_segunda_opinion(senal_actual, gemini_valido, segunda)
                 except Exception as e:
                     print(f"Error en la segunda opinión: {type(e).__name__}")
-                    texto_segunda = ""
+                if segunda and segunda.get("validada") and segunda.get("decision") != senal_actual:
+                    avisar(f"🛡️ {segunda.get('proveedor', 'IA')} bloqueó {senal_actual} de {sim_actual}: "
+                           f"{segunda.get('razon', '')}", "warning")
+                    continue  # el resultado queda en caché 15 min, así no se reconsulta cada ciclo
+
+                # 🧠 GEMINI SOLO INFORMA (no bloquea). Caché de 15 min por moneda
+                cache = st.session_state["ia_cache"][sim_actual]
+                if (time.time() - cache.get("ts", 0)) > 900 or cache.get("senal") != senal_actual:
+                    contexto_str = f"Tendencia 30d: {tendencia_t30}, Volumen: {vol_onchain}B"
+                    senal_ia, razon_ia, _ia_validada = consultar_gemini(
+                        sim_actual, precio_actual, senal_actual, razon_actual, contexto_str)
+                    cache = {"senal": senal_actual, "ts": time.time(), "razon_ia": razon_ia,
+                             "decision_ia": senal_ia, "validada": _ia_validada}
+                    st.session_state["ia_cache"][sim_actual] = cache
+                # Tres estados: True = coincide, False = opina distinto, None = no pudo opinar
+                if not cache.get("validada", False):
+                    gemini_valido = None
+                else:
+                    gemini_valido = cache.get("decision_ia") == senal_actual
+                razon_final = f"{razon_actual} | 🧠 Gemini: {cache.get('razon_ia', 'sin detalle')}"
+                if gemini_valido is False:
+                    razon_final += f" (Gemini opina {cache.get('decision_ia')})"
+
+                # 🧾 Opinión del mercado que acompaña a la señal
+                opinion_txt = generar_opinion_mercado(
+                    sim_actual, senal_actual, valor_miedo, etiqueta_miedo, vol_onchain,
+                    estado_horario, descripcion_horario, es_buen_horario
+                )
+                texto_segunda = formatear_segunda_opinion(senal_actual, gemini_valido, segunda)
                 if texto_segunda:
                     opinion_txt = (opinion_txt + "\n\n" + texto_segunda) if opinion_txt else texto_segunda
 
