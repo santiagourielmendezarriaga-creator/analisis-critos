@@ -2779,6 +2779,31 @@ def ejecutar_ciclo(interfaz):
             st.caption("Sin avisos.")
 
 
+ES_WORKER = _a_booleano(_secreto("MODO_WORKER", False), False)
+SEGUNDOS_LATIDO_WORKER = 120
+
+
+def _worker_activo():
+    """True si un worker del servidor latió hace menos de 2 min (Firebase `worker`).
+    Mientras sea así, este panel no ejecuta ciclos para no duplicar señales ni órdenes."""
+    if ES_WORKER or not FIREBASE_CONFIGURADO:
+        return False
+    cache = st.session_state.get("_worker_cache")
+    ahora = time.time()
+    if cache and (ahora - cache[0]) < 20:
+        return cache[1]
+    activo = False
+    try:
+        r = requests.get(f"{URL_FIREBASE}/worker.json", timeout=5)
+        datos = r.json() if r.status_code == 200 else None
+        if isinstance(datos, dict):
+            activo = (ahora - float(datos.get("ts", 0) or 0)) < SEGUNDOS_LATIDO_WORKER
+    except Exception:
+        activo = False
+    st.session_state["_worker_cache"] = (ahora, activo)
+    return activo
+
+
 def _panel():
     interfaz = {
         "tabla": st.container(),
@@ -2796,6 +2821,21 @@ def _panel():
         "estado": st.empty(),
         "mensajes": st.empty(),
     }
+    if _worker_activo():
+        st.session_state["_cedido"] = True
+        interfaz["estado"].info(
+            "🛰️ El bot está corriendo en el servidor (worker). Este panel no ejecuta ciclos "
+            "para no duplicar señales ni órdenes; muestra solo los resultados guardados.")
+        try:
+            _render_resultados_senales(interfaz)
+        except Exception as e:
+            print(f"Error mostrando resultados: {type(e).__name__}")
+        return
+    if st.session_state.get("_cedido"):
+        # El worker dejó de latir: se relee el estado para no pisar lo que él guardó
+        st.session_state["_cedido"] = False
+        st.session_state.pop("auto_estado", None)
+        restaurar_desde_archivo()
     try:
         ejecutar_ciclo(interfaz)
     except Exception as e:

@@ -1,0 +1,44 @@
+# Despliegue del worker en Render (plan gratuito: servicio web que se mantiene despierto
+# con un monitor externo, p. ej. UptimeRobot, que visite /health cada 5 minutos).
+# Los secretos se capturan en el panel de Render (sync: false); no se guardan aquí.
+services:
+  - type: web
+    name: bot-senales-worker
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements-worker.txt
+    startCommand: python worker.py
+    healthCheckPath: /health
+    envVars:
+      - key: MODO_WORKER
+        value: "true"
+      - key: MODO_REAL
+        value: "false"
+      - key: OPERAR_AUTOMATICO
+        value: "false"
+      - key: MONTO_AUTOMATICO
+        value: "50"
+      - key: MONTO_MAXIMO_POR_OPERACION
+        value: "50"
+      - key: MONTO_MAXIMO_DIARIO
+        value: "100"
+      - key: FIREBASE_URL
+        sync: false
+      - key: FIREBASE_RUTA
+        sync: false
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: TELEGRAM_CANAL_ID
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODELO
+        sync: false
+      - key: BITSO_API_KEY
+        sync: false
+      - key: BITSO_API_SECRET
+        sync: false
