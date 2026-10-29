@@ -365,7 +365,7 @@ def formatear_segunda_opinion(senal, gemini_valido, segunda):
         return linea + f"\n✅ {nombre} y Gemini coinciden con la señal."
     if gemini_valido is False:
         return linea + f"\n✅ {nombre} coincide con la señal, pero ⚠️ Gemini opina distinto. Toma precaución."
-    return linea + f"\n✅ {nombre} coincide con la señal (Gemini no pudo opinar)."
+    return linea + f"\n✅ {nombre} coincide con la señal."
 
 
     # ══════════════════ PARTE 2/11: Firebase ══════════════════
@@ -1769,13 +1769,14 @@ def _url_registro(ruta):
 
 def coincidencia_ias(senal, gemini_valido, segunda):
     """'SI' si Groq/DeepSeek y Gemini coinciden con la señal; 'NO' si alguna opinó
-    distinto; 'N/D' si alguna no pudo opinar. gemini_valido: True/False/None."""
+    distinto; 'GROQ' si solo opinó la segunda IA y coincide (Gemini apagado o sin cupo);
+    'N/D' si la segunda IA no pudo opinar. gemini_valido: True/False/None."""
     if not segunda or not segunda.get("validada"):
         return "N/D"
     if segunda.get("decision") != senal:
         return "NO"
     if gemini_valido is None:
-        return "N/D"
+        return "GROQ"   # solo opinó la segunda IA (Gemini apagado o sin cupo) y coincide
     return "SI" if gemini_valido else "NO"
 
 
@@ -1919,6 +1920,7 @@ def calcular_estadisticas_senales(registros):
         ("Todas", _actual),
         ("IAs coinciden", lambda r: _actual(r) and r.get("coinciden") == "SI"),
         ("IAs no coinciden", lambda r: _actual(r) and r.get("coinciden") == "NO"),
+        ("Groq aprueba (sin Gemini)", lambda r: _actual(r) and r.get("coinciden") == "GROQ"),
         ("Sin 2ª opinión", lambda r: _actual(r) and r.get("coinciden") == "N/D"),
         ("🧪 Motor v2 (velas 1 h)", lambda r: r.get("motor") == "v2"),
     ]
@@ -2522,23 +2524,24 @@ def ejecutar_ciclo(interfaz):
                            f"{segunda.get('razon', '')}", "warning")
                     continue  # el resultado queda en caché 15 min, así no se reconsulta cada ciclo
 
-                # 🧠 GEMINI SOLO INFORMA (no bloquea). Caché de 15 min por moneda
-                cache = st.session_state["ia_cache"][sim_actual]
-                if (time.time() - cache.get("ts", 0)) > 900 or cache.get("senal") != senal_actual:
-                    contexto_str = f"Tendencia 30d: {tendencia_t30}, Volumen: {vol_onchain}B"
-                    senal_ia, razon_ia, _ia_validada = consultar_gemini(
-                        sim_actual, precio_actual, senal_actual, razon_actual, contexto_str)
-                    cache = {"senal": senal_actual, "ts": time.time(), "razon_ia": razon_ia,
-                             "decision_ia": senal_ia, "validada": _ia_validada}
-                    st.session_state["ia_cache"][sim_actual] = cache
-                # Tres estados: True = coincide, False = opina distinto, None = no pudo opinar
-                if not cache.get("validada", False):
-                    gemini_valido = None
-                else:
-                    gemini_valido = cache.get("decision_ia") == senal_actual
-                razon_final = f"{razon_actual} | 🧠 Gemini: {cache.get('razon_ia', 'sin detalle')}"
-                if gemini_valido is False:
-                    razon_final += f" (Gemini opina {cache.get('decision_ia')})"
+                # 🧠 GEMINI SOLO INFORMA (opcional: sin GEMINI_API_KEY no se consulta). Caché 15 min
+                gemini_valido = None
+                razon_final = razon_actual
+                if client is not None:
+                    cache = st.session_state["ia_cache"][sim_actual]
+                    if (time.time() - cache.get("ts", 0)) > 900 or cache.get("senal") != senal_actual:
+                        contexto_str = f"Tendencia 30d: {tendencia_t30}, Volumen: {vol_onchain}B"
+                        senal_ia, razon_ia, _ia_validada = consultar_gemini(
+                            sim_actual, precio_actual, senal_actual, razon_actual, contexto_str)
+                        cache = {"senal": senal_actual, "ts": time.time(), "razon_ia": razon_ia,
+                                 "decision_ia": senal_ia, "validada": _ia_validada}
+                        st.session_state["ia_cache"][sim_actual] = cache
+                    # Tres estados: True = coincide, False = opina distinto, None = no pudo opinar
+                    if cache.get("validada", False):
+                        gemini_valido = cache.get("decision_ia") == senal_actual
+                        razon_final = f"{razon_actual} | 🧠 Gemini: {cache.get('razon_ia', 'sin detalle')}"
+                        if gemini_valido is False:
+                            razon_final += f" (Gemini opina {cache.get('decision_ia')})"
 
                 # 🧾 Opinión del mercado que acompaña a la señal
                 opinion_txt = generar_opinion_mercado(
