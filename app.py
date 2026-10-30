@@ -1953,6 +1953,45 @@ def calcular_estadisticas_senales(registros):
     return filas, len(registros), sin_resultados
 
 
+def simular_tp_sl(registros, velas_por_simbolo, horas_maximas=24):
+    """Qué habría pasado de operar cada señal de COMPRA con TP 5% / SL 1% y comisiones.
+    Recorre los cierres horarios posteriores a la señal hasta tocar el TP, el SL o cumplir
+    `horas_maximas` (se sale al precio de esa hora). Con cierres de 1 h no se ven los picos
+    dentro de cada hora, así que es una aproximación. Devuelve {motor: resumen}."""
+    comision_pct = COMISION * 2 * 100
+    ahora = time.time()
+    por_motor = {}
+    for r in registros:
+        if r.get("tipo") != "BUY":
+            continue
+        velas = velas_por_simbolo.get(r.get("simbolo"))
+        precio = float(r.get("precio", 0) or 0)
+        if not velas or precio <= 0:
+            continue
+        horas = int(round((ahora - float(r.get("ts", 0) or 0)) / 3600))
+        inicio = len(velas) - 1 - horas
+        if inicio < 0 or horas < horas_maximas:   # fuera de la ventana o sin plazo completo
+            continue
+        salida, motivo = None, "plazo"
+        for v in velas[inicio + 1: inicio + 1 + horas_maximas]:
+            cambio = (v / precio - 1) * 100
+            if cambio >= AUTO_TP_PCT:
+                salida, motivo = AUTO_TP_PCT, "tp"
+                break
+            if cambio <= -AUTO_SL_PCT:
+                salida, motivo = -AUTO_SL_PCT, "sl"
+                break
+            salida = cambio
+        if salida is None:
+            continue
+        acc = por_motor.setdefault(r.get("motor", "actual") or "actual",
+                                   {"n": 0, "tp": 0, "sl": 0, "plazo": 0, "neto": 0.0})
+        acc["n"] += 1
+        acc[motivo] += 1
+        acc["neto"] += salida - comision_pct
+    return por_motor
+
+
 def _render_resultados_senales(interfaz):
     cont = interfaz["resultados_senales"]
     cont.subheader("🧪 Resultados de las señales")
@@ -1970,6 +2009,26 @@ def _render_resultados_senales(interfaz):
     cont.caption(f"{total} señales registradas · {sin_resultados} todavía esperan su primer resultado (1 h).")
     if filas:
         cont.table(filas)
+    try:
+        velas = {sim: obtener_velas_horarias(sim) for sim in ("BTC", "ETH")}
+        resumen = simular_tp_sl(registros, velas)
+        if resumen:
+            cont.markdown("**💰 Simulación con TP 5% / SL 1% y comisiones (solo compras, plazo 24 h)**")
+            cont.table([{
+                "Motor": "v2 (velas 1 h)" if m == "v2" else "Actual",
+                "Compras": a["n"],
+                "Tocó TP": f"{a['tp'] / a['n'] * 100:.0f}%",
+                "Tocó SL": f"{a['sl'] / a['n'] * 100:.0f}%",
+                "Salió a las 24 h": f"{a['plazo'] / a['n'] * 100:.0f}%",
+                "Ganancia neta media": f"{a['neto'] / a['n']:+.2f}%",
+                "Muestra": "✓" if a["n"] >= MUESTRA_MINIMA_CONFIABLE else "⚠️ pocas",
+            } for m, a in sorted(resumen.items())])
+            cont.caption(
+                "Neto = resultado por operación después de comisiones (≈1.2% ida y vuelta). "
+                "Si es negativo, el bot perdería dinero operando así. Usa cierres de 1 h de los últimos "
+                "14 días, por eso es aproximado y solo cuenta compras con 24 h ya cumplidas.")
+    except Exception as e:
+        print(f"Error en la simulación TP/SL: {type(e).__name__}")
     cont.caption(
         "Acierto = el precio se movió a favor de la señal (BUY: sube, SELL: baja) pasado el plazo. "
         "El retorno no descuenta comisiones (≈1.2% ida y vuelta). "
