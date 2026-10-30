@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Centro de mando</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+/* Concepto: centro de mando oscuro, una esfera de señales al centro, telemetría a la derecha, cinta de eventos abajo.
+   Color: cian (datos), ámbar (atención), violeta (IA), verde/rojo solo para compra/venta y estado. */
+:root {
+  --bg: #060a11; --panel: #0b121d; --panel2: #0e1726; --line: #1a2a40; --line2: #26405f;
+  --fg: #d3e6f7; --muted: #6d86a2; --cyan: #3fdcff; --amber: #ffae2b; --violet: #9a8cff;
+  --green: #3ddc97; --red: #ff5d6c;
+  --display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Consolas, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { background: var(--bg); margin: 0; }
+body {
+  color: var(--fg); font-family: var(--mono); font-size: 12px; line-height: 1.45;
+  padding-block: 6px 14px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background-image:
+    radial-gradient(1200px 500px at 70% -10%, rgba(63,220,255,.07), transparent 60%),
+    radial-gradient(900px 500px at -10% 30%, rgba(255,174,43,.05), transparent 60%);
+  background-attachment: fixed;
+}
+.wrap { max-width: 1280px; margin: 0 auto; display: grid; gap: 12px; }
+.panel {
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 1px solid var(--line); border-radius: 4px; position: relative; min-width: 0;
+}
+.panel::before, .panel::after { content: ""; position: absolute; width: 9px; height: 9px; border: 1px solid var(--cyan); opacity: .55; }
+.panel::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+.panel::after { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+.tag { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.pad { padding: 12px 14px; }
+h1, h2 { font-family: var(--display); margin: 0; font-weight: 600; }
+
+/* encabezado */
+.top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 10px 14px; }
+.brand { font-family: var(--display); font-weight: 700; font-size: 18px; letter-spacing: .06em; color: var(--cyan); text-shadow: 0 0 18px rgba(63,220,255,.45); }
+.brand small { display: block; font-family: var(--mono); font-weight: 400; font-size: 10px; color: var(--muted); letter-spacing: .12em; text-shadow: none; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.chip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 9px; border: 1px solid var(--line2); border-radius: 3px; font-size: 11px; white-space: nowrap; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 0 rgba(61,220,151,.6); animation: ping 1.8s infinite; }
+.dot.off { background: var(--muted); animation: none; box-shadow: none; }
+.dot.amber { background: var(--amber); animation: none; }
+@keyframes ping { 70% { box-shadow: 0 0 0 7px rgba(61,220,151,0); } 100% { box-shadow: 0 0 0 0 rgba(61,220,151,0); } }
+.demo { color: var(--amber); border-color: rgba(255,174,43,.5); }
+
+/* rejilla */
+.row { display: grid; gap: 12px; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
+.row.b { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
+@media (max-width: 900px) { .row, .row.b { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 620px) { .hud.tr { display: none; } .sphere { height: 380px; } .cand { font-size: 10.5px; } }
+
+/* esfera */
+.sphere { height: clamp(300px, 52vw, 520px); overflow: hidden; }
+.sphere canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.hud { position: absolute; font-size: 10px; letter-spacing: .1em; color: var(--muted); pointer-events: none; }
+.hud.tl { top: 10px; left: 14px; } .hud.tr { top: 10px; right: 14px; text-align: right; }
+.hud b { color: var(--cyan); font-weight: 500; }
+.cand { position: absolute; left: 14px; bottom: 12px; right: 14px; max-width: 330px; border: 1px solid var(--amber); background: rgba(10,14,22,.78); backdrop-filter: blur(4px); padding: 8px 10px; font-size: 11px; }
+.cand .k { color: var(--amber); letter-spacing: .1em; font-size: 10px; }
+.cand .l2 { color: var(--muted); margin-top: 3px; }
+
+/* telemetría */
+.stack { display: grid; gap: 12px; align-content: start; }
+.kpis { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--line); }
+.kpi { background: var(--panel); padding: 10px 12px; }
+.kpi .n { font-family: var(--display); font-size: clamp(22px, 4vw, 30px); font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; }
+.kpi .n.c { color: var(--cyan); } .kpi .n.a { color: var(--amber); } .kpi .n.g { color: var(--green); } .kpi .n.v { color: var(--violet); }
+.kpi .s { color: var(--muted); font-size: 10px; }
+.wave { width: 100%; height: 54px; display: block; }
+
+/* barras */
+.bars { display: grid; gap: 11px; }
+.bar .h { display: flex; justify-content: space-between; margin-bottom: 4px; }
+.bar .h span:last-child { font-variant-numeric: tabular-nums; }
+.track { position: relative; height: 9px; background: #0a1220; border: 1px solid var(--line); }
+.fill { height: 100%; width: 0; background: linear-gradient(90deg, var(--cyan), #7cf0ff); box-shadow: 0 0 12px rgba(63,220,255,.5); transition: width 1.4s cubic-bezier(.2,.8,.2,1); }
+.fill.a { background: linear-gradient(90deg, #ff8a1f, var(--amber)); box-shadow: 0 0 12px rgba(255,174,43,.45); }
+.fill.v { background: linear-gradient(90deg, #6e5cff, var(--violet)); box-shadow: 0 0 12px rgba(154,140,255,.45); }
+.be { position: absolute; top: -4px; bottom: -4px; width: 1px; background: var(--red); }
+.note { color: var(--muted); font-size: 10px; margin-top: 10px; }
+
+/* gráfica */
+.chart { height: clamp(200px, 30vw, 280px); }
+.chart canvas { width: 100%; height: 100%; display: block; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 0 14px 10px; font-size: 10px; color: var(--muted); }
+.legend i { display: inline-block; width: 8px; height: 8px; margin-right: 5px; }
+
+/* flujo */
+.flow { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; padding: 10px 14px 14px; }
+@media (max-width: 700px) { .flow { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.st { border: 1px solid var(--line2); padding: 7px 8px; font-size: 10px; letter-spacing: .06em; position: relative; overflow: hidden; }
+.st b { display: block; font-weight: 500; color: var(--fg); font-size: 11px; margin-bottom: 2px; }
+.st span { color: var(--muted); }
+.st.on { border-color: var(--cyan); box-shadow: inset 0 0 14px rgba(63,220,255,.18); }
+.st.on b { color: var(--cyan); }
+.st.off { opacity: .45; border-style: dashed; }
+.st.ai b { color: var(--violet); }
+
+/* registro */
+.log { padding: 4px 14px 12px; height: 188px; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; gap: 3px; }
+.ln { display: flex; gap: 10px; animation: slide .45s ease-out; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ln time { color: var(--muted); flex: none; }
+.ln .buy { color: var(--green); } .ln .sell { color: var(--red); } .ln .blk { color: var(--amber); } .ln .inf { color: var(--cyan); }
+@keyframes slide { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* línea de escaneo muy sutil */
+.scan { pointer-events: none; position: fixed; inset: 0; z-index: 5; background: repeating-linear-gradient(0deg, rgba(255,255,255,.012) 0 1px, transparent 1px 3px); }
+@media (prefers-reduced-motion: reduce) {
+  .dot, .ln { animation: none; } .fill { transition: none; }
+}
+[hidden]{display:none!important}
+@media (max-width:520px){.hud.tl{display:none}}
+</style>
+</head><body>
+<div class="scan" aria-hidden="true"></div>
+<div class="wrap">
+
+  <header class="panel top">
+    <div class="brand">CENTRO DE MANDO<small>BOT DE SEÑALES BTC / ETH · MXN</small></div>
+    <div class="chips">
+      <span class="chip"><span class="dot" id="dot-worker"></span><span id="txt-worker">WORKER EN LÍNEA</span></span>
+      <span class="chip"><span class="dot amber"></span><span id="txt-modo">SOLO SEÑALES</span></span>
+      <span class="chip"><span class="dot off" id="dot-auto"></span><span id="txt-auto">OPERACIÓN AUTO: APAGADA</span></span>
+      <span class="chip" id="reloj">--:--:-- CDMX</span>
+      <span class="chip demo" id="chip-demo" hidden>DATOS DE EJEMPLO</span>
+    </div>
+  </header>
+
+  <section class="row">
+    <div class="panel sphere" id="esfera">
+      <canvas id="cv-esfera" aria-label="Esfera animada de señales"></canvas>
+      <div class="hud tl">MAPA DE SEÑALES<br>GIRO <b id="giro">000.0°</b> · EJE BLOQUEADO</div>
+      <div class="hud tr">NODOS <b id="h-nodos">0</b><br>EVALUADAS A 1 H <b id="h-eval">0</b></div>
+      <div class="cand" id="cand"></div>
+    </div>
+
+    <div class="stack">
+      <div class="panel">
+        <div class="kpis">
+          <div class="kpi"><div class="tag">Ciclos</div><div class="n c" id="k-ciclos">0</div><div class="s" id="s-ciclos"></div></div>
+          <div class="kpi"><div class="tag">Señales</div><div class="n a" id="k-sen">0</div><div class="s">registradas</div></div>
+          <div class="kpi"><div class="tag">Acierto 1 h</div><div class="n g" id="k-a1">0</div><div class="s" id="s-a1"></div></div>
+          <div class="kpi"><div class="tag">Acierto 4 h</div><div class="n v" id="k-a4">0</div><div class="s" id="s-a4"></div></div>
+        </div>
+      </div>
+      <div class="panel pad">
+        <div class="tag" style="margin-bottom:6px">Pulso del bot</div>
+        <canvas class="wave" id="cv-onda"></canvas>
+      </div>
+      <div class="panel pad">
+        <div class="tag" style="margin-bottom:10px">Acierto por motor y plazo</div>
+        <div class="bars">
+          <div class="bar"><div class="h"><span>Motor actual · 1 h</span><span id="p-b1"></span></div><div class="track"><div class="fill" id="b1"></div><div class="be" style="left:36.7%"></div></div></div>
+          <div class="bar"><div class="h"><span>Motor actual · 4 h</span><span id="p-b2"></span></div><div class="track"><div class="fill a" id="b2"></div><div class="be" style="left:36.7%"></div></div></div>
+          <div class="bar"><div class="h"><span>Motor v2 · 4 h</span><span id="p-b3"></span></div><div class="track"><div class="fill v" id="b3"></div></div></div>
+        </div>
+        <div class="note">La línea roja es el punto de equilibrio (36.7%) con TP 5% y SL 1%. Acierto = el precio se movió a favor de la señal; no descuenta comisiones (≈1.2% ida y vuelta).</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="row b">
+    <div class="panel">
+      <div class="pad" style="padding-bottom:0"><div class="tag" id="t-precio">BTC / MXN · precio reciente</div></div>
+      <div class="chart"><canvas id="cv-precio"></canvas></div>
+      <div class="legend" id="leyenda">
+        <span><i style="background:var(--green)"></i>compra</span>
+        <span><i style="background:var(--red)"></i>venta</span>
+        <span><i style="background:var(--amber)"></i>bloqueada por Groq</span>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="pad" style="padding-bottom:6px"><div class="tag">Cinta de eventos</div></div>
+      <div class="log" id="log"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="pad" style="padding-bottom:0"><div class="tag">Recorrido de una señal</div></div>
+    <div class="flow" id="flujo">
+      <div class="st"><b>1 · PRECIO</b><span>Bitso cada 5 s</span></div>
+      <div class="st"><b>2 · INDICADORES</b><span>RSI, EMA, MACD</span></div>
+      <div class="st ai" id="st-groq"><b>3 · GROQ DECIDE</b><span>puede bloquear</span></div>
+      <div class="st" id="st-gemini"><b>4 · GEMINI</b><span>solo informa</span></div>
+      <div class="st"><b>5 · TELEGRAM</b><span>canal de señales</span></div>
+      <div class="st"><b>6 · REGISTRO</b><span>1 h · 4 h · 24 h</span></div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+window.DATOS = /*DATOS*/null;
+(function () {
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var DPR = Math.min(window.devicePixelRatio || 1, 2);
+  var C = { cyan: "63,220,255", amber: "255,174,43", violet: "154,140,255", green: "61,220,151", red: "255,93,108" };
+  var $ = function (id) { return document.getElementById(id); };
+
+  /* ---- datos: reales (inyectados por la app) o de ejemplo ---- */
+  var D = window.DATOS && typeof window.DATOS === "object" ? window.DATOS : null;
+  var EJ = {
+    ciclos: 114, senales: 122, a1: [39, 111], a4: [22, 102], v2: [0, 0],
+    worker: true, modo: "SOLO SEÑALES", auto: "APAGADA", gemini: false, groq: true,
+    ultima: { tipo: "BUY", simbolo: "BTC", prob: 78, precio: 1548200, hace: "6 min", coin: "SI" },
+    eventos: [
+      { c: "inf", t: "Ciclo completado · BTC $1,548,200 · ETH $41,730" },
+      { c: "buy", t: "Señal COMPRA BTC 78% · Groq aprueba · enviada a Telegram" },
+      { c: "blk", t: "Groq bloqueó COMPRA ETH: mercado lateral, riesgo de baja" },
+      { c: "inf", t: "Registro: señal BTC evaluada a 1 h · el precio subió 0.31%" },
+      { c: "sell", t: "Señal VENTA ETH 74% · Groq aprueba · enviada a Telegram" },
+      { c: "inf", t: "Motor v2 revisó velas de 1 h · mercado lateral, sin señal" }
+    ],
+    serie: null, marca: null
+  };
+  var X = D || EJ;
+  if (!D) $("chip-demo").hidden = false;
+
+  function pct(par) { return par[1] ? par[0] / par[1] * 100 : 0; }
+  function fmt(n) { return Number(n).toLocaleString("es-MX", { maximumFractionDigits: 0 }); }
+  function hora(d) {
+    var t = new Date((d || new Date()).getTime() - 6 * 3600 * 1000);
+    return String(t.getUTCHours()).padStart(2, "0") + ":" + String(t.getUTCMinutes()).padStart(2, "0") + ":" + String(t.getUTCSeconds()).padStart(2, "0");
+  }
+
+  /* ---- encabezado ---- */
+  $("txt-worker").textContent = X.worker ? "WORKER EN LÍNEA" : "SIN WORKER (PANEL ACTIVO)";
+  if (!X.worker) $("dot-worker").className = "dot off";
+  $("txt-modo").textContent = X.modo;
+  $("txt-auto").textContent = "OPERACIÓN AUTO: " + X.auto;
+  if (X.auto === "ACTIVA") $("dot-auto").className = "dot";
+  else if (X.auto === "PAUSADA") $("dot-auto").className = "dot amber";
+  var reloj = $("reloj");
+  function tick() { reloj.textContent = hora() + " CDMX"; }
+  tick(); setInterval(tick, 1000);
+
+  /* ---- tarjetas ---- */
+  $("h-nodos").textContent = X.senales;
+  $("h-eval").textContent = X.a1[1];
+  $("s-ciclos").textContent = X.worker ? "sin pausas" : "en este panel";
+  $("s-a1").textContent = X.a1[0] + " de " + X.a1[1];
+  $("s-a4").textContent = X.a4[0] + " de " + X.a4[1];
+  var metas = [["k-ciclos", X.ciclos, 0, ""], ["k-sen", X.senales, 0, ""], ["k-a1", pct(X.a1), 1, "%"], ["k-a4", pct(X.a4), 1, "%"]];
+  metas.forEach(function (m) {
+    var el = $(m[0]), meta = m[1], dec = m[2], suf = m[3];
+    if (reduce) { el.textContent = meta.toFixed(dec) + suf; return; }
+    var t0 = performance.now();
+    (function paso(t) {
+      var p = Math.min(1, (t - t0) / 1400), e = 1 - Math.pow(1 - p, 3);
+      el.textContent = (meta * e).toFixed(dec) + suf;
+      if (p < 1) requestAnimationFrame(paso);
+    })(t0);
+  });
+
+  /* ---- última señal ---- */
+  (function () {
+    var u = X.ultima, c = $("cand");
+    if (!u) { c.innerHTML = "<div class=\"k\">ÚLTIMA SEÑAL</div><div class=\"l2\">Aún no hay señales registradas.</div>"; return; }
+    var compra = u.tipo === "BUY";
+    var ia = u.coin === "SI" ? "las IAs coinciden" : u.coin === "GROQ" ? "Groq aprueba" : u.coin === "NO" ? "las IAs no coinciden" : "sin opinión de IA";
+    c.innerHTML = "<div class=\"k\">ÚLTIMA SEÑAL" + (u.motor === "v2" ? " · MOTOR V2" : "") + "</div>" +
+      "<div><span style=\"color:var(--" + (compra ? "green" : "red") + ")\">" + (compra ? "COMPRA" : "VENTA") + "</span> " + u.simbolo + " · fuerza " + u.prob + "% · " + ia + "</div>" +
+      "<div class=\"l2\">$" + fmt(u.precio) + " MXN · hace " + u.hace + "</div>";
+  })();
+
+  /* ---- barras ---- */
+  function barra(id, idp, par, texto) {
+    var p = pct(par);
+    $(idp).textContent = texto || (par[1] ? p.toFixed(1) + "%" : "sin datos");
+    setTimeout(function () { $(id).style.width = Math.max(par[1] ? p : 0, 1.5) + "%"; }, 150);
+  }
+  barra("b1", "p-b1", X.a1); barra("b2", "p-b2", X.a4);
+  barra("b3", "p-b3", X.v2, X.v2[1] < 30 ? "juntando datos " + X.v2[1] + " / 30" : null);
+
+  /* ---- recorrido ---- */
+  if (!X.gemini) { $("st-gemini").className = "st off"; $("st-gemini").querySelector("span").textContent = "apagado"; }
+  if (!X.groq) { $("st-groq").className = "st off"; $("st-groq").querySelector("span").textContent = "sin llave"; }
+  var pasos = document.querySelectorAll("#flujo .st:not(.off)"), pp = 0;
+  function luz() { pasos.forEach(function (s, j) { s.classList.toggle("on", j === pp); }); pp = (pp + 1) % pasos.length; }
+  luz(); if (!reduce) setInterval(luz, 1100);
+
+  function fit(cv) {
+    var r = cv.getBoundingClientRect();
+    cv.width = Math.max(2, Math.round(r.width * DPR));
+    cv.height = Math.max(2, Math.round(r.height * DPR));
+    return { w: r.width, h: r.height };
+  }
+
+  /* ---- esfera 3D ---- */
+  var cvE = $("cv-esfera"), gE = cvE.getContext("2d"), dimE = fit(cvE);
+  var N = 620, pts = [], i;
+  for (i = 0; i < N; i++) {
+    var y = 1 - (i / (N - 1)) * 2, r = Math.sqrt(1 - y * y), th = i * 2.399963;
+    pts.push({ x: Math.cos(th) * r, y: y, z: Math.sin(th) * r, hue: i % 11 === 0 ? "amber" : (i % 7 === 0 ? "violet" : "cyan") });
+  }
+  var arcs = [];
+  for (i = 0; i < 150; i++) arcs.push({ a: (Math.random() * N) | 0, b: (Math.random() * N) | 0, h: Math.random() < .3 ? "amber" : "cyan" });
+  var giro = 0, giroEl = $("giro"), vivo = true;
+  function proj(p, cy, sy, cx, sx, R, cxp, cyp) {
+    var x = p.x * cy + p.z * sy, z = -p.x * sy + p.z * cy;
+    var y2 = p.y * cx - z * sx, z2 = p.y * sx + z * cx, k = 1 / (1 + z2 * 0.28);
+    return { x: cxp + x * R * k, y: cyp + y2 * R * k, z: z2, k: k };
+  }
+  function esfera(t) {
+    var w = dimE.w, h = dimE.h, R = Math.min(w, h * 0.78) * 0.40, cxp = w * 0.5, cyp = h * 0.40;
+    gE.setTransform(DPR, 0, 0, DPR, 0, 0); gE.clearRect(0, 0, w, h);
+    var cy = Math.cos(giro), sy = Math.sin(giro), tilt = 0.42, cx = Math.cos(tilt), sx = Math.sin(tilt);
+    var P = pts.map(function (p) { return proj(p, cy, sy, cx, sx, R, cxp, cyp); });
+    gE.lineWidth = 0.7;
+    arcs.forEach(function (ar) {
+      var A = P[ar.a], B = P[ar.b], depth = (A.z + B.z) / 2, al = 0.10 + 0.22 * (1 - (depth + 1) / 2);
+      var qx = cxp + ((A.x + B.x) / 2 - cxp) * 0.35, qy = cyp + ((A.y + B.y) / 2 - cyp) * 0.35;
+      gE.strokeStyle = "rgba(" + C[ar.h] + "," + al.toFixed(3) + ")";
+      gE.beginPath(); gE.moveTo(A.x, A.y); gE.quadraticCurveTo(qx, qy, B.x, B.y); gE.stroke();
+    });
+    P.forEach(function (q, j) {
+      var near = (1 - q.z) / 2, al = 0.25 + 0.75 * near, s = (0.7 + 1.6 * near) * q.k;
+      if (j % 53 === Math.floor(t / 400) % 53) { s *= 2.6; al = 1; }
+      gE.fillStyle = "rgba(" + C[pts[j].hue] + "," + al.toFixed(2) + ")";
+      gE.beginPath(); gE.arc(q.x, q.y, s, 0, 6.2832); gE.fill();
+    });
+    giroEl.textContent = (((giro * 180 / Math.PI) % 360 + 360) % 360).toFixed(1).padStart(5, "0") + "°";
+  }
+  var ultimo = 0;
+  function bucleEsfera(t) { if (vivo) { giro += (t - ultimo) * 0.00022; esfera(t); } ultimo = t; requestAnimationFrame(bucleEsfera); }
+  if (reduce) { giro = 0.9; esfera(0); } else requestAnimationFrame(bucleEsfera);
+  if ("IntersectionObserver" in window) new IntersectionObserver(function (e) { vivo = e[0].isIntersecting; }).observe($("esfera"));
+
+  /* ---- precio ---- */
+  var serie = X.serie && X.serie.length >= 10 ? X.serie : null, marcas = [];
+  if (!serie) {
+    var sem = 7; serie = []; var v = 1540000;
+    var rnd = function () { sem = (sem * 16807) % 2147483647; return (sem - 1) / 2147483646; };
+    for (i = 0; i < 96; i++) { v += (rnd() - 0.47) * 6500 + Math.sin(i / 9) * 1800; serie.push(v); }
+    marcas = [[14, "buy"], [31, "blk"], [47, "sell"], [63, "buy"], [78, "blk"], [90, "buy"]];
+    $("t-precio").textContent = "BTC / MXN · señales sobre el precio (ejemplo)";
+  } else {
+    marcas = X.marcas || [];
+    $("leyenda").innerHTML = "<span><i style=\"background:var(--green)\"></i>compra</span><span><i style=\"background:var(--red)\"></i>venta</span><span>señales de BTC registradas (ventana de 4 días)</span>";
+    $("t-precio").textContent = "BTC / MXN · cierres de 1 h";
+  }
+  var cvP = $("cv-precio"), gP = cvP.getContext("2d"), dimP = fit(cvP);
+  function precio(prog) {
+    var w = dimP.w, h = dimP.h, m = { l: 52, r: 14, t: 16, b: 22 };
+    gP.setTransform(DPR, 0, 0, DPR, 0, 0); gP.clearRect(0, 0, w, h);
+    var mn = Math.min.apply(null, serie), mx = Math.max.apply(null, serie), pad = (mx - mn) * 0.14 || mx * 0.001; mn -= pad; mx += pad;
+    function Xp(k) { return m.l + (w - m.l - m.r) * k / (serie.length - 1); }
+    function Yp(val) { return m.t + (h - m.t - m.b) * (1 - (val - mn) / (mx - mn)); }
+    gP.font = "10px " + getComputedStyle(document.body).fontFamily; gP.textBaseline = "middle";
+    for (var g = 0; g <= 4; g++) {
+      var val = mn + (mx - mn) * g / 4, yy = Yp(val);
+      gP.strokeStyle = "rgba(109,134,162,0.16)"; gP.lineWidth = 1; gP.beginPath(); gP.moveTo(m.l, yy); gP.lineTo(w - m.r, yy); gP.stroke();
+      gP.fillStyle = "rgba(109,134,162,0.9)"; gP.textAlign = "right"; gP.fillText((val / 1000).toFixed((mx - mn) < 20000 ? 1 : 0) + "k", m.l - 8, yy);
+    }
+    var hasta = Math.floor((serie.length - 1) * prog);
+    var grad = gP.createLinearGradient(0, m.t, 0, h - m.b); grad.addColorStop(0, "rgba(63,220,255,0.28)"); grad.addColorStop(1, "rgba(63,220,255,0)");
+    gP.beginPath(); gP.moveTo(Xp(0), h - m.b);
+    for (var k = 0; k <= hasta; k++) gP.lineTo(Xp(k), Yp(serie[k]));
+    gP.lineTo(Xp(hasta), h - m.b); gP.closePath(); gP.fillStyle = grad; gP.fill();
+    gP.beginPath(); for (k = 0; k <= hasta; k++) { if (k) gP.lineTo(Xp(k), Yp(serie[k])); else gP.moveTo(Xp(k), Yp(serie[k])); }
+    gP.strokeStyle = "rgb(" + C.cyan + ")"; gP.lineWidth = 1.6; gP.shadowColor = "rgba(" + C.cyan + ",0.7)"; gP.shadowBlur = 8; gP.stroke(); gP.shadowBlur = 0;
+    marcas.forEach(function (mk) {
+      if (mk[0] > hasta) return;
+      var x = Xp(mk[0]), y = Yp(serie[mk[0]]), col = mk[1] === "buy" ? C.green : mk[1] === "sell" ? C.red : C.amber;
+      gP.fillStyle = "rgb(" + col + ")"; gP.strokeStyle = "rgb(" + col + ")"; gP.lineWidth = 1.6; gP.beginPath();
+      if (mk[1] === "buy") { gP.moveTo(x, y - 14); gP.lineTo(x - 6, y - 3); gP.lineTo(x + 6, y - 3); gP.closePath(); gP.fill(); }
+      else if (mk[1] === "sell") { gP.moveTo(x, y + 14); gP.lineTo(x - 6, y + 3); gP.lineTo(x + 6, y + 3); gP.closePath(); gP.fill(); }
+      else { gP.moveTo(x - 5, y - 13); gP.lineTo(x + 5, y - 3); gP.moveTo(x + 5, y - 13); gP.lineTo(x - 5, y - 3); gP.stroke(); }
+    });
+    gP.fillStyle = "rgb(" + C.cyan + ")"; gP.beginPath(); gP.arc(Xp(hasta), Yp(serie[hasta]), 3.2, 0, 6.2832); gP.fill();
+  }
+  if (reduce) precio(1); else { var t0 = performance.now(); (function an(t) { var p = Math.min(1, (t - t0) / 2200); precio(1 - Math.pow(1 - p, 3)); if (p < 1) requestAnimationFrame(an); })(t0); }
+
+  /* ---- pulso: onda decorativa; plana si no hay worker ---- */
+  var cvO = $("cv-onda"), gO = cvO.getContext("2d"), dimO = fit(cvO), fase = 0, amp = X.worker ? 1 : 0.06;
+  function onda() {
+    var w = dimO.w, h = dimO.h; gO.setTransform(DPR, 0, 0, DPR, 0, 0); gO.clearRect(0, 0, w, h);
+    gO.strokeStyle = "rgba(109,134,162,0.18)"; gO.beginPath(); gO.moveTo(0, h / 2); gO.lineTo(w, h / 2); gO.stroke();
+    gO.beginPath();
+    for (var x = 0; x <= w; x += 2) {
+      var u = x / w, y = h / 2 - amp * (Math.sin(u * 14 + fase) * (h * 0.22) * (0.6 + 0.4 * Math.sin(u * 5 - fase * 0.6)) + (Math.sin(u * 40 - fase * 2) > 0.96 ? h * 0.22 : 0) * -1);
+      if (x) gO.lineTo(x, y); else gO.moveTo(x, y);
+    }
+    gO.strokeStyle = "rgb(" + (X.worker ? C.cyan : "109,134,162") + ")"; gO.lineWidth = 1.4; gO.shadowColor = "rgba(" + C.cyan + ",0.6)"; gO.shadowBlur = X.worker ? 6 : 0; gO.stroke(); gO.shadowBlur = 0;
+  }
+  if (reduce) onda(); else (function ol() { fase += 0.045; onda(); requestAnimationFrame(ol); })();
+
+  /* ---- cinta de eventos ---- */
+  var log = $("log"), idx = 0, ev = X.eventos || [];
+  function nuevo(e, h) {
+    var d = document.createElement("div");
+    d.className = "ln"; d.innerHTML = "<time></time><span class=\"" + e.c + "\"></span>";
+    d.firstChild.textContent = e.h || h || hora(); d.lastChild.textContent = e.t; log.appendChild(d);
+    while (log.children.length > 8) log.removeChild(log.firstChild);
+  }
+  if (!ev.length) nuevo({ c: "inf", t: "Esperando la primera señal…" });
+  ev.forEach(function (e, j) { if (reduce) nuevo(e); else setTimeout(function () { nuevo(e); }, 300 + j * 280); });
+  if (!D && !reduce) setInterval(function () { nuevo(ev[idx++ % ev.length]); }, 2600);
+
+  /* ---- alto del marco (cuando está dentro de Streamlit) ---- */
+  function altura() {
+    try { if (window.frameElement) window.frameElement.style.height = (document.documentElement.scrollHeight + 4) + "px"; } catch (e) {}
+  }
+  window.addEventListener("load", altura);
+  window.addEventListener("resize", function () {
+    dimE = fit(cvE); dimP = fit(cvP); dimO = fit(cvO); precio(1); if (reduce) { esfera(0); onda(); } altura();
+  });
+  setTimeout(altura, 400); setTimeout(altura, 1500);
+})();
+</script>
+</body></html>

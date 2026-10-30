@@ -2807,6 +2807,134 @@ def _worker_activo():
     return activo
 
 
+# ===== CENTRO DE MANDO (PANEL VISUAL ANIMADO) =====
+# Solo lee y muestra; no envía señales ni opera. Los datos se preparan aquí en el servidor
+# y se inyectan como JSON en la plantilla; la URL de Firebase nunca llega al navegador.
+RUTA_PLANTILLA_CENTRO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "centro_de_mando.html")
+CENTRO_DE_MANDO = _a_booleano(_secreto("CENTRO_DE_MANDO", True), True)
+
+
+def _leer_latido_worker():
+    """Último latido del worker (dict) o None."""
+    if not FIREBASE_CONFIGURADO:
+        return None
+    try:
+        r = requests.get(f"{URL_FIREBASE}/worker.json", timeout=5)
+        datos = r.json() if r.status_code == 200 else None
+        return datos if isinstance(datos, dict) else None
+    except Exception:
+        return None
+
+
+def _hace_texto(segundos):
+    segundos = max(0, int(segundos))
+    if segundos < 90:
+        return f"{segundos} s"
+    if segundos < 5400:
+        return f"{segundos // 60} min"
+    if segundos < 172800:
+        return f"{segundos // 3600} h"
+    return f"{segundos // 86400} d"
+
+
+def _par_acierto(registros, motor, clave):
+    """(aciertos, evaluadas) de un motor en un plazo, igual que la tabla de resultados."""
+    aciertos = n = 0
+    for r in registros:
+        if (r.get("motor", "actual") or "actual") != motor:
+            continue
+        res = (r.get("resultados") or {}).get(clave)
+        if isinstance(res, dict) and not res.get("omitido") and "acierto" in res:
+            n += 1
+            aciertos += 1 if res.get("acierto") else 0
+    return [aciertos, n]
+
+
+def _construir_datos_centro():
+    """Datos reales para el Centro de mando, o None si no hay registro que mostrar."""
+    registros = _leer_registros_senales() if FIREBASE_CONFIGURADO else None
+    if not registros:
+        return None
+    ahora = time.time()
+    latido = _leer_latido_worker()
+    worker_vivo = bool(latido and (ahora - float(latido.get("ts", 0) or 0)) < SEGUNDOS_LATIDO_WORKER)
+    ordenadas = sorted(registros, key=lambda r: float(r.get("ts", 0) or 0))
+    actuales = [r for r in ordenadas if (r.get("motor", "actual") or "actual") == "actual"]
+    ultima = None
+    if ordenadas:
+        u = ordenadas[-1]
+        ultima = {
+            "tipo": u.get("tipo", "BUY"), "simbolo": u.get("simbolo", "BTC"),
+            "prob": round(float(u.get("probabilidad", 0) or 0)), "precio": float(u.get("precio", 0) or 0),
+            "hace": _hace_texto(ahora - float(u.get("ts", ahora) or ahora)),
+            "coin": u.get("coinciden", "N/D"), "motor": u.get("motor", "actual"),
+        }
+    eventos = []
+    for r in ordenadas[-8:]:
+        compra = r.get("tipo") == "BUY"
+        motor = " · v2" if r.get("motor") == "v2" else ""
+        eventos.append({
+            "c": "buy" if compra else "sell",
+            "h": str(r.get("fecha", ""))[11:19],
+            "t": f"Señal {'COMPRA' if compra else 'VENTA'} {r.get('simbolo', '?')} "
+                 f"{round(float(r.get('probabilidad', 0) or 0))}%{motor} · $"
+                 f"{float(r.get('precio', 0) or 0):,.0f}",
+        })
+    serie, marcas = None, []
+    try:
+        velas = obtener_velas_horarias("BTC")
+        if velas and len(velas) >= 24:
+            serie = [round(float(v), 2) for v in velas[-96:]]
+            for r in ordenadas:
+                if r.get("simbolo") != "BTC":
+                    continue
+                horas = (ahora - float(r.get("ts", 0) or 0)) / 3600
+                idx = len(serie) - 1 - int(round(horas))
+                if 0 <= idx < len(serie):
+                    marcas.append([idx, "buy" if r.get("tipo") == "BUY" else "sell"])
+    except Exception as e:
+        print(f"Error preparando la serie del Centro de mando: {type(e).__name__}")
+    auto = "APAGADA"
+    if OPERAR_AUTOMATICO and MODO_REAL:
+        est = st.session_state.get("auto_estado")
+        auto = "PAUSADA" if isinstance(est, dict) and est.get("pausado") else "ACTIVA"
+    return {
+        "ciclos": int((latido or {}).get("ciclo", 0) or st.session_state.get("ciclo", 0) or 0),
+        "senales": len(actuales) + sum(1 for r in ordenadas if r.get("motor") == "v2"),
+        "a1": _par_acierto(registros, "actual", "1h"),
+        "a4": _par_acierto(registros, "actual", "4h"),
+        "v2": _par_acierto(registros, "v2", "4h"),
+        "worker": worker_vivo,
+        "modo": "OPERACIÓN REAL" if (MODO_REAL and OPERAR_AUTOMATICO) else "SOLO SEÑALES",
+        "auto": auto,
+        "gemini": client is not None,
+        "groq": SEGUNDA_OPINION_CONFIGURADA,
+        "ultima": ultima,
+        "eventos": eventos,
+        "serie": serie,
+        "marcas": marcas,
+    }
+
+
+def _render_centro_de_mando():
+    """Dibuja el Centro de mando (una sola vez, fuera del fragmento que se refresca)."""
+    if ES_WORKER or not CENTRO_DE_MANDO:
+        return
+    try:
+        import streamlit.components.v1 as componentes
+        with open(RUTA_PLANTILLA_CENTRO, encoding="utf-8") as f:
+            html = f.read()
+        datos = _construir_datos_centro()
+        if datos is None:
+            texto = "null"
+        else:
+            texto = json.dumps(datos, ensure_ascii=False).replace("</", "<\\/")
+        html = html.replace("/*DATOS*/null", texto, 1)
+        componentes.html(html, height=1050, scrolling=False)
+    except Exception as e:
+        print(f"Error mostrando el Centro de mando: {type(e).__name__}")
+
+
 def _panel():
     interfaz = {
         "tabla": st.container(),
@@ -2864,6 +2992,9 @@ def _soporta_fragmento_periodico():
         return True
     except Exception:
         return False
+
+
+_render_centro_de_mando()
 
 
 if _soporta_fragmento_periodico():
