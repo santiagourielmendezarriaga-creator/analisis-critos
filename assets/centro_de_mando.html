@@ -403,15 +403,9 @@ window.DATOS = /*DATOS*/null;
   ev.forEach(function (e, j) { if (reduce) nuevo(e); else setTimeout(function () { nuevo(e); }, 300 + j * 280); });
   if (!D && !reduce) setInterval(function () { nuevo(ev[idx++ % ev.length]); }, 2600);
 
-  /* ---- alto del marco (cuando está dentro de Streamlit) ---- */
-  function altura() {
-    try { if (window.frameElement) window.frameElement.style.height = (document.documentElement.scrollHeight + 4) + "px"; } catch (e) {}
-  }
-  window.addEventListener("load", altura);
   window.addEventListener("resize", function () {
-    dimE = fit(cvE); dimP = fit(cvP); dimO = fit(cvO); precio(1); if (reduce) { esfera(0); onda(); } altura();
+    dimE = fit(cvE); dimP = fit(cvP); dimO = fit(cvO); precio(1); if (reduce) { esfera(0); onda(); }
   });
-  setTimeout(altura, 400); setTimeout(altura, 1500);
 })();
 </script>
 </body></html>
