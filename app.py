@@ -2995,6 +2995,29 @@ def _render_centro_de_mando():
         print(f"Error mostrando el Centro de mando: {type(e).__name__}")
 
 
+def _render_saldo_solo_lectura(interfaz):
+    """Saldo de Bitso mientras el worker corre el bot: solo consulta, no opera."""
+    saldo = obtener_saldo_bitso()
+    if not saldo:
+        error = st.session_state.get("error_saldo_bitso")
+        interfaz["metricas"].caption(
+            f"💰 Saldo de Bitso no disponible{f' ({error})' if error else ''}. "
+            "Revisa BITSO_API_KEY y BITSO_API_SECRET en los Secrets de Streamlit.")
+        return
+    btc = obtener_precio_bitso("btc_mxn") or 0.0
+    eth = obtener_precio_bitso("eth_mxn") or 0.0
+    mxn = saldo.get("mxn", {})
+    mxn_total = float(mxn.get("total", 0.0))
+    mxn_disp = float(mxn.get("available", 0.0))
+    btc_total = float(saldo.get("btc", {}).get("total", 0.0))
+    eth_total = float(saldo.get("eth", {}).get("total", 0.0))
+    columnas = interfaz["metricas"].columns(3)
+    columnas[0].metric("💰 Saldo MXN (Bitso)", f"${mxn_total:,.2f}",
+                       help=f"Total: ${mxn_total:,.2f} | Disponible: ${mxn_disp:,.2f}")
+    columnas[1].metric("💎 Valor total (Bitso)", f"${mxn_total + btc_total * btc + eth_total * eth:,.2f}")
+    columnas[2].metric("₿/Ξ BTC / ETH", f"{btc_total:.6f} / {eth_total:.6f}")
+
+
 def _panel():
     interfaz = {
         "tabla": st.container(),
@@ -3017,6 +3040,10 @@ def _panel():
         interfaz["estado"].info(
             "🛰️ El bot está corriendo en el servidor (worker). Este panel no ejecuta ciclos "
             "para no duplicar señales ni órdenes; muestra solo los resultados guardados.")
+        try:
+            _render_saldo_solo_lectura(interfaz)
+        except Exception as e:
+            print(f"Error mostrando el saldo: {type(e).__name__}")
         try:
             _render_resultados_senales(interfaz)
         except Exception as e:
