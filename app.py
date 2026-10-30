@@ -2930,7 +2930,8 @@ def _render_centro_de_mando():
         else:
             texto = json.dumps(datos, ensure_ascii=False).replace("</", "<\\/")
         html = html.replace("/*DATOS*/null", texto, 1)
-        componentes.html(html, height=1050, scrolling=False)
+        with st.expander("🛰️ Centro de mando", expanded=True):
+            componentes.html(html, height=760, scrolling=True)
     except Exception as e:
         print(f"Error mostrando el Centro de mando: {type(e).__name__}")
 
