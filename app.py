@@ -2062,15 +2062,16 @@ def _caida_maxima_pct(curva):
 
 
 def backtest_tendencia(cierres, ventana=LAB_VENTANA_DIAS, banda_pct=LAB_BANDA_SALIDA_PCT,
-                       comision=COMISION_TAKER):
+                       comision=COMISION_TAKER, inicio=None):
     """Regla: la señal se decide con el cierre del día y se ejecuta al cierre del día siguiente.
     Devuelve un resumen contra comprar y mantener, o None si faltan datos."""
     n = len(cierres)
-    if n < ventana + 30:
+    inicio = max(ventana, inicio or 0)   # permite comparar varias reglas desde el mismo día
+    if n < inicio + 30:
         return None
     caja, cantidad, valor_entrada, pendiente = 1.0, 0.0, 0.0, None
     curva, operaciones = [], []
-    for t in range(ventana, n):
+    for t in range(inicio, n):
         precio = cierres[t]
         if pendiente == "comprar" and cantidad == 0:
             cantidad = caja * (1 - comision) / precio
@@ -2087,7 +2088,7 @@ def backtest_tendencia(cierres, ventana=LAB_VENTANA_DIAS, banda_pct=LAB_BANDA_SA
         elif cantidad > 0 and precio < media * (1 - banda_pct / 100):
             pendiente = "vender"
     final = caja + cantidad * cierres[-1] * (1 - comision) if cantidad > 0 else caja
-    base = cierres[ventana:]
+    base = cierres[inicio:]
     mantener = [p / base[0] for p in base]
     mantener_final = (1 - comision) * (base[-1] / base[0]) * (1 - comision)
     return {
@@ -2102,10 +2103,76 @@ def backtest_tendencia(cierres, ventana=LAB_VENTANA_DIAS, banda_pct=LAB_BANDA_SA
     }
 
 
+LAB_VENTANAS = (30, 50, 100, 150)
+LAB_BANDAS = (0.0, 3.0, 5.0, 8.0)
+
+
+def _ventaja_vs_mantener(cierres, ventana, banda, inicio):
+    r = backtest_tendencia(cierres, ventana, banda, inicio=inicio)
+    return None if r is None else r["estrategia_pct"] - r["mantener_pct"]
+
+
+def probar_variantes_tendencia(cierres_por_moneda):
+    """Prueba varias medias y bandas desde el mismo día. Para cada una devuelve cuánto le
+    gana o pierde a comprar y mantener en el periodo completo y en cada mitad (por moneda).
+    Sirve para ver si una variante es consistente o solo tuvo suerte en una parte del año."""
+    inicio = max(LAB_VENTANAS)
+    filas = []
+    for ventana in LAB_VENTANAS:
+        for banda in LAB_BANDAS:
+            fila = {"ventana": ventana, "banda": banda, "totales": {}, "gana_todo": True}
+            for simbolo, cierres in cierres_por_moneda.items():
+                n = len(cierres)
+                largo = n - inicio
+                if largo < 60:
+                    return []
+                mitad = largo // 2
+                tramos = (cierres, cierres[: inicio + mitad], cierres[mitad:])
+                difs = [_ventaja_vs_mantener(t, ventana, banda, inicio) for t in tramos]
+                if any(d is None for d in difs):
+                    return []
+                fila["totales"][simbolo] = difs[0]
+                if not all(d > 0 for d in difs):
+                    fila["gana_todo"] = False
+            filas.append(fila)
+    return filas
+
+
+def _render_variantes_tendencia(cont, cierres_por_moneda):
+    clave = tuple((k, len(v), round(v[-1])) for k, v in sorted(cierres_por_moneda.items()))
+    cache = st.session_state.get("lab_variantes")
+    if cache and cache[0] == clave:
+        filas = cache[1]
+    else:
+        filas = probar_variantes_tendencia(cierres_por_moneda)
+        st.session_state["lab_variantes"] = (clave, filas)
+    if not filas:
+        return
+    monedas = sorted(cierres_por_moneda)
+    cont.markdown("**🔁 Probando variantes de la regla (media de N días, salida a -X%)**")
+    cont.table([{
+        "Media": f"{f['ventana']} d",
+        "Salida": f"-{f['banda']:g}%" if f["banda"] else "bajo la media",
+        **{f"{m} vs mantener": f"{f['totales'][m]:+.1f} pts" for m in monedas},
+        "Gana en todo": "✓" if f["gana_todo"] else "no",
+    } for f in filas])
+    ganadoras = sum(1 for f in filas if f["gana_todo"])
+    cont.caption(
+        "Cada fila compara la regla con comprar y mantener desde el mismo día (puntos porcentuales; "
+        "negativo = pierde contra mantener). «Gana en todo» exige ganarle en ambas monedas y en las "
+        f"dos mitades del periodo. {ganadoras} de {len(filas)} variantes lo logran. "
+        "Cuantas más variantes se prueban, más fácil es que una gane por pura suerte: "
+        "una sola ✓ aislada no es evidencia.")
+
+
 def _render_laboratorio_tendencia(cont):
     filas = []
+    cierres_por_moneda = {}
     for simbolo in ("BTC", "ETH"):
-        res = backtest_tendencia(obtener_cierres_diarios(simbolo) or [])
+        cierres = obtener_cierres_diarios(simbolo) or []
+        if cierres:
+            cierres_por_moneda[simbolo] = cierres
+        res = backtest_tendencia(cierres)
         if not res:
             continue
         filas.append({
@@ -2127,6 +2194,11 @@ def _render_laboratorio_tendencia(cont):
         "Solo simulación, con comisión taker de Bitso (0.78% por lado). Cubre apenas el último año, "
         "que es un solo tipo de mercado y pocas operaciones: no prueba nada por sí sola. "
         "Si la regla no supera a comprar y mantener, no vale la pena operarla.")
+    if len(cierres_por_moneda) == 2:
+        try:
+            _render_variantes_tendencia(cont, cierres_por_moneda)
+        except Exception as e:
+            print(f"Error probando variantes: {type(e).__name__}")
 
 
 def _render_resultados_senales(interfaz):
