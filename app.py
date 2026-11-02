@@ -1953,7 +1953,8 @@ def calcular_estadisticas_senales(registros):
     return filas, len(registros), sin_resultados
 
 
-def simular_tp_sl(registros, velas_por_simbolo, horas_maximas=24):
+def simular_tp_sl(registros, velas_por_simbolo, horas_maximas=24,
+                  tp_pct=AUTO_TP_PCT, sl_pct=AUTO_SL_PCT):
     """Qué habría pasado de operar cada señal de COMPRA con TP 5% / SL 1% y comisiones.
     Recorre los cierres horarios posteriores a la señal hasta tocar el TP, el SL o cumplir
     `horas_maximas` (se sale al precio de esa hora). Con cierres de 1 h no se ven los picos
@@ -1975,11 +1976,11 @@ def simular_tp_sl(registros, velas_por_simbolo, horas_maximas=24):
         salida, motivo = None, "plazo"
         for v in velas[inicio + 1: inicio + 1 + horas_maximas]:
             cambio = (v / precio - 1) * 100
-            if cambio >= AUTO_TP_PCT:
-                salida, motivo = AUTO_TP_PCT, "tp"
+            if cambio >= tp_pct:
+                salida, motivo = tp_pct, "tp"
                 break
-            if cambio <= -AUTO_SL_PCT:
-                salida, motivo = -AUTO_SL_PCT, "sl"
+            if cambio <= -sl_pct:
+                salida, motivo = -sl_pct, "sl"
                 break
             salida = cambio
         if salida is None:
@@ -1990,6 +1991,30 @@ def simular_tp_sl(registros, velas_por_simbolo, horas_maximas=24):
         acc[motivo] += 1
         acc["neto"] += salida - comision_pct
     return por_motor
+
+
+COMBINACIONES_SALIDA = ((1, 1), (2, 1), (2, 2), (3, 1), (3, 2), (3, 3), (5, 1), (5, 3), (5, 5))
+
+
+def comparar_combinaciones(registros, velas_por_simbolo):
+    """Filas con la ganancia neta media de varias combinaciones TP/SL, para todas las compras
+    y solo para las que Groq aprobó. Solo simulación: no cambia los parámetros del bot."""
+    grupos = (("Todas", lambda r: True),
+              ("Groq aprueba", lambda r: r.get("coinciden") == "GROQ"))
+    filas = []
+    for tp, sl in COMBINACIONES_SALIDA:
+        fila = {"TP / SL": f"{tp}% / {sl}%"}
+        for nombre, filtro in grupos:
+            sel = [r for r in registros if filtro(r)]
+            res = simular_tp_sl(sel, velas_por_simbolo, tp_pct=tp, sl_pct=sl)
+            n = sum(a["n"] for a in res.values())
+            neto = sum(a["neto"] for a in res.values())
+            tocados = sum(a["tp"] for a in res.values())
+            fila[f"{nombre}: compras"] = n
+            fila[f"{nombre}: TP"] = f"{tocados / n * 100:.0f}%" if n else "-"
+            fila[f"{nombre}: neto medio"] = f"{neto / n:+.2f}%" if n else "-"
+        filas.append(fila)
+    return filas
 
 
 def _render_resultados_senales(interfaz):
@@ -2027,6 +2052,12 @@ def _render_resultados_senales(interfaz):
                 "Neto = resultado por operación después de comisiones (≈1.2% ida y vuelta). "
                 "Si es negativo, el bot perdería dinero operando así. Usa cierres de 1 h de los últimos "
                 "14 días, por eso es aproximado y solo cuenta compras con 24 h ya cumplidas.")
+        filas_comb = comparar_combinaciones(registros, velas)
+        if any(f["Todas: compras"] for f in filas_comb):
+            cont.markdown("**🔬 Probando otras salidas (solo simulación, no cambia el bot)**")
+            cont.table(filas_comb)
+            cont.caption("Neto medio = ganancia por operación tras comisiones (≈1.2%). "
+                         "Si todas salen negativas, el problema son las comisiones y no el TP/SL.")
     except Exception as e:
         print(f"Error en la simulación TP/SL: {type(e).__name__}")
     cont.caption(
