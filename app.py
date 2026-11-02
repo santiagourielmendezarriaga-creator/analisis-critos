@@ -2358,6 +2358,154 @@ def _render_tendencia_vivo(cont):
                  "Se necesitan al menos varios meses para concluir algo.")
 
 
+# --- Compra periódica (DCA) y mantener: evaluación, SOLO SIMULACIÓN ---
+# Compra un monto fijo cada cierto tiempo y no vende. Aquí solo se mide cómo le habría ido
+# (historial de varios años) y se lleva una cuenta en vivo con compras simuladas. No hace
+# ninguna compra real ni cambia parámetros del bot.
+DCA_INTERVALOS_DIAS = (7, 14, 30)
+DCA_VENTANA_DIAS = 365
+DCA_PASO_DIAS = 7
+DCA_MONTO_SIMULADO = 100.0            # MXN por moneda en cada compra simulada en vivo
+DCA_DIAS_ENTRE_COMPRAS_VIVO = 7
+DCA_MINUTOS_ENTRE_CHEQUEOS = 30
+
+
+def _mediana(valores):
+    v = sorted(valores)
+    m = len(v) // 2
+    return v[m] if len(v) % 2 else (v[m - 1] + v[m]) / 2
+
+
+def simular_dca_ventanas(cierres, intervalo, ventana=DCA_VENTANA_DIAS, paso=DCA_PASO_DIAS,
+                         comision=COMISION_TAKER):
+    """Para muchas fechas de inicio, compra un monto fijo cada `intervalo` días durante `ventana`
+    días y vende todo al final (con comisión en cada compra y en la venta). Compara con invertir
+    todo el dinero el primer día. Devuelve None si la historia no alcanza."""
+    if len(cierres) < ventana + 30:
+        return None
+    dca, junto = [], []
+    for inicio in range(0, len(cierres) - ventana, paso):
+        fin = inicio + ventana
+        compras = list(range(inicio, fin, intervalo))
+        invertido = float(len(compras))
+        unidades = sum((1 - comision) / cierres[d] for d in compras)
+        valor = unidades * cierres[fin] * (1 - comision)
+        dca.append(valor / invertido - 1)
+        junto.append((1 - comision) ** 2 * cierres[fin] / cierres[inicio] - 1)
+    return {
+        "n": len(dca),
+        "rentable": sum(1 for r in dca if r > 0) / len(dca) * 100,
+        "mediana": _mediana(dca) * 100,
+        "peor": min(dca) * 100,
+        "mejor": max(dca) * 100,
+        "junto_rentable": sum(1 for r in junto if r > 0) / len(junto) * 100,
+        "junto_mediana": _mediana(junto) * 100,
+        "junto_peor": min(junto) * 100,
+    }
+
+
+def _render_dca_historia(cont):
+    filas = []
+    anios = 0
+    for simbolo in ("BTC", "ETH"):
+        cierres = obtener_historia_larga(simbolo)
+        if not cierres:
+            continue
+        anios = max(anios, len(cierres) / 365)
+        for intervalo in DCA_INTERVALOS_DIAS:
+            r = simular_dca_ventanas(cierres, intervalo)
+            if not r:
+                continue
+            filas.append({
+                "Moneda": simbolo,
+                "Compra cada": f"{intervalo} d",
+                "Periodos que terminan en ganancia": f"{r['rentable']:.0f}%",
+                "Mediana": f"{r['mediana']:+.0f}%",
+                "Peor periodo": f"{r['peor']:+.0f}%",
+                "Todo el primer día: ganancia": f"{r['junto_rentable']:.0f}%",
+                "Todo el primer día: peor": f"{r['junto_peor']:+.0f}%",
+            })
+    if not filas:
+        return
+    cont.markdown(f"**💵 Compra periódica y mantener: cómo le habría ido ({anios:.1f} años de historia)**")
+    cont.table(filas)
+    cont.caption(
+        f"Cada fila prueba cientos de periodos de {DCA_VENTANA_DIAS} días con distintas fechas de inicio: "
+        "compra un monto fijo cada cierto tiempo, vende al final del periodo y descuenta la comisión taker "
+        "de Bitso (0.78%) en cada compra y en la venta. «Todo el primer día» invierte el mismo dinero "
+        "de golpe al inicio. Precios en dólares. Es el pasado: no garantiza nada hacia adelante, "
+        "y mantener cripto puede perder más de la mitad de su valor.")
+
+
+def registrar_dca_vivo(precios_actuales):
+    """Cada 7 días guarda una compra SIMULADA de 100 MXN por moneda al precio de Bitso del momento."""
+    if not FIREBASE_CONFIGURADO:
+        return
+    ahora = time.time()
+    if ahora - st.session_state.get("dca_chequeo", 0) < DCA_MINUTOS_ENTRE_CHEQUEOS * 60:
+        return
+    st.session_state["dca_chequeo"] = ahora
+    try:
+        btc, eth = precios_actuales.get("BTC"), precios_actuales.get("ETH")
+        if not btc or not eth:
+            return
+        r = requests.get(_url_registro("dca_vivo"), timeout=5)
+        if r.status_code != 200:
+            return
+        previos = [v for v in (r.json() or {}).values() if isinstance(v, dict)] if isinstance(r.json(), dict) else []
+        if previos:
+            ultimo = max(float(v.get("ts", 0) or 0) for v in previos)
+            if ahora - ultimo < DCA_DIAS_ENTRE_COMPRAS_VIVO * 86400:
+                return
+        fecha = _hoy_cdmx()
+        requests.put(_url_registro(f"dca_vivo/{fecha}"), timeout=5, json={
+            "ts": ahora, "fecha": fecha, "monto": DCA_MONTO_SIMULADO,
+            "BTC": float(btc), "ETH": float(eth)})
+    except Exception as e:
+        print(f"Error registrando la compra periódica simulada: {type(e).__name__}")
+
+
+def resultado_dca_vivo(compras, precios_actuales, comision=COMISION_TAKER):
+    """Cuánto valdría hoy lo comprado en las compras simuladas (vendiendo con comisión)."""
+    compras = [c for c in compras if isinstance(c, dict)]
+    if not compras:
+        return None
+    salida = {"compras": len(compras), "desde": min(c.get("fecha", "") for c in compras)}
+    for simbolo in ("BTC", "ETH"):
+        precio = precios_actuales.get(simbolo)
+        if not precio:
+            return None
+        invertido = sum(float(c.get("monto", 0) or 0) for c in compras)
+        unidades = sum(float(c.get("monto", 0) or 0) * (1 - comision) / float(c[simbolo])
+                       for c in compras if c.get(simbolo))
+        valor = unidades * float(precio) * (1 - comision)
+        salida[simbolo] = {"invertido": invertido, "valor": valor,
+                           "pct": (valor / invertido - 1) * 100 if invertido else 0.0}
+    return salida
+
+
+def _render_dca_vivo(cont):
+    if not FIREBASE_CONFIGURADO:
+        return
+    r = requests.get(_url_registro("dca_vivo"), timeout=8)
+    datos = r.json() if r.status_code == 200 else None
+    compras = list(datos.values()) if isinstance(datos, dict) else []
+    cont.markdown(f"**🧺 Compra periódica en vivo (simulada: {DCA_MONTO_SIMULADO:.0f} MXN por moneda "
+                  f"cada {DCA_DIAS_ENTRE_COMPRAS_VIVO} días)**")
+    precios = {"BTC": obtener_precio_bitso("btc_mxn"), "ETH": obtener_precio_bitso("eth_mxn")}
+    res = resultado_dca_vivo(compras, precios)
+    if not res:
+        cont.caption("Aún no hay compras simuladas. La primera se registra sola en el siguiente ciclo del bot.")
+        return
+    cont.table([{
+        "Moneda": m, "Desde": res["desde"], "Compras": res["compras"],
+        "Invertido": f"${res[m]['invertido']:,.0f}", "Valdría hoy": f"${res[m]['valor']:,.0f}",
+        "Resultado": f"{res[m]['pct']:+.1f}%",
+    } for m in ("BTC", "ETH")])
+    cont.caption("Cuenta simulada con la comisión taker de Bitso en cada compra y en la venta. "
+                 "Al principio el resultado es negativo solo por las comisiones: se necesitan meses.")
+
+
 def _render_laboratorio_tendencia(cont):
     filas = []
     cierres_por_moneda = {}
@@ -2393,7 +2541,9 @@ def _render_laboratorio_tendencia(cont):
         except Exception as e:
             print(f"Error probando variantes: {type(e).__name__}")
     for nombre, funcion in (("la historia larga", _render_historia_larga),
-                            ("la prueba en vivo", _render_tendencia_vivo)):
+                            ("la prueba en vivo", _render_tendencia_vivo),
+                            ("la compra periódica histórica", _render_dca_historia),
+                            ("la compra periódica en vivo", _render_dca_vivo)):
         try:
             funcion(cont)
         except Exception as e:
@@ -3052,6 +3202,7 @@ def ejecutar_ciclo(interfaz):
     # ===== MOTOR v2 EN PARALELO (solo registra) =====
     registrar_senales_v2({"BTC": btc, "ETH": eth})
     registrar_tendencia_diaria()
+    registrar_dca_vivo({"BTC": btc, "ETH": eth})
 
     # ===== EVALUACIÓN DE SEÑALES ANTERIORES (1h, 4h, 24h) =====
     try:
