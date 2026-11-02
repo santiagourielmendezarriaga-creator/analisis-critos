@@ -2020,6 +2020,115 @@ def comparar_combinaciones(registros, velas_por_simbolo):
     return filas
 
 
+# ===== LABORATORIO DE TENDENCIA (SOLO SIMULACIÓN, NO ENVÍA SEÑALES NI OPERA) =====
+# Prueba una regla simple de plazo largo con velas diarias: comprar cuando el precio cierra por
+# encima de su media de N días y salir cuando cae más de X% por debajo. Se compara contra
+# comprar y mantener, con la comisión taker real de Bitso. No cambia ningún parámetro del bot.
+LAB_VENTANA_DIAS = 100
+LAB_BANDA_SALIDA_PCT = 3.0
+LAB_SEGUNDOS_CACHE = 6 * 3600
+
+
+def obtener_cierres_diarios(simbolo):
+    """Cierres diarios en MXN del último año (CoinGecko), con caché de 6 h."""
+    cache_todo = st.session_state.setdefault("lab_cierres", {})
+    cache = cache_todo.get(simbolo) or {}
+    ahora = time.time()
+    if cache.get("cierres") and (ahora - cache.get("ts", 0)) < LAB_SEGUNDOS_CACHE:
+        return cache["cierres"]
+    try:
+        identificador = "bitcoin" if simbolo == "BTC" else "ethereum"
+        url = (f"https://api.coingecko.com/api/v3/coins/{identificador}"
+               f"/market_chart?vs_currency=mxn&days=365")
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            cierres = [float(p[1]) for p in r.json().get("prices", []) if len(p) > 1]
+            if len(cierres) >= 200:
+                cache_todo[simbolo] = {"cierres": cierres, "ts": ahora}
+                return cierres
+    except Exception as e:
+        print(f"Error obteniendo cierres diarios: {type(e).__name__}")
+    if cache:
+        cache["ts"] = ahora - LAB_SEGUNDOS_CACHE + 600
+    return cache.get("cierres")
+
+
+def _caida_maxima_pct(curva):
+    pico, peor = curva[0], 0.0
+    for v in curva:
+        pico = max(pico, v)
+        peor = min(peor, v / pico - 1)
+    return peor * 100
+
+
+def backtest_tendencia(cierres, ventana=LAB_VENTANA_DIAS, banda_pct=LAB_BANDA_SALIDA_PCT,
+                       comision=COMISION_TAKER):
+    """Regla: la señal se decide con el cierre del día y se ejecuta al cierre del día siguiente.
+    Devuelve un resumen contra comprar y mantener, o None si faltan datos."""
+    n = len(cierres)
+    if n < ventana + 30:
+        return None
+    caja, cantidad, valor_entrada, pendiente = 1.0, 0.0, 0.0, None
+    curva, operaciones = [], []
+    for t in range(ventana, n):
+        precio = cierres[t]
+        if pendiente == "comprar" and cantidad == 0:
+            cantidad = caja * (1 - comision) / precio
+            valor_entrada, caja = caja, 0.0
+        elif pendiente == "vender" and cantidad > 0:
+            caja = cantidad * precio * (1 - comision)
+            operaciones.append(caja / valor_entrada - 1)
+            cantidad = 0.0
+        pendiente = None
+        curva.append(caja + cantidad * precio)
+        media = sum(cierres[t - ventana + 1: t + 1]) / ventana
+        if cantidad == 0 and precio > media:
+            pendiente = "comprar"
+        elif cantidad > 0 and precio < media * (1 - banda_pct / 100):
+            pendiente = "vender"
+    final = caja + cantidad * cierres[-1] * (1 - comision) if cantidad > 0 else caja
+    base = cierres[ventana:]
+    mantener = [p / base[0] for p in base]
+    mantener_final = (1 - comision) * (base[-1] / base[0]) * (1 - comision)
+    return {
+        "estrategia_pct": (final - 1) * 100,
+        "mantener_pct": (mantener_final - 1) * 100,
+        "operaciones": len(operaciones),
+        "ganadoras": sum(1 for o in operaciones if o > 0),
+        "caida_estrategia_pct": _caida_maxima_pct(curva),
+        "caida_mantener_pct": _caida_maxima_pct(mantener),
+        "dias": len(base),
+        "en_posicion": cantidad > 0,
+    }
+
+
+def _render_laboratorio_tendencia(cont):
+    filas = []
+    for simbolo in ("BTC", "ETH"):
+        res = backtest_tendencia(obtener_cierres_diarios(simbolo) or [])
+        if not res:
+            continue
+        filas.append({
+            "Moneda": simbolo,
+            "Días": res["dias"],
+            "Regla de tendencia": f"{res['estrategia_pct']:+.1f}%",
+            "Comprar y mantener": f"{res['mantener_pct']:+.1f}%",
+            "Operaciones": f"{res['ganadoras']} ganadas de {res['operaciones']}",
+            "Caída máx. regla": f"{res['caida_estrategia_pct']:.0f}%",
+            "Caída máx. mantener": f"{res['caida_mantener_pct']:.0f}%",
+            "Hoy": "dentro" if res["en_posicion"] else "fuera",
+        })
+    if not filas:
+        return
+    cont.markdown(f"**🧭 Laboratorio: regla de tendencia diaria (media de {LAB_VENTANA_DIAS} días, "
+                  f"salida a -{LAB_BANDA_SALIDA_PCT:g}%) contra comprar y mantener**")
+    cont.table(filas)
+    cont.caption(
+        "Solo simulación, con comisión taker de Bitso (0.78% por lado). Cubre apenas el último año, "
+        "que es un solo tipo de mercado y pocas operaciones: no prueba nada por sí sola. "
+        "Si la regla no supera a comprar y mantener, no vale la pena operarla.")
+
+
 def _render_resultados_senales(interfaz):
     cont = interfaz["resultados_senales"]
     cont.subheader("🧪 Resultados de las señales")
@@ -2063,6 +2172,10 @@ def _render_resultados_senales(interfaz):
                          "Si todas salen negativas, el problema son las comisiones y no el TP/SL.")
     except Exception as e:
         print(f"Error en la simulación TP/SL: {type(e).__name__}")
+    try:
+        _render_laboratorio_tendencia(cont)
+    except Exception as e:
+        print(f"Error en el laboratorio de tendencia: {type(e).__name__}")
     cont.caption(
         "Acierto = el precio se movió a favor de la señal (BUY: sube, SELL: baja) pasado el plazo. "
         "El retorno no descuenta comisiones (≈1.2% ida y vuelta). "
