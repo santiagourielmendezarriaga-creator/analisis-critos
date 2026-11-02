@@ -2071,6 +2071,9 @@ def backtest_tendencia(cierres, ventana=LAB_VENTANA_DIAS, banda_pct=LAB_BANDA_SA
         return None
     caja, cantidad, valor_entrada, pendiente = 1.0, 0.0, 0.0, None
     curva, operaciones = [], []
+    acumulado = [0.0]
+    for p_ in cierres:
+        acumulado.append(acumulado[-1] + p_)
     for t in range(inicio, n):
         precio = cierres[t]
         if pendiente == "comprar" and cantidad == 0:
@@ -2082,7 +2085,7 @@ def backtest_tendencia(cierres, ventana=LAB_VENTANA_DIAS, banda_pct=LAB_BANDA_SA
             cantidad = 0.0
         pendiente = None
         curva.append(caja + cantidad * precio)
-        media = sum(cierres[t - ventana + 1: t + 1]) / ventana
+        media = (acumulado[t + 1] - acumulado[t + 1 - ventana]) / ventana
         if cantidad == 0 and precio > media:
             pendiente = "comprar"
         elif cantidad > 0 and precio < media * (1 - banda_pct / 100):
@@ -2165,6 +2168,196 @@ def _render_variantes_tendencia(cont, cierres_por_moneda):
         "una sola ✓ aislada no es evidencia.")
 
 
+# --- Historia larga (varios años) y prueba en vivo de la regla de tendencia ---
+# Los precios largos vienen del mercado público de Binance (en dólares: sirve para medir la
+# tendencia, no el saldo). La prueba en vivo fija la regla HOY y guarda cada día lo que ella
+# decidió, para que nadie (ni yo) pueda ajustarla después mirando los resultados.
+LAB_HISTORIA_PAGINAS = 3          # 3 × 1000 días ≈ 8 años
+LAB_HISTORIA_SEGUNDOS = 24 * 3600
+LAB_TRAMOS_HISTORIA = 4
+LAB_VIVO_VENTANA = 50
+LAB_VIVO_BANDA = 5.0
+LAB_VIVO_MINUTOS_ENTRE_CHEQUEOS = 30
+
+
+def obtener_historia_larga(simbolo):
+    """Cierres diarios de varios años (Binance, en USDT), con caché de 24 h y sin insistir tras un fallo."""
+    cache_todo = st.session_state.setdefault("lab_historia", {})
+    cache = cache_todo.get(simbolo) or {}
+    ahora = time.time()
+    if cache.get("cierres") and (ahora - cache.get("ts", 0)) < LAB_HISTORIA_SEGUNDOS:
+        return cache["cierres"]
+    if ahora < cache.get("no_antes", 0):
+        return cache.get("cierres")
+    try:
+        par = "BTCUSDT" if simbolo == "BTC" else "ETHUSDT"
+        cierres, fin = [], None
+        for _ in range(LAB_HISTORIA_PAGINAS):
+            params = {"symbol": par, "interval": "1d", "limit": 1000}
+            if fin:
+                params["endTime"] = fin
+            r = requests.get("https://data-api.binance.vision/api/v3/klines", params=params, timeout=10)
+            if r.status_code != 200:
+                print(f"Binance respondió HTTP {r.status_code} (historia de {simbolo})")
+                break
+            velas = r.json()
+            if not isinstance(velas, list) or not velas:
+                break
+            cierres = [float(v[4]) for v in velas] + cierres
+            fin = int(velas[0][0]) - 1
+            if len(velas) < 1000:
+                break
+        if len(cierres) >= 400:
+            cache_todo[simbolo] = {"cierres": cierres, "ts": ahora}
+            return cierres
+    except Exception as e:
+        print(f"Error obteniendo la historia larga: {type(e).__name__}")
+    cache["no_antes"] = ahora + 900
+    cache_todo[simbolo] = cache
+    return cache.get("cierres")
+
+
+def probar_variantes_historia(cierres_por_moneda, tramos=LAB_TRAMOS_HISTORIA):
+    """Como probar_variantes_tendencia, pero con la historia larga cortada en `tramos` partes
+    iguales: cuenta en cuántos tramos (por moneda) la regla le gana a comprar y mantener."""
+    inicio = max(LAB_VENTANAS)
+    filas = []
+    for ventana in LAB_VENTANAS:
+        for banda in LAB_BANDAS:
+            fila = {"ventana": ventana, "banda": banda, "razon": {}, "ganados": 0, "total": 0}
+            for simbolo, cierres in cierres_por_moneda.items():
+                largo = len(cierres) - inicio
+                if largo < tramos * 60:
+                    return []
+                completo = backtest_tendencia(cierres, ventana, banda, inicio=inicio)
+                if completo is None:
+                    return []
+                fila["razon"][simbolo] = ((1 + completo["estrategia_pct"] / 100)
+                                          / (1 + completo["mantener_pct"] / 100))
+                for k in range(tramos):
+                    e0 = inicio + k * largo // tramos
+                    e1 = inicio + (k + 1) * largo // tramos
+                    dif = _ventaja_vs_mantener(cierres[e0 - inicio: e1], ventana, banda, inicio)
+                    fila["total"] += 1
+                    if dif is not None and dif > 0:
+                        fila["ganados"] += 1
+            filas.append(fila)
+    return filas
+
+
+def _render_historia_larga(cont):
+    cierres = {}
+    for simbolo in ("BTC", "ETH"):
+        datos = obtener_historia_larga(simbolo)
+        if datos:
+            cierres[simbolo] = datos
+    if not cierres:
+        return
+    clave = tuple((k, len(v), round(v[-1])) for k, v in sorted(cierres.items()))
+    cache = st.session_state.get("lab_historia_filas")
+    if cache and cache[0] == clave:
+        filas = cache[1]
+    else:
+        filas = probar_variantes_historia(cierres)
+        st.session_state["lab_historia_filas"] = (clave, filas)
+    if not filas:
+        return
+    anios = min(len(v) for v in cierres.values()) / 365
+    monedas = sorted(cierres)
+    cont.markdown(f"**📚 Misma prueba con {anios:.1f} años de historia (cortada en {LAB_TRAMOS_HISTORIA} etapas)**")
+    cont.table([{
+        "Media": f"{f['ventana']} d",
+        "Salida": f"-{f['banda']:g}%" if f["banda"] else "bajo la media",
+        **{f"{m}: regla ÷ mantener": f"{f['razon'][m]:.2f}×" for m in monedas},
+        "Etapas ganadas": f"{f['ganados']} de {f['total']}",
+    } for f in filas])
+    cont.caption(
+        "«Regla ÷ mantener» mayor que 1.00× = la regla terminó con más dinero que comprar y mantener "
+        "en todo el periodo. «Etapas ganadas» cuenta en cuántas de las etapas (por moneda) le ganó. "
+        "Una regla confiable gana en la mayoría de las etapas, no solo en el total. Precios en dólares, "
+        "con comisión taker de Bitso.")
+
+
+def _hoy_cdmx():
+    return datetime.now(timezone(timedelta(hours=-6))).strftime("%Y-%m-%d")
+
+
+def registrar_tendencia_diaria():
+    """Una vez al día guarda lo que la regla fija (media de 50 días, salida a -5%) dice de BTC y ETH.
+    Solo registra; no envía señales ni opera."""
+    if not FIREBASE_CONFIGURADO:
+        return
+    ahora = time.time()
+    if ahora - st.session_state.get("tv_chequeo", 0) < LAB_VIVO_MINUTOS_ENTRE_CHEQUEOS * 60:
+        return
+    st.session_state["tv_chequeo"] = ahora
+    try:
+        fecha = _hoy_cdmx()
+        r = requests.get(_url_registro(f"tendencia_vivo/{fecha}"), timeout=5)
+        if r.status_code != 200 or r.json():
+            return                              # ya está guardado hoy (o no se pudo leer)
+        registro = {"ts": ahora, "fecha": fecha}
+        for simbolo in ("BTC", "ETH"):
+            cierres = obtener_cierres_diarios(simbolo)
+            if not cierres:
+                return
+            res = backtest_tendencia(cierres, LAB_VIVO_VENTANA, LAB_VIVO_BANDA)
+            if res is None:
+                return
+            registro[simbolo] = {"precio": cierres[-1], "dentro": bool(res["en_posicion"])}
+        requests.put(_url_registro(f"tendencia_vivo/{fecha}"), json=registro, timeout=5)
+    except Exception as e:
+        print(f"Error registrando la tendencia diaria: {type(e).__name__}")
+
+
+def resultado_tendencia_vivo(registros, comision=COMISION_TAKER):
+    """Resultado de seguir la regla día a día según lo que quedó guardado, contra comprar y mantener."""
+    dias = sorted((r for r in registros if isinstance(r, dict) and r.get("BTC") and r.get("ETH")),
+                  key=lambda r: r.get("fecha", ""))
+    if len(dias) < 2:
+        return None
+    salida = {"dias": len(dias), "desde": dias[0].get("fecha", "")}
+    for simbolo in ("BTC", "ETH"):
+        capital, mantener = 1.0, 1.0
+        dentro_antes = bool(dias[0][simbolo].get("dentro"))
+        if dentro_antes:
+            capital *= (1 - comision)
+        for previo, actual in zip(dias, dias[1:]):
+            p0, p1 = float(previo[simbolo]["precio"]), float(actual[simbolo]["precio"])
+            if dentro_antes:
+                capital *= p1 / p0
+            mantener *= p1 / p0
+            dentro_ahora = bool(actual[simbolo].get("dentro"))
+            if dentro_ahora != dentro_antes:
+                capital *= (1 - comision)
+            dentro_antes = dentro_ahora
+        mantener *= (1 - comision) ** 2
+        salida[simbolo] = {"regla": (capital - 1) * 100, "mantener": (mantener - 1) * 100,
+                           "dentro": dentro_antes}
+    return salida
+
+
+def _render_tendencia_vivo(cont):
+    if not FIREBASE_CONFIGURADO:
+        return
+    r = requests.get(_url_registro("tendencia_vivo"), timeout=8)
+    datos = r.json() if r.status_code == 200 else None
+    registros = list(datos.values()) if isinstance(datos, dict) else []
+    cont.markdown(f"**🛰️ Prueba en vivo (regla fija: media de {LAB_VIVO_VENTANA} días, salida a -{LAB_VIVO_BANDA:g}%)**")
+    res = resultado_tendencia_vivo(registros)
+    if not res:
+        cont.caption("La regla quedó fija hoy y se guarda un registro por día. "
+                     "Con menos de 2 días aún no hay resultado: vuelve en unas semanas.")
+        return
+    cont.table([{
+        "Moneda": m, "Desde": res["desde"], "Días": res["dias"],
+        "Regla": f"{res[m]['regla']:+.1f}%", "Comprar y mantener": f"{res[m]['mantener']:+.1f}%",
+        "Hoy": "dentro" if res[m]["dentro"] else "fuera",
+    } for m in ("BTC", "ETH")])
+    cont.caption("Cada día se guarda lo que decidió la regla, sin cambiarla. Con comisión taker. "
+                 "Se necesitan al menos varios meses para concluir algo.")
+
+
 def _render_laboratorio_tendencia(cont):
     filas = []
     cierres_por_moneda = {}
@@ -2199,6 +2392,12 @@ def _render_laboratorio_tendencia(cont):
             _render_variantes_tendencia(cont, cierres_por_moneda)
         except Exception as e:
             print(f"Error probando variantes: {type(e).__name__}")
+    for nombre, funcion in (("la historia larga", _render_historia_larga),
+                            ("la prueba en vivo", _render_tendencia_vivo)):
+        try:
+            funcion(cont)
+        except Exception as e:
+            print(f"Error mostrando {nombre}: {type(e).__name__}")
 
 
 def _render_resultados_senales(interfaz):
@@ -2852,6 +3051,7 @@ def ejecutar_ciclo(interfaz):
 
     # ===== MOTOR v2 EN PARALELO (solo registra) =====
     registrar_senales_v2({"BTC": btc, "ETH": eth})
+    registrar_tendencia_diaria()
 
     # ===== EVALUACIÓN DE SEÑALES ANTERIORES (1h, 4h, 24h) =====
     try:
