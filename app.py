@@ -24,6 +24,9 @@ except Exception:
     _refresco_automatico = None
 
 COMISION = 0.006
+# Comisión real de Bitso con órdenes de mercado (taker), tramo de menos de 20,000 MXN de volumen.
+# Solo se usa en la simulación de resultados; COMISION (simulador) no cambia.
+COMISION_TAKER = 0.0078
 VOLUMEN_MINIMO_24H = 0.5
 GANANCIA_MINIMA_VENTA_PCT = 0.0
 TOMA_GANANCIA_FIJA = True
@@ -1959,7 +1962,7 @@ def simular_tp_sl(registros, velas_por_simbolo, horas_maximas=24,
     Recorre los cierres horarios posteriores a la señal hasta tocar el TP, el SL o cumplir
     `horas_maximas` (se sale al precio de esa hora). Con cierres de 1 h no se ven los picos
     dentro de cada hora, así que es una aproximación. Devuelve {motor: resumen}."""
-    comision_pct = COMISION * 2 * 100
+    comision_pct = COMISION_TAKER * 2 * 100
     ahora = time.time()
     por_motor = {}
     for r in registros:
@@ -2049,14 +2052,14 @@ def _render_resultados_senales(interfaz):
                 "Muestra": "✓" if a["n"] >= MUESTRA_MINIMA_CONFIABLE else "⚠️ pocas",
             } for m, a in sorted(resumen.items())])
             cont.caption(
-                "Neto = resultado por operación después de comisiones (≈1.2% ida y vuelta). "
+                "Neto = resultado por operación después de comisiones (≈1.56% ida y vuelta, comisión taker de Bitso). "
                 "Si es negativo, el bot perdería dinero operando así. Usa cierres de 1 h de los últimos "
                 "14 días, por eso es aproximado y solo cuenta compras con 24 h ya cumplidas.")
         filas_comb = comparar_combinaciones(registros, velas)
         if any(f["Todas: compras"] for f in filas_comb):
             cont.markdown("**🔬 Probando otras salidas (solo simulación, no cambia el bot)**")
             cont.table(filas_comb)
-            cont.caption("Neto medio = ganancia por operación tras comisiones (≈1.2%). "
+            cont.caption("Neto medio = ganancia por operación tras comisiones (≈1.56% taker). "
                          "Si todas salen negativas, el problema son las comisiones y no el TP/SL.")
     except Exception as e:
         print(f"Error en la simulación TP/SL: {type(e).__name__}")
