@@ -2036,11 +2036,15 @@ def obtener_cierres_diarios(simbolo):
     ahora = time.time()
     if cache.get("cierres") and (ahora - cache.get("ts", 0)) < LAB_SEGUNDOS_CACHE:
         return cache["cierres"]
+    if ahora < cache.get("no_antes", 0):   # falló hace poco: no insistir
+        return cache.get("cierres")
     try:
         identificador = "bitcoin" if simbolo == "BTC" else "ethereum"
         url = (f"https://api.coingecko.com/api/v3/coins/{identificador}"
                f"/market_chart?vs_currency=mxn&days=365")
         r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            print(f"CoinGecko respondió HTTP {r.status_code} (cierres diarios de {simbolo})")
         if r.status_code == 200:
             cierres = [float(p[1]) for p in r.json().get("prices", []) if len(p) > 1]
             if len(cierres) >= 200:
@@ -2048,8 +2052,8 @@ def obtener_cierres_diarios(simbolo):
                 return cierres
     except Exception as e:
         print(f"Error obteniendo cierres diarios: {type(e).__name__}")
-    if cache:
-        cache["ts"] = ahora - LAB_SEGUNDOS_CACHE + 600
+    cache["no_antes"] = ahora + 600
+    cache_todo[simbolo] = cache
     return cache.get("cierres")
 
 
@@ -2194,7 +2198,7 @@ def _render_laboratorio_tendencia(cont):
         "Solo simulación, con comisión taker de Bitso (0.78% por lado). Cubre apenas el último año, "
         "que es un solo tipo de mercado y pocas operaciones: no prueba nada por sí sola. "
         "Si la regla no supera a comprar y mantener, no vale la pena operarla.")
-    if len(cierres_por_moneda) == 2:
+    if cierres_por_moneda:
         try:
             _render_variantes_tendencia(cont, cierres_por_moneda)
         except Exception as e:
@@ -2274,11 +2278,15 @@ def obtener_velas_horarias(simbolo):
     ahora = time.time()
     if cache.get("precios") and (ahora - cache.get("ts", 0)) < V2_SEGUNDOS_CACHE_VELAS:
         return cache["precios"]
+    if ahora < cache.get("no_antes", 0):   # falló hace poco: no insistir
+        return cache.get("precios")
     try:
         identificador = "bitcoin" if simbolo == "BTC" else "ethereum"
         url = (f"https://api.coingecko.com/api/v3/coins/{identificador}"
                f"/market_chart?vs_currency=mxn&days={V2_DIAS}")
         respuesta = requests.get(url, timeout=8)
+        if respuesta.status_code != 200:
+            print(f"CoinGecko respondió HTTP {respuesta.status_code} (velas de {simbolo})")
         if respuesta.status_code == 200:
             precios = [float(p[1]) for p in respuesta.json().get("prices", []) if len(p) > 1]
             if len(precios) >= 72:
@@ -2286,9 +2294,9 @@ def obtener_velas_horarias(simbolo):
                 return precios
     except Exception as e:
         print(f"Error obteniendo velas horarias: {type(e).__name__}")
-    # Si falla, se reintenta en 5 min y mientras tanto se usa lo último que se tenía
-    if cache:
-        cache["ts"] = ahora - V2_SEGUNDOS_CACHE_VELAS + 300
+    # Si falla, no se vuelve a pedir en 5 min y mientras tanto se usa lo último que se tenía
+    cache["no_antes"] = ahora + 300
+    cache_todo[simbolo] = cache
     return cache.get("precios")
 
 
