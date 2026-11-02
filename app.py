@@ -180,16 +180,11 @@ def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
             return senal_tecnica, "IA no disponible temporalmente.", False
 
 
-# ===== SEGUNDA OPINIÓN (IAs compatibles con OpenAI: Groq gratis y DeepSeek) =====
+# ===== SEGUNDA OPINIÓN (Groq, gratis; API compatible con OpenAI) =====
 # Todo es opcional. Sin llaves en los Secrets, el bot funciona igual que antes.
-# Orden de uso: primero Groq; si falla o no está configurada, DeepSeek.
 GROQ_API_KEY = str(_secreto("GROQ_API_KEY", "") or "").strip()
 GROQ_MODELO = str(_secreto("GROQ_MODELO", "") or "").strip() or "llama-3.3-70b-versatile"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-
-DEEPSEEK_API_KEY = str(_secreto("DEEPSEEK_API_KEY", "") or "").strip()
-DEEPSEEK_MODELO = str(_secreto("DEEPSEEK_MODELO", "") or "").strip() or "deepseek-flash"
-DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 
 LIMITE_DIARIO_SEGUNDA_IA = 400
 
@@ -200,9 +195,6 @@ def _proveedores_segunda_opinion():
     if GROQ_API_KEY:
         lista.append({"id": "groq", "nombre": "Groq", "url": GROQ_URL,
                       "clave": GROQ_API_KEY, "modelo": GROQ_MODELO})
-    if DEEPSEEK_API_KEY:
-        lista.append({"id": "deepseek", "nombre": "DeepSeek", "url": DEEPSEEK_URL,
-                      "clave": DEEPSEEK_API_KEY, "modelo": DEEPSEEK_MODELO})
     return lista
 
 
@@ -1771,7 +1763,7 @@ def _url_registro(ruta):
 
 
 def coincidencia_ias(senal, gemini_valido, segunda):
-    """'SI' si Groq/DeepSeek y Gemini coinciden con la señal; 'NO' si alguna opinó
+    """'SI' si Groq y Gemini coinciden con la señal; 'NO' si alguna opinó
     distinto; 'GROQ' si solo opinó la segunda IA y coincide (Gemini apagado o sin cupo);
     'N/D' si la segunda IA no pudo opinar. gemini_valido: True/False/None."""
     if not segunda or not segunda.get("validada"):
@@ -2947,9 +2939,9 @@ if st.sidebar.button("🧪 Probar conexión con Gemini"):
             st.sidebar.warning(f"Detalle: {res_razon}")
         st.sidebar.caption(f"Modelo configurado: {GEMINI_MODELO}")
 
-st.sidebar.markdown("**🤖 Diagnóstico de la 2ª opinión (Groq / DeepSeek)**")
+st.sidebar.markdown("**🤖 Diagnóstico de la 2ª opinión (Groq)**")
 if not SEGUNDA_OPINION_CONFIGURADA:
-    st.sidebar.info("ℹ️ Opcional: agrega GROQ_API_KEY (gratis) o DEEPSEEK_API_KEY en los Secrets.")
+    st.sidebar.info("ℹ️ Opcional: agrega GROQ_API_KEY (gratis) en los Secrets.")
 for _prov in _proveedores_segunda_opinion():
     if st.sidebar.button(f"🧪 Probar conexión con {_prov['nombre']}", key=f"probar_{_prov['id']}"):
         with st.spinner(f"Consultando a {_prov['nombre']}..."):
@@ -3137,7 +3129,7 @@ def ejecutar_ciclo(interfaz):
                 tendencia_t30 = datos_t30.get("tendencia", "N/A")
                 vol_onchain = (volumen_onchain_btc if sim_actual == "BTC" else volumen_onchain_eth)
 
-                # 🛡️ GROQ/DEEPSEEK DECIDEN: si opinan distinto, la señal se bloquea
+                # 🛡️ GROQ DECIDE: si opinan distinto, la señal se bloquea
                 segunda = None
                 try:
                     contexto_ds = (f"Tendencia 30d: {tendencia_t30}, Cambio 30d: {cambio_t30:+.2f}%, "
