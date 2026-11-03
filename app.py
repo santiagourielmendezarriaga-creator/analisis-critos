@@ -2542,6 +2542,98 @@ def _render_laboratorio_tendencia(cont):
             print(f"Error mostrando {nombre}: {type(e).__name__}")
 
 
+# ===== ÁRBOL DE DECISIÓN (SOLO EVALÚA Y MUESTRA; NO ENVÍA SEÑALES NI OPERA) =====
+# Cada rama es una idea con un trabajo concreto. La raíz las juzga con la misma regla, fija y escrita
+# aquí para que no se pueda ajustar mirando resultados:
+#   • Ramas de operar: pasa solo si tiene al menos MUESTRA_MINIMA_CONFIABLE operaciones simuladas y
+#     su ganancia neta media por operación (después de comisiones taker) es mayor que cero.
+#   • Tendencia diaria: pasa solo si en la historia larga le gana a comprar y mantener en al menos
+#     6 de las 8 etapas (4 etapas por moneda).
+#   • Compra periódica: no es una ventaja del bot sino exposición al mercado; «pasa» si en al menos
+#     60% de los periodos de un año terminó en ganancia y su mediana es positiva (sigue habiendo riesgo).
+# Si ninguna rama de operar pasa, la decisión de la raíz es no operar.
+ARBOL_ETAPAS_MINIMAS = 6
+ARBOL_DCA_MIN_RENTABLE = 60.0
+
+
+def _rama_operar(nombre, funcion, resumen):
+    """Rama de operar a partir de un resumen de simular_tp_sl (o None)."""
+    if not resumen or not resumen.get("n"):
+        return {"rama": nombre, "funcion": funcion, "tipo": "operar", "pasa": None,
+                "evidencia": "sin operaciones evaluadas"}
+    n = resumen["n"]
+    neto = resumen["neto"] / n
+    pasa = None if n < MUESTRA_MINIMA_CONFIABLE else neto > 0
+    return {"rama": nombre, "funcion": funcion, "tipo": "operar", "pasa": pasa,
+            "evidencia": f"{n} operaciones, ganancia neta media {neto:+.2f}% por operación"}
+
+
+def _sumar_resumenes(resumenes):
+    total = {"n": 0, "neto": 0.0}
+    for r in resumenes:
+        total["n"] += r["n"]
+        total["neto"] += r["neto"]
+    return total
+
+
+def evaluar_arbol(registros, velas_por_simbolo, historia_por_moneda):
+    """Devuelve (ramas, decision). `historia_por_moneda`: cierres diarios largos por moneda."""
+    ramas = []
+    por_motor = simular_tp_sl(registros, velas_por_simbolo)
+    ramas.append(_rama_operar("Señales de horas (motor actual)", "Detecta cambios de precio de minutos",
+                              por_motor.get("actual")))
+    groq = [r for r in registros if r.get("coinciden") == "GROQ" and r.get("motor", "actual") == "actual"]
+    ramas.append(_rama_operar("Filtro Groq", "Deja pasar solo las señales que Groq aprueba",
+                              _sumar_resumenes(simular_tp_sl(groq, velas_por_simbolo).values())))
+    ramas.append(_rama_operar("Motor v2 (velas de 1 h)", "Señales con velas de 1 hora", por_motor.get("v2")))
+
+    if historia_por_moneda:
+        filas = probar_variantes_historia(historia_por_moneda)
+        fila = next((f for f in filas if f["ventana"] == LAB_VIVO_VENTANA and f["banda"] == LAB_VIVO_BANDA), None)
+        if fila:
+            pasa = fila["ganados"] >= ARBOL_ETAPAS_MINIMAS and all(v >= 1 for v in fila["razon"].values())
+            razones = ", ".join(f"{m} {x:.2f}×" for m, x in sorted(fila["razon"].items()))
+            ramas.append({"rama": "Tendencia diaria", "funcion": "Comprar sobre su media y salir si cae",
+                          "tipo": "operar", "pasa": pasa,
+                          "evidencia": f"le gana a mantener en {fila['ganados']} de {fila['total']} etapas "
+                                       f"(regla ÷ mantener: {razones})"})
+        dca = {m: simular_dca_ventanas(c, 30) for m, c in historia_por_moneda.items()}
+        dca = {m: r for m, r in dca.items() if r}
+        if dca:
+            pasa = all(r["rentable"] >= ARBOL_DCA_MIN_RENTABLE and r["mediana"] > 0 for r in dca.values())
+            texto = ", ".join(f"{m}: ganancia en {r['rentable']:.0f}% de los años, peor {r['peor']:+.0f}%"
+                              for m, r in sorted(dca.items()))
+            ramas.append({"rama": "Compra periódica y mantener", "funcion": "Compra un monto fijo cada cierto tiempo",
+                          "tipo": "mantener", "pasa": pasa, "evidencia": texto})
+
+    pasan = [r["rama"] for r in ramas if r["tipo"] == "operar" and r["pasa"]]
+    if pasan:
+        decision = ("Hay ramas de operar con ventaja medida (" + ", ".join(pasan) + "): probar en vivo "
+                    "con montos mínimos y seguir midiendo antes de subir el monto.")
+    else:
+        decision = ("Ninguna rama de operar demuestra ganancia después de comisiones: NO operar. "
+                    "Lo que queda es el simulador y, si decides asumir el riesgo, comprar de forma periódica.")
+    return ramas, decision
+
+
+def _render_arbol(cont, registros, velas):
+    historia = {}
+    for simbolo in ("BTC", "ETH"):
+        datos = obtener_historia_larga(simbolo)
+        if datos:
+            historia[simbolo] = datos
+    ramas, decision = evaluar_arbol(registros, velas, historia if len(historia) == 2 else {})
+    estado = {True: "✅ pasa", False: "❌ no pasa", None: "⏳ pocos datos"}
+    cont.markdown("**🌳 Árbol de decisión: qué rama merece dinero**")
+    cont.table([{"Rama": r["rama"], "Qué hace": r["funcion"], "Evidencia": r["evidencia"],
+                 "Veredicto": estado[r["pasa"]]} for r in ramas])
+    (cont.success if any(r["tipo"] == "operar" and r["pasa"] for r in ramas) else cont.warning)(decision)
+    cont.caption(
+        "La raíz usa una regla fija: una rama de operar pasa solo con 30 o más operaciones simuladas y "
+        "ganancia neta positiva tras comisiones (tendencia: ganarle a mantener en 6 de 8 etapas). "
+        "Que una rama pase no garantiza ganancias futuras; sirve para no gastar dinero en ideas sin evidencia.")
+
+
 def _render_resultados_senales(interfaz):
     cont = interfaz["resultados_senales"]
     cont.subheader("🧪 Resultados de las señales")
@@ -2589,6 +2681,11 @@ def _render_resultados_senales(interfaz):
         _render_laboratorio_tendencia(cont)
     except Exception as e:
         print(f"Error en el laboratorio de tendencia: {type(e).__name__}")
+    try:
+        velas_arbol = {sim: obtener_velas_horarias(sim) for sim in ("BTC", "ETH")}
+        _render_arbol(cont, registros, velas_arbol)
+    except Exception as e:
+        print(f"Error en el árbol de decisión: {type(e).__name__}")
     cont.caption(
         "Acierto = el precio se movió a favor de la señal (BUY: sube, SELL: baja) pasado el plazo. "
         "El retorno no descuenta comisiones (≈1.2% ida y vuelta). "
