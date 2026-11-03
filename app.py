@@ -2632,6 +2632,22 @@ def _render_arbol(cont, registros, velas):
     cont.table([{"Rama": r["rama"], "Qué hace": r["funcion"], "Evidencia": r["evidencia"],
                  "Veredicto": estado[r["pasa"]]} for r in ramas])
     (cont.success if any(r["tipo"] == "operar" and r["pasa"] for r in ramas) else cont.warning)(decision)
+    try:
+        r = requests.get(_url_registro("v2_diagnostico"), timeout=5)
+        diag = r.json() if r.status_code == 200 else None
+        if isinstance(diag, dict) and diag.get("ts"):
+            partes = []
+            for m in ("BTC", "ETH"):
+                d = diag.get(m)
+                if isinstance(d, dict):
+                    partes.append(f"{m}: {d.get('resultado', '?')} ({d.get('fuente', '?')}"
+                                  + (f"; {d['detalle']}" if d.get("detalle") else "") + ")")
+            cont.caption(f"🔎 Motor v2, último chequeo hace {_hace_texto(time.time() - float(diag['ts']))} → "
+                         + " · ".join(partes))
+        else:
+            cont.caption("🔎 Motor v2: todavía no ha guardado ningún chequeo.")
+    except Exception as e:
+        print(f"Error leyendo el diagnóstico del motor v2: {type(e).__name__}")
     cont.caption(
         "La raíz usa una regla fija: una rama de operar pasa solo con 30 o más operaciones simuladas y "
         "ganancia neta positiva tras comisiones (tendencia: ganarle a mantener en 6 de 8 etapas). "
@@ -2761,6 +2777,47 @@ def analisis_horario(precios):
     return "HOLD", 0, detalle
 
 
+def obtener_velas_binance(simbolo):
+    """Respaldo del motor v2: cierres de 1 h de los últimos 14 días en dólares (Binance, mercado
+    público). Se usa solo si CoinGecko no responde; las señales dependen de la forma del precio,
+    no de la moneda. Caché de 30 min y sin insistir tras un fallo."""
+    cache_todo = st.session_state.setdefault("v2_velas_binance", {})
+    cache = cache_todo.get(simbolo) or {}
+    ahora = time.time()
+    if cache.get("precios") and (ahora - cache.get("ts", 0)) < V2_SEGUNDOS_CACHE_VELAS:
+        return cache["precios"]
+    if ahora < cache.get("no_antes", 0):
+        return cache.get("precios")
+    try:
+        par = "BTCUSDT" if simbolo == "BTC" else "ETHUSDT"
+        r = requests.get("https://data-api.binance.vision/api/v3/klines", timeout=8,
+                         params={"symbol": par, "interval": "1h", "limit": V2_DIAS * 24})
+        if r.status_code == 200:
+            datos = r.json()
+            precios = [float(v[4]) for v in datos] if isinstance(datos, list) else []
+            if len(precios) >= 72:
+                cache_todo[simbolo] = {"precios": precios, "ts": ahora}
+                return precios
+        else:
+            print(f"Binance respondió HTTP {r.status_code} (velas de {simbolo})")
+    except Exception as e:
+        print(f"Error obteniendo velas de Binance: {type(e).__name__}")
+    cache["no_antes"] = ahora + 300
+    cache_todo[simbolo] = cache
+    return cache.get("precios")
+
+
+def _v2_guardar_diagnostico(diagnostico):
+    """Deja en Firebase por qué el motor v2 hizo (o no) lo que hizo en su último chequeo."""
+    if not FIREBASE_CONFIGURADO:
+        return
+    try:
+        requests.put(_url_registro("v2_diagnostico"), timeout=5,
+                     json={"ts": time.time(), **diagnostico})
+    except Exception as e:
+        print(f"Error guardando el diagnóstico del motor v2: {type(e).__name__}")
+
+
 def registrar_senales_v2(precios_actuales):
     """Cada 15 min evalúa el motor v2 y registra la señal si es nueva (cambió de dirección
     o pasaron 4 h). Nunca rompe el ciclo ni toca Telegram, IAs u órdenes."""
@@ -2768,30 +2825,49 @@ def registrar_senales_v2(precios_actuales):
         return
     estado_todo = st.session_state.setdefault("v2_estado", {})
     ahora = time.time()
+    diagnostico, hubo_chequeo = {}, False
     for simbolo in ("BTC", "ETH"):
         try:
             estado = estado_todo.setdefault(simbolo, {"ultima": "", "ts": 0.0, "chequeo": 0.0})
             if ahora - estado["chequeo"] < V2_MINUTOS_ENTRE_CHEQUEOS * 60:
                 continue
             estado["chequeo"] = ahora
-            velas = obtener_velas_horarias(simbolo)
+            hubo_chequeo = True
             precio = precios_actuales.get(simbolo)
-            if not velas or not precio:
+            velas = obtener_velas_horarias(simbolo)
+            fuente = "CoinGecko"
+            if velas and precio:
+                serie = velas + [precio]
+            else:
+                velas = obtener_velas_binance(simbolo)
+                fuente, serie = "Binance", velas
+            if not serie:
+                diagnostico[simbolo] = {"resultado": "sin velas", "fuente": "ninguna"}
                 continue
-            senal, fuerza, razon = analisis_horario(velas + [precio])
+            senal, fuerza, razon = analisis_horario(serie)
+            diagnostico[simbolo] = {"resultado": senal, "fuente": fuente, "detalle": razon}
             if senal == "HOLD":
                 estado["ultima"] = "HOLD"
                 continue
             repetida = (senal == estado["ultima"]
                         and (ahora - estado["ts"]) < V2_HORAS_ENTRE_REPETIDAS * 3600)
             if repetida:
+                diagnostico[simbolo]["resultado"] = f"{senal} repetida (no se registra de nuevo)"
+                continue
+            if not precio:
+                diagnostico[simbolo]["resultado"] = f"{senal} sin precio de Bitso"
                 continue
             if registrar_senal(simbolo, senal, precio, fuerza, None, None, motor="v2"):
                 estado["ultima"] = senal
                 estado["ts"] = ahora
                 avisar(f"🧪 v2 registró {senal} {simbolo} ({razon})", "info")
+            else:
+                diagnostico[simbolo]["resultado"] = f"{senal} no se pudo guardar en Firebase"
         except Exception as e:
             print(f"Error en el motor v2: {type(e).__name__}")
+            diagnostico[simbolo] = {"resultado": f"error {type(e).__name__}"}
+    if hubo_chequeo and diagnostico:
+        _v2_guardar_diagnostico(diagnostico)
 
 
 TRADUCCION_MIEDO_CODICIA = {
