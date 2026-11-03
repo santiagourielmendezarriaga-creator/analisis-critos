@@ -2708,7 +2708,7 @@ def _render_resultados_senales(interfaz):
         print(f"Error en el árbol de decisión: {type(e).__name__}")
     cont.caption(
         "Acierto = el precio se movió a favor de la señal (BUY: sube, SELL: baja) pasado el plazo. "
-        "El retorno no descuenta comisiones (≈1.2% ida y vuelta). "
+        "El retorno de esta tabla no descuenta comisiones (≈1.56% ida y vuelta con órdenes de mercado en Bitso). "
         f"Con menos de {MUESTRA_MINIMA_CONFIABLE} señales por fila, los porcentajes no son confiables."
     )
 
