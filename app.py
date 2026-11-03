@@ -180,16 +180,11 @@ def consultar_gemini(simbolo, precio, senal_tecnica, razon, contexto):
             return senal_tecnica, "IA no disponible temporalmente.", False
 
 
-# ===== SEGUNDA OPINIÓN (IAs compatibles con OpenAI: Groq gratis y DeepSeek) =====
+# ===== SEGUNDA OPINIÓN (Groq, gratis; API compatible con OpenAI) =====
 # Todo es opcional. Sin llaves en los Secrets, el bot funciona igual que antes.
-# Orden de uso: primero Groq; si falla o no está configurada, DeepSeek.
 GROQ_API_KEY = str(_secreto("GROQ_API_KEY", "") or "").strip()
 GROQ_MODELO = str(_secreto("GROQ_MODELO", "") or "").strip() or "llama-3.3-70b-versatile"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-
-DEEPSEEK_API_KEY = str(_secreto("DEEPSEEK_API_KEY", "") or "").strip()
-DEEPSEEK_MODELO = str(_secreto("DEEPSEEK_MODELO", "") or "").strip() or "deepseek-flash"
-DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 
 LIMITE_DIARIO_SEGUNDA_IA = 400
 
@@ -200,9 +195,6 @@ def _proveedores_segunda_opinion():
     if GROQ_API_KEY:
         lista.append({"id": "groq", "nombre": "Groq", "url": GROQ_URL,
                       "clave": GROQ_API_KEY, "modelo": GROQ_MODELO})
-    if DEEPSEEK_API_KEY:
-        lista.append({"id": "deepseek", "nombre": "DeepSeek", "url": DEEPSEEK_URL,
-                      "clave": DEEPSEEK_API_KEY, "modelo": DEEPSEEK_MODELO})
     return lista
 
 
@@ -1771,7 +1763,7 @@ def _url_registro(ruta):
 
 
 def coincidencia_ias(senal, gemini_valido, segunda):
-    """'SI' si Groq/DeepSeek y Gemini coinciden con la señal; 'NO' si alguna opinó
+    """'SI' si Groq y Gemini coinciden con la señal; 'NO' si alguna opinó
     distinto; 'GROQ' si solo opinó la segunda IA y coincide (Gemini apagado o sin cupo);
     'N/D' si la segunda IA no pudo opinar. gemini_valido: True/False/None."""
     if not segunda or not segunda.get("validada"):
@@ -2075,6 +2067,9 @@ def backtest_tendencia(cierres, ventana=LAB_VENTANA_DIAS, banda_pct=LAB_BANDA_SA
         return None
     caja, cantidad, valor_entrada, pendiente = 1.0, 0.0, 0.0, None
     curva, operaciones = [], []
+    acumulado = [0.0]
+    for p_ in cierres:
+        acumulado.append(acumulado[-1] + p_)
     for t in range(inicio, n):
         precio = cierres[t]
         if pendiente == "comprar" and cantidad == 0:
@@ -2086,7 +2081,7 @@ def backtest_tendencia(cierres, ventana=LAB_VENTANA_DIAS, banda_pct=LAB_BANDA_SA
             cantidad = 0.0
         pendiente = None
         curva.append(caja + cantidad * precio)
-        media = sum(cierres[t - ventana + 1: t + 1]) / ventana
+        media = (acumulado[t + 1] - acumulado[t + 1 - ventana]) / ventana
         if cantidad == 0 and precio > media:
             pendiente = "comprar"
         elif cantidad > 0 and precio < media * (1 - banda_pct / 100):
@@ -2169,6 +2164,344 @@ def _render_variantes_tendencia(cont, cierres_por_moneda):
         "una sola ✓ aislada no es evidencia.")
 
 
+# --- Historia larga (varios años) y prueba en vivo de la regla de tendencia ---
+# Los precios largos vienen del mercado público de Binance (en dólares: sirve para medir la
+# tendencia, no el saldo). La prueba en vivo fija la regla HOY y guarda cada día lo que ella
+# decidió, para que nadie (ni yo) pueda ajustarla después mirando los resultados.
+LAB_HISTORIA_PAGINAS = 3          # 3 × 1000 días ≈ 8 años
+LAB_HISTORIA_SEGUNDOS = 24 * 3600
+LAB_TRAMOS_HISTORIA = 4
+LAB_VIVO_VENTANA = 50
+LAB_VIVO_BANDA = 5.0
+LAB_VIVO_MINUTOS_ENTRE_CHEQUEOS = 30
+
+
+def obtener_historia_larga(simbolo):
+    """Cierres diarios de varios años (Binance, en USDT), con caché de 24 h y sin insistir tras un fallo."""
+    cache_todo = st.session_state.setdefault("lab_historia", {})
+    cache = cache_todo.get(simbolo) or {}
+    ahora = time.time()
+    if cache.get("cierres") and (ahora - cache.get("ts", 0)) < LAB_HISTORIA_SEGUNDOS:
+        return cache["cierres"]
+    if ahora < cache.get("no_antes", 0):
+        return cache.get("cierres")
+    try:
+        par = "BTCUSDT" if simbolo == "BTC" else "ETHUSDT"
+        cierres, fin = [], None
+        for _ in range(LAB_HISTORIA_PAGINAS):
+            params = {"symbol": par, "interval": "1d", "limit": 1000}
+            if fin:
+                params["endTime"] = fin
+            r = requests.get("https://data-api.binance.vision/api/v3/klines", params=params, timeout=10)
+            if r.status_code != 200:
+                print(f"Binance respondió HTTP {r.status_code} (historia de {simbolo})")
+                break
+            velas = r.json()
+            if not isinstance(velas, list) or not velas:
+                break
+            cierres = [float(v[4]) for v in velas] + cierres
+            fin = int(velas[0][0]) - 1
+            if len(velas) < 1000:
+                break
+        if len(cierres) >= 400:
+            cache_todo[simbolo] = {"cierres": cierres, "ts": ahora}
+            return cierres
+    except Exception as e:
+        print(f"Error obteniendo la historia larga: {type(e).__name__}")
+    cache["no_antes"] = ahora + 900
+    cache_todo[simbolo] = cache
+    return cache.get("cierres")
+
+
+def probar_variantes_historia(cierres_por_moneda, tramos=LAB_TRAMOS_HISTORIA):
+    """Como probar_variantes_tendencia, pero con la historia larga cortada en `tramos` partes
+    iguales: cuenta en cuántos tramos (por moneda) la regla le gana a comprar y mantener."""
+    inicio = max(LAB_VENTANAS)
+    filas = []
+    for ventana in LAB_VENTANAS:
+        for banda in LAB_BANDAS:
+            fila = {"ventana": ventana, "banda": banda, "razon": {}, "ganados": 0, "total": 0}
+            for simbolo, cierres in cierres_por_moneda.items():
+                largo = len(cierres) - inicio
+                if largo < tramos * 60:
+                    return []
+                completo = backtest_tendencia(cierres, ventana, banda, inicio=inicio)
+                if completo is None:
+                    return []
+                fila["razon"][simbolo] = ((1 + completo["estrategia_pct"] / 100)
+                                          / (1 + completo["mantener_pct"] / 100))
+                for k in range(tramos):
+                    e0 = inicio + k * largo // tramos
+                    e1 = inicio + (k + 1) * largo // tramos
+                    dif = _ventaja_vs_mantener(cierres[e0 - inicio: e1], ventana, banda, inicio)
+                    fila["total"] += 1
+                    if dif is not None and dif > 0:
+                        fila["ganados"] += 1
+            filas.append(fila)
+    return filas
+
+
+def _render_historia_larga(cont):
+    cierres = {}
+    for simbolo in ("BTC", "ETH"):
+        datos = obtener_historia_larga(simbolo)
+        if datos:
+            cierres[simbolo] = datos
+    if not cierres:
+        return
+    clave = tuple((k, len(v), round(v[-1])) for k, v in sorted(cierres.items()))
+    cache = st.session_state.get("lab_historia_filas")
+    if cache and cache[0] == clave:
+        filas = cache[1]
+    else:
+        filas = probar_variantes_historia(cierres)
+        st.session_state["lab_historia_filas"] = (clave, filas)
+    if not filas:
+        return
+    anios = min(len(v) for v in cierres.values()) / 365
+    monedas = sorted(cierres)
+    cont.markdown(f"**📚 Misma prueba con {anios:.1f} años de historia (cortada en {LAB_TRAMOS_HISTORIA} etapas)**")
+    cont.table([{
+        "Media": f"{f['ventana']} d",
+        "Salida": f"-{f['banda']:g}%" if f["banda"] else "bajo la media",
+        **{f"{m}: regla ÷ mantener": f"{f['razon'][m]:.2f}×" for m in monedas},
+        "Etapas ganadas": f"{f['ganados']} de {f['total']}",
+    } for f in filas])
+    cont.caption(
+        "«Regla ÷ mantener» mayor que 1.00× = la regla terminó con más dinero que comprar y mantener "
+        "en todo el periodo. «Etapas ganadas» cuenta en cuántas de las etapas (por moneda) le ganó. "
+        "Una regla confiable gana en la mayoría de las etapas, no solo en el total. Precios en dólares, "
+        "con comisión taker de Bitso.")
+
+
+def _hoy_cdmx():
+    return datetime.now(timezone(timedelta(hours=-6))).strftime("%Y-%m-%d")
+
+
+def registrar_tendencia_diaria():
+    """Una vez al día guarda lo que la regla fija (media de 50 días, salida a -5%) dice de BTC y ETH.
+    Solo registra; no envía señales ni opera."""
+    if not FIREBASE_CONFIGURADO:
+        return
+    ahora = time.time()
+    if ahora - st.session_state.get("tv_chequeo", 0) < LAB_VIVO_MINUTOS_ENTRE_CHEQUEOS * 60:
+        return
+    st.session_state["tv_chequeo"] = ahora
+    try:
+        fecha = _hoy_cdmx()
+        r = requests.get(_url_registro(f"tendencia_vivo/{fecha}"), timeout=5)
+        if r.status_code != 200 or r.json():
+            return                              # ya está guardado hoy (o no se pudo leer)
+        registro = {"ts": ahora, "fecha": fecha}
+        for simbolo in ("BTC", "ETH"):
+            cierres = obtener_cierres_diarios(simbolo)
+            if not cierres:
+                return
+            res = backtest_tendencia(cierres, LAB_VIVO_VENTANA, LAB_VIVO_BANDA)
+            if res is None:
+                return
+            registro[simbolo] = {"precio": cierres[-1], "dentro": bool(res["en_posicion"])}
+        requests.put(_url_registro(f"tendencia_vivo/{fecha}"), json=registro, timeout=5)
+    except Exception as e:
+        print(f"Error registrando la tendencia diaria: {type(e).__name__}")
+
+
+def resultado_tendencia_vivo(registros, comision=COMISION_TAKER):
+    """Resultado de seguir la regla día a día según lo que quedó guardado, contra comprar y mantener."""
+    dias = sorted((r for r in registros if isinstance(r, dict) and r.get("BTC") and r.get("ETH")),
+                  key=lambda r: r.get("fecha", ""))
+    if len(dias) < 2:
+        return None
+    salida = {"dias": len(dias), "desde": dias[0].get("fecha", "")}
+    for simbolo in ("BTC", "ETH"):
+        capital, mantener = 1.0, 1.0
+        dentro_antes = bool(dias[0][simbolo].get("dentro"))
+        if dentro_antes:
+            capital *= (1 - comision)
+        for previo, actual in zip(dias, dias[1:]):
+            p0, p1 = float(previo[simbolo]["precio"]), float(actual[simbolo]["precio"])
+            if dentro_antes:
+                capital *= p1 / p0
+            mantener *= p1 / p0
+            dentro_ahora = bool(actual[simbolo].get("dentro"))
+            if dentro_ahora != dentro_antes:
+                capital *= (1 - comision)
+            dentro_antes = dentro_ahora
+        mantener *= (1 - comision) ** 2
+        salida[simbolo] = {"regla": (capital - 1) * 100, "mantener": (mantener - 1) * 100,
+                           "dentro": dentro_antes}
+    return salida
+
+
+def _render_tendencia_vivo(cont):
+    if not FIREBASE_CONFIGURADO:
+        return
+    r = requests.get(_url_registro("tendencia_vivo"), timeout=8)
+    datos = r.json() if r.status_code == 200 else None
+    registros = list(datos.values()) if isinstance(datos, dict) else []
+    cont.markdown(f"**🛰️ Prueba en vivo (regla fija: media de {LAB_VIVO_VENTANA} días, salida a -{LAB_VIVO_BANDA:g}%)**")
+    res = resultado_tendencia_vivo(registros)
+    if not res:
+        cont.caption("La regla quedó fija hoy y se guarda un registro por día. "
+                     "Con menos de 2 días aún no hay resultado: vuelve en unas semanas.")
+        return
+    cont.table([{
+        "Moneda": m, "Desde": res["desde"], "Días": res["dias"],
+        "Regla": f"{res[m]['regla']:+.1f}%", "Comprar y mantener": f"{res[m]['mantener']:+.1f}%",
+        "Hoy": "dentro" if res[m]["dentro"] else "fuera",
+    } for m in ("BTC", "ETH")])
+    cont.caption("Cada día se guarda lo que decidió la regla, sin cambiarla. Con comisión taker. "
+                 "Se necesitan al menos varios meses para concluir algo.")
+
+
+# --- Compra periódica (DCA) y mantener: evaluación, SOLO SIMULACIÓN ---
+# Compra un monto fijo cada cierto tiempo y no vende. Aquí solo se mide cómo le habría ido
+# (historial de varios años) y se lleva una cuenta en vivo con compras simuladas. No hace
+# ninguna compra real ni cambia parámetros del bot.
+DCA_INTERVALOS_DIAS = (7, 14, 30)
+DCA_VENTANA_DIAS = 365
+DCA_PASO_DIAS = 7
+DCA_MONTO_SIMULADO = 100.0            # MXN por moneda en cada compra simulada en vivo
+DCA_DIAS_ENTRE_COMPRAS_VIVO = 7
+DCA_MINUTOS_ENTRE_CHEQUEOS = 30
+
+
+def _mediana(valores):
+    v = sorted(valores)
+    m = len(v) // 2
+    return v[m] if len(v) % 2 else (v[m - 1] + v[m]) / 2
+
+
+def simular_dca_ventanas(cierres, intervalo, ventana=DCA_VENTANA_DIAS, paso=DCA_PASO_DIAS,
+                         comision=COMISION_TAKER):
+    """Para muchas fechas de inicio, compra un monto fijo cada `intervalo` días durante `ventana`
+    días y vende todo al final (con comisión en cada compra y en la venta). Compara con invertir
+    todo el dinero el primer día. Devuelve None si la historia no alcanza."""
+    if len(cierres) < ventana + 30:
+        return None
+    dca, junto = [], []
+    for inicio in range(0, len(cierres) - ventana, paso):
+        fin = inicio + ventana
+        compras = list(range(inicio, fin, intervalo))
+        invertido = float(len(compras))
+        unidades = sum((1 - comision) / cierres[d] for d in compras)
+        valor = unidades * cierres[fin] * (1 - comision)
+        dca.append(valor / invertido - 1)
+        junto.append((1 - comision) ** 2 * cierres[fin] / cierres[inicio] - 1)
+    return {
+        "n": len(dca),
+        "rentable": sum(1 for r in dca if r > 0) / len(dca) * 100,
+        "mediana": _mediana(dca) * 100,
+        "peor": min(dca) * 100,
+        "mejor": max(dca) * 100,
+        "junto_rentable": sum(1 for r in junto if r > 0) / len(junto) * 100,
+        "junto_mediana": _mediana(junto) * 100,
+        "junto_peor": min(junto) * 100,
+    }
+
+
+def _render_dca_historia(cont):
+    filas = []
+    anios = 0
+    for simbolo in ("BTC", "ETH"):
+        cierres = obtener_historia_larga(simbolo)
+        if not cierres:
+            continue
+        anios = max(anios, len(cierres) / 365)
+        for intervalo in DCA_INTERVALOS_DIAS:
+            r = simular_dca_ventanas(cierres, intervalo)
+            if not r:
+                continue
+            filas.append({
+                "Moneda": simbolo,
+                "Compra cada": f"{intervalo} d",
+                "Periodos que terminan en ganancia": f"{r['rentable']:.0f}%",
+                "Mediana": f"{r['mediana']:+.0f}%",
+                "Peor periodo": f"{r['peor']:+.0f}%",
+                "Todo el primer día: ganancia": f"{r['junto_rentable']:.0f}%",
+                "Todo el primer día: peor": f"{r['junto_peor']:+.0f}%",
+            })
+    if not filas:
+        return
+    cont.markdown(f"**💵 Compra periódica y mantener: cómo le habría ido ({anios:.1f} años de historia)**")
+    cont.table(filas)
+    cont.caption(
+        f"Cada fila prueba cientos de periodos de {DCA_VENTANA_DIAS} días con distintas fechas de inicio: "
+        "compra un monto fijo cada cierto tiempo, vende al final del periodo y descuenta la comisión taker "
+        "de Bitso (0.78%) en cada compra y en la venta. «Todo el primer día» invierte el mismo dinero "
+        "de golpe al inicio. Precios en dólares. Es el pasado: no garantiza nada hacia adelante, "
+        "y mantener cripto puede perder más de la mitad de su valor.")
+
+
+def registrar_dca_vivo(precios_actuales):
+    """Cada 7 días guarda una compra SIMULADA de 100 MXN por moneda al precio de Bitso del momento."""
+    if not FIREBASE_CONFIGURADO:
+        return
+    ahora = time.time()
+    if ahora - st.session_state.get("dca_chequeo", 0) < DCA_MINUTOS_ENTRE_CHEQUEOS * 60:
+        return
+    st.session_state["dca_chequeo"] = ahora
+    try:
+        btc, eth = precios_actuales.get("BTC"), precios_actuales.get("ETH")
+        if not btc or not eth:
+            return
+        r = requests.get(_url_registro("dca_vivo"), timeout=5)
+        if r.status_code != 200:
+            return
+        previos = [v for v in (r.json() or {}).values() if isinstance(v, dict)] if isinstance(r.json(), dict) else []
+        if previos:
+            ultimo = max(float(v.get("ts", 0) or 0) for v in previos)
+            if ahora - ultimo < DCA_DIAS_ENTRE_COMPRAS_VIVO * 86400:
+                return
+        fecha = _hoy_cdmx()
+        requests.put(_url_registro(f"dca_vivo/{fecha}"), timeout=5, json={
+            "ts": ahora, "fecha": fecha, "monto": DCA_MONTO_SIMULADO,
+            "BTC": float(btc), "ETH": float(eth)})
+    except Exception as e:
+        print(f"Error registrando la compra periódica simulada: {type(e).__name__}")
+
+
+def resultado_dca_vivo(compras, precios_actuales, comision=COMISION_TAKER):
+    """Cuánto valdría hoy lo comprado en las compras simuladas (vendiendo con comisión)."""
+    compras = [c for c in compras if isinstance(c, dict)]
+    if not compras:
+        return None
+    salida = {"compras": len(compras), "desde": min(c.get("fecha", "") for c in compras)}
+    for simbolo in ("BTC", "ETH"):
+        precio = precios_actuales.get(simbolo)
+        if not precio:
+            return None
+        invertido = sum(float(c.get("monto", 0) or 0) for c in compras)
+        unidades = sum(float(c.get("monto", 0) or 0) * (1 - comision) / float(c[simbolo])
+                       for c in compras if c.get(simbolo))
+        valor = unidades * float(precio) * (1 - comision)
+        salida[simbolo] = {"invertido": invertido, "valor": valor,
+                           "pct": (valor / invertido - 1) * 100 if invertido else 0.0}
+    return salida
+
+
+def _render_dca_vivo(cont):
+    if not FIREBASE_CONFIGURADO:
+        return
+    r = requests.get(_url_registro("dca_vivo"), timeout=8)
+    datos = r.json() if r.status_code == 200 else None
+    compras = list(datos.values()) if isinstance(datos, dict) else []
+    cont.markdown(f"**🧺 Compra periódica en vivo (simulada: {DCA_MONTO_SIMULADO:.0f} MXN por moneda "
+                  f"cada {DCA_DIAS_ENTRE_COMPRAS_VIVO} días)**")
+    precios = {"BTC": obtener_precio_bitso("btc_mxn"), "ETH": obtener_precio_bitso("eth_mxn")}
+    res = resultado_dca_vivo(compras, precios)
+    if not res:
+        cont.caption("Aún no hay compras simuladas. La primera se registra sola en el siguiente ciclo del bot.")
+        return
+    cont.table([{
+        "Moneda": m, "Desde": res["desde"], "Compras": res["compras"],
+        "Invertido": f"${res[m]['invertido']:,.0f}", "Valdría hoy": f"${res[m]['valor']:,.0f}",
+        "Resultado": f"{res[m]['pct']:+.1f}%",
+    } for m in ("BTC", "ETH")])
+    cont.caption("Cuenta simulada con la comisión taker de Bitso en cada compra y en la venta. "
+                 "Al principio el resultado es negativo solo por las comisiones: se necesitan meses.")
+
+
 def _render_laboratorio_tendencia(cont):
     filas = []
     cierres_por_moneda = {}
@@ -2203,6 +2536,106 @@ def _render_laboratorio_tendencia(cont):
             _render_variantes_tendencia(cont, cierres_por_moneda)
         except Exception as e:
             print(f"Error probando variantes: {type(e).__name__}")
+    for nombre, funcion in (("la historia larga", _render_historia_larga),
+                            ("la prueba en vivo", _render_tendencia_vivo),
+                            ("la compra periódica histórica", _render_dca_historia),
+                            ("la compra periódica en vivo", _render_dca_vivo)):
+        try:
+            funcion(cont)
+        except Exception as e:
+            print(f"Error mostrando {nombre}: {type(e).__name__}")
+
+
+# ===== ÁRBOL DE DECISIÓN (SOLO EVALÚA Y MUESTRA; NO ENVÍA SEÑALES NI OPERA) =====
+# Cada rama es una idea con un trabajo concreto. La raíz las juzga con la misma regla, fija y escrita
+# aquí para que no se pueda ajustar mirando resultados:
+#   • Ramas de operar: pasa solo si tiene al menos MUESTRA_MINIMA_CONFIABLE operaciones simuladas y
+#     su ganancia neta media por operación (después de comisiones taker) es mayor que cero.
+#   • Tendencia diaria: pasa solo si en la historia larga le gana a comprar y mantener en al menos
+#     6 de las 8 etapas (4 etapas por moneda).
+#   • Compra periódica: no es una ventaja del bot sino exposición al mercado; «pasa» si en al menos
+#     60% de los periodos de un año terminó en ganancia y su mediana es positiva (sigue habiendo riesgo).
+# Si ninguna rama de operar pasa, la decisión de la raíz es no operar.
+ARBOL_ETAPAS_MINIMAS = 6
+ARBOL_DCA_MIN_RENTABLE = 60.0
+
+
+def _rama_operar(nombre, funcion, resumen):
+    """Rama de operar a partir de un resumen de simular_tp_sl (o None)."""
+    if not resumen or not resumen.get("n"):
+        return {"rama": nombre, "funcion": funcion, "tipo": "operar", "pasa": None,
+                "evidencia": "sin operaciones evaluadas"}
+    n = resumen["n"]
+    neto = resumen["neto"] / n
+    pasa = None if n < MUESTRA_MINIMA_CONFIABLE else neto > 0
+    return {"rama": nombre, "funcion": funcion, "tipo": "operar", "pasa": pasa,
+            "evidencia": f"{n} operaciones, ganancia neta media {neto:+.2f}% por operación"}
+
+
+def _sumar_resumenes(resumenes):
+    total = {"n": 0, "neto": 0.0}
+    for r in resumenes:
+        total["n"] += r["n"]
+        total["neto"] += r["neto"]
+    return total
+
+
+def evaluar_arbol(registros, velas_por_simbolo, historia_por_moneda):
+    """Devuelve (ramas, decision). `historia_por_moneda`: cierres diarios largos por moneda."""
+    ramas = []
+    por_motor = simular_tp_sl(registros, velas_por_simbolo)
+    ramas.append(_rama_operar("Señales de horas (motor actual)", "Detecta cambios de precio de minutos",
+                              por_motor.get("actual")))
+    groq = [r for r in registros if r.get("coinciden") == "GROQ" and r.get("motor", "actual") == "actual"]
+    ramas.append(_rama_operar("Filtro Groq", "Deja pasar solo las señales que Groq aprueba",
+                              _sumar_resumenes(simular_tp_sl(groq, velas_por_simbolo).values())))
+    ramas.append(_rama_operar("Motor v2 (velas de 1 h)", "Señales con velas de 1 hora", por_motor.get("v2")))
+
+    if historia_por_moneda:
+        filas = probar_variantes_historia(historia_por_moneda)
+        fila = next((f for f in filas if f["ventana"] == LAB_VIVO_VENTANA and f["banda"] == LAB_VIVO_BANDA), None)
+        if fila:
+            pasa = fila["ganados"] >= ARBOL_ETAPAS_MINIMAS and all(v >= 1 for v in fila["razon"].values())
+            razones = ", ".join(f"{m} {x:.2f}×" for m, x in sorted(fila["razon"].items()))
+            ramas.append({"rama": "Tendencia diaria", "funcion": "Comprar sobre su media y salir si cae",
+                          "tipo": "operar", "pasa": pasa,
+                          "evidencia": f"le gana a mantener en {fila['ganados']} de {fila['total']} etapas "
+                                       f"(regla ÷ mantener: {razones})"})
+        dca = {m: simular_dca_ventanas(c, 30) for m, c in historia_por_moneda.items()}
+        dca = {m: r for m, r in dca.items() if r}
+        if dca:
+            pasa = all(r["rentable"] >= ARBOL_DCA_MIN_RENTABLE and r["mediana"] > 0 for r in dca.values())
+            texto = ", ".join(f"{m}: ganancia en {r['rentable']:.0f}% de los años, peor {r['peor']:+.0f}%"
+                              for m, r in sorted(dca.items()))
+            ramas.append({"rama": "Compra periódica y mantener", "funcion": "Compra un monto fijo cada cierto tiempo",
+                          "tipo": "mantener", "pasa": pasa, "evidencia": texto})
+
+    pasan = [r["rama"] for r in ramas if r["tipo"] == "operar" and r["pasa"]]
+    if pasan:
+        decision = ("Hay ramas de operar con ventaja medida (" + ", ".join(pasan) + "): probar en vivo "
+                    "con montos mínimos y seguir midiendo antes de subir el monto.")
+    else:
+        decision = ("Ninguna rama de operar demuestra ganancia después de comisiones: NO operar. "
+                    "Lo que queda es el simulador y, si decides asumir el riesgo, comprar de forma periódica.")
+    return ramas, decision
+
+
+def _render_arbol(cont, registros, velas):
+    historia = {}
+    for simbolo in ("BTC", "ETH"):
+        datos = obtener_historia_larga(simbolo)
+        if datos:
+            historia[simbolo] = datos
+    ramas, decision = evaluar_arbol(registros, velas, historia if len(historia) == 2 else {})
+    estado = {True: "✅ pasa", False: "❌ no pasa", None: "⏳ pocos datos"}
+    cont.markdown("**🌳 Árbol de decisión: qué rama merece dinero**")
+    cont.table([{"Rama": r["rama"], "Qué hace": r["funcion"], "Evidencia": r["evidencia"],
+                 "Veredicto": estado[r["pasa"]]} for r in ramas])
+    (cont.success if any(r["tipo"] == "operar" and r["pasa"] for r in ramas) else cont.warning)(decision)
+    cont.caption(
+        "La raíz usa una regla fija: una rama de operar pasa solo con 30 o más operaciones simuladas y "
+        "ganancia neta positiva tras comisiones (tendencia: ganarle a mantener en 6 de 8 etapas). "
+        "Que una rama pase no garantiza ganancias futuras; sirve para no gastar dinero en ideas sin evidencia.")
 
 
 def _render_resultados_senales(interfaz):
@@ -2252,6 +2685,11 @@ def _render_resultados_senales(interfaz):
         _render_laboratorio_tendencia(cont)
     except Exception as e:
         print(f"Error en el laboratorio de tendencia: {type(e).__name__}")
+    try:
+        velas_arbol = {sim: obtener_velas_horarias(sim) for sim in ("BTC", "ETH")}
+        _render_arbol(cont, registros, velas_arbol)
+    except Exception as e:
+        print(f"Error en el árbol de decisión: {type(e).__name__}")
     cont.caption(
         "Acierto = el precio se movió a favor de la señal (BUY: sube, SELL: baja) pasado el plazo. "
         "El retorno no descuenta comisiones (≈1.2% ida y vuelta). "
@@ -2606,9 +3044,9 @@ if st.sidebar.button("🧪 Probar conexión con Gemini"):
             st.sidebar.warning(f"Detalle: {res_razon}")
         st.sidebar.caption(f"Modelo configurado: {GEMINI_MODELO}")
 
-st.sidebar.markdown("**🤖 Diagnóstico de la 2ª opinión (Groq / DeepSeek)**")
+st.sidebar.markdown("**🤖 Diagnóstico de la 2ª opinión (Groq)**")
 if not SEGUNDA_OPINION_CONFIGURADA:
-    st.sidebar.info("ℹ️ Opcional: agrega GROQ_API_KEY (gratis) o DEEPSEEK_API_KEY en los Secrets.")
+    st.sidebar.info("ℹ️ Opcional: agrega GROQ_API_KEY (gratis) en los Secrets.")
 for _prov in _proveedores_segunda_opinion():
     if st.sidebar.button(f"🧪 Probar conexión con {_prov['nombre']}", key=f"probar_{_prov['id']}"):
         with st.spinner(f"Consultando a {_prov['nombre']}..."):
@@ -2796,7 +3234,7 @@ def ejecutar_ciclo(interfaz):
                 tendencia_t30 = datos_t30.get("tendencia", "N/A")
                 vol_onchain = (volumen_onchain_btc if sim_actual == "BTC" else volumen_onchain_eth)
 
-                # 🛡️ GROQ/DEEPSEEK DECIDEN: si opinan distinto, la señal se bloquea
+                # 🛡️ GROQ DECIDE: si opinan distinto, la señal se bloquea
                 segunda = None
                 try:
                     contexto_ds = (f"Tendencia 30d: {tendencia_t30}, Cambio 30d: {cambio_t30:+.2f}%, "
@@ -2860,6 +3298,8 @@ def ejecutar_ciclo(interfaz):
 
     # ===== MOTOR v2 EN PARALELO (solo registra) =====
     registrar_senales_v2({"BTC": btc, "ETH": eth})
+    registrar_tendencia_diaria()
+    registrar_dca_vivo({"BTC": btc, "ETH": eth})
 
     # ===== EVALUACIÓN DE SEÑALES ANTERIORES (1h, 4h, 24h) =====
     try:
