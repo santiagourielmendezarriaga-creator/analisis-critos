@@ -28,6 +28,8 @@ Firebase y Telegram ya configurados). Con eso, dentro del mismo worker:
 - Opcionales: `VIGIA_HORA_RESUMEN` (0-23, por defecto 8), `VIGIA_MINUTOS` (5-240, por defecto 30)
   y `VIGIA_USAR_IA=false` para el resumen solo con cifras.
 - Si Render reinicia el servicio, el vigía puede repetir el resumen de ese día una vez.
+- En los Logs deja una línea `Vigía: revisión ...` en cada vuelta (la primera, 1 min después de
+  arrancar). Si no aparece, la línea `Vigía: apagado ...` dice qué falta.
 
 ## Cosas a saber
 - Render gratis puede reiniciar el servicio en cualquier momento; el estado vive en Firebase,
