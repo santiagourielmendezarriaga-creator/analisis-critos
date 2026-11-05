@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 ZONA_CDMX = timezone(timedelta(hours=-6))
 MAX_PASOS = 6                    # vueltas máximas del agente con la IA
 MAX_MENSAJES_DIA = 10            # tope de mensajes de Telegram en 24 h
-MAX_TEXTO_IA = 700               # largo máximo de la lectura de la IA
+MAX_TEXTO_IA = 400               # largo máximo de la lectura de la IA
 UMBRAL_LATIDO_MIN = 10           # el worker late cada ~30-60 s
 UMBRAL_V2_HORAS = 2              # el motor v2 chequea cada 15 min
 ENFRIAMIENTO_ALERTA_HORAS = 6    # no repite el mismo aviso antes de este tiempo
@@ -42,7 +42,8 @@ HERRAMIENTAS = ("estado_del_bot", "senales_recientes", "compra_periodica", "tend
 ESQUEMA = [
     {"type": "function", "function": {
         "name": "estado_del_bot",
-        "description": "Minutos desde el último latido del bot y estado del último chequeo del motor v2.",
+        "description": "Minutos desde el último latido del bot y del último chequeo del motor v2 "
+                       "(HOLD = ese chequeo no encontró señal; no es una posición abierta).",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
         "name": "senales_recientes",
@@ -61,9 +62,18 @@ ESQUEMA = [
 PROMPT_SISTEMA = (
     "Eres el vigía de un bot de señales de criptomonedas que opera SOLO EN SIMULACIÓN. "
     "Únicamente puedes leer datos con tus herramientas. Consulta las cuatro herramientas y luego "
-    "escribe una lectura de 2 a 3 frases en español: qué se ve normal y qué merece atención. "
+    "escribe, en español, UNA o DOS frases cortas. El usuario ya ve todas las cifras en el mensaje, "
+    "así que NO las repitas ni las enumeres: di solo lo que de verdad merece atención o, si todo "
+    "está normal, escribe 'Sin novedades' y como mucho un dato útil.\n"
+    "Cómo leer los datos:\n"
+    "- HOLD en el motor v2 significa que en ese chequeo NO hubo señal; no es una posición abierta.\n"
+    "- Es normal que el último latido sea de menos de 10 minutos y el chequeo del motor v2 de "
+    "menos de 2 horas. Solo es atención si se pasan de eso.\n"
+    "- La compra periódica y la tendencia con menos de 30 días de datos no permiten concluir "
+    "nada: un resultado negativo al inicio es normal (la comisión de ida y vuelta ya resta "
+    "alrededor de 1.6%). No lo presentes como alarma.\n"
     "Usa solo cifras que devuelvan las herramientas; no inventes nada. No recomiendes comprar, "
-    "vender ni cambiar montos. Si hay pocos datos, dilo. Texto plano, sin viñetas ni formato."
+    "vender ni cambiar montos. Texto plano, sin viñetas ni formato."
 )
 
 
