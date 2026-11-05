@@ -178,6 +178,10 @@ def bucle(modulo, st, maximo_ciclos=None):
 
 
 def main():
+    try:   # que los mensajes salgan al instante en los logs de Render (sin búfer)
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
     _servidor_salud()
     modulo, st = cargar_app()
     latido(modulo)

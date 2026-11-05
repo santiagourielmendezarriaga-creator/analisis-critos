@@ -323,12 +323,21 @@ class Vigia:
 
     # ------------------------------------------------------------ una vuelta de revisión
     def revisar(self):
-        self.revisar_alertas()
+        enviados = self.revisar_alertas()
         ahora = datetime.fromtimestamp(self.reloj(), ZONA_CDMX)
         hoy = ahora.strftime("%Y-%m-%d")
-        if ahora.hour >= self.hora_resumen and self._resumen_fecha != hoy:
-            if self._enviar(self.resumen_diario()):
-                self._resumen_fecha = hoy
+        if self._resumen_fecha == hoy:
+            resumen = "ya enviado hoy"
+        elif ahora.hour < self.hora_resumen:
+            resumen = f"aún no son las {self.hora_resumen}:00"
+        elif self._enviar(self.resumen_diario()):
+            self._resumen_fecha = hoy
+            resumen = "enviado"
+        else:
+            resumen = "NO se pudo enviar (revisa TELEGRAM_TOKEN / TELEGRAM_CHAT_ID)"
+        # Deja huella en los logs de Render para saber que el vigía está vivo.
+        print(f"Vigía: revisión {ahora:%H:%M} CDMX · avisos enviados: {', '.join(enviados) or 'ninguno'}"
+              f" · resumen diario: {resumen}")
 
 
 def _entero(app, nombre, defecto, minimo, maximo):
@@ -339,12 +348,15 @@ def _entero(app, nombre, defecto, minimo, maximo):
     return max(minimo, min(maximo, valor))
 
 
-def iniciar(app, retraso_inicial=300):
+def iniciar(app, retraso_inicial=60):
     """Arranca el vigía en un hilo aparte. Devuelve el hilo, o None si está apagado o falta algo."""
     if not app._a_booleano(app._secreto("VIGIA", False), False):
+        print("Vigía: apagado (la variable VIGIA no vale true en el Environment de Render).")
         return None
-    if not (app.FIREBASE_CONFIGURADO and app.TELEGRAM_CONFIGURADO):
-        print("Vigía: apagado, necesita Firebase y Telegram configurados.")
+    faltan = [n for n, ok in (("FIREBASE_URL/FIREBASE_RUTA", app.FIREBASE_CONFIGURADO),
+                              ("TELEGRAM_TOKEN y TELEGRAM_CHAT_ID", app.TELEGRAM_CONFIGURADO)) if not ok]
+    if faltan:
+        print("Vigía: apagado, falta configurar " + " y ".join(faltan) + ".")
         return None
     vigia = Vigia(app, hora_resumen=_entero(app, "VIGIA_HORA_RESUMEN", 8, 0, 23),
                   usar_ia=app._a_booleano(app._secreto("VIGIA_USAR_IA", True), True))
@@ -361,5 +373,6 @@ def iniciar(app, retraso_inicial=300):
 
     hilo = threading.Thread(target=bucle, name="vigia", daemon=True)
     hilo.start()
-    print(f"👁️ Vigía en marcha (solo lectura y avisos; IA: {'sí' if vigia.usar_ia else 'no'})")
+    print(f"👁️ Vigía en marcha (solo lectura y avisos; IA: {'sí' if vigia.usar_ia else 'no'}); "
+          f"primera revisión en {retraso_inicial} s")
     return hilo
