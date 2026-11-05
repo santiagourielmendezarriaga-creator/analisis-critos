@@ -181,6 +181,11 @@ def main():
     _servidor_salud()
     modulo, st = cargar_app()
     latido(modulo)
+    try:   # Vigía opcional (VIGIA=true): solo lee y avisa por Telegram. Un fallo aquí no detiene al bot.
+        import vigia
+        vigia.iniciar(modulo)
+    except Exception:
+        traceback.print_exc()
     print("🚀 Worker en marcha")
     bucle(modulo, st)
 

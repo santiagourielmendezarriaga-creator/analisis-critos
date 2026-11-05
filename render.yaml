@@ -22,6 +22,8 @@ services:
         value: "50"
       - key: MONTO_MAXIMO_DIARIO
         value: "100"
+      - key: VIGIA
+        value: "false"
       - key: FIREBASE_URL
         sync: false
       - key: FIREBASE_RUTA
