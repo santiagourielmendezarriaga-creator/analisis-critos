@@ -169,7 +169,7 @@ def bucle(modulo, st, maximo_ciclos=None):
             except Exception:
                 traceback.print_exc()
         try:
-            if n % 6 == 0:
+            if n % 6 == 0 and not st.session_state.get("auto_guardado_fallido"):
                 st.session_state.pop("auto_estado", None)   # releer pausa/reanudar desde Firebase
             modulo._panel()
             ULTIMO["ciclos"] += 1

@@ -498,11 +498,12 @@ def iniciar_estado_nuevo():
     st.session_state.ultimo_respaldo_operaciones = 0
 
 
-def restaurar_desde_archivo():
+def restaurar_desde_archivo(iniciar_si_falla=True):
     datos = cargar_datos()
     if datos is None:
-        iniciar_estado_nuevo()
-        return
+        if iniciar_si_falla:
+            iniciar_estado_nuevo()
+        return False
     try:
         operaciones = []
         for marca, msg in _leer(datos, "operaciones", "trades", []):
@@ -558,9 +559,12 @@ def restaurar_desde_archivo():
         st.session_state.ultimo_respaldo_operaciones = _a_entero(
             _leer(datos, "ultimo_respaldo_operaciones", "ultimo_backup_trades", 0), 0)
         print(f"✅ Datos restaurados. Ciclo: {st.session_state.ciclo}")
+        return True
     except Exception as e:
         print(f"Error al restaurar: {e}")
-        iniciar_estado_nuevo()
+        if iniciar_si_falla:
+            iniciar_estado_nuevo()
+        return False
 
 
 def crear_respaldo():
@@ -1453,9 +1457,15 @@ def _auto_estado():
 
 def _auto_guardar(est):
     try:
-        requests.put(_auto_ruta(), json=est, timeout=10)
+        respuesta = requests.put(_auto_ruta(), json=est, timeout=10)
+        if respuesta.status_code == 200:
+            st.session_state["auto_guardado_fallido"] = False
+            return True
+        print(f"Error guardando estado automático: HTTP {respuesta.status_code}")
     except Exception as e:
         print(f"Error guardando estado automático: {type(e).__name__}")
+    st.session_state["auto_guardado_fallido"] = True
+    return False
 
 
 def _auto_aviso(texto, nivel="warning"):
@@ -1466,8 +1476,11 @@ def _auto_aviso(texto, nivel="warning"):
 def _auto_pausar(est, motivo):
     est["pausado"] = True
     est["motivo"] = motivo
-    _auto_guardar(est)
-    _auto_aviso(f"⏸️ Operación automática PAUSADA: {motivo}")
+    if _auto_guardar(est):
+        _auto_aviso(f"⏸️ Operación automática PAUSADA: {motivo}")
+    else:
+        _auto_aviso(f"⚠️ No se pudo guardar la pausa en Firebase: {motivo}. "
+                     "Las compras se bloquean en esta instancia; revisa las demás instancias.")
 
 
 def _auto_redondear(cantidad):
@@ -1534,6 +1547,9 @@ def auto_comprar(simbolo, precio, probabilidad, gemini_valido, segunda, senal="B
     if not ok:
         if motivo:
             avisar(motivo, "warning")
+        return
+    if st.session_state.get("auto_guardado_fallido"):
+        avisar("No se confirmó el guardado del estado automático; no se compra.", "warning")
         return
     est = _auto_estado()
     if est is None:
@@ -1715,7 +1731,9 @@ def _render_auto(interfaz, precios):
     texto = (f"🤖 Operación automática REAL — ${MONTO_AUTOMATICO:,.0f} por operación | "
              f"hoy ${float(st.session_state.get('monto_del_dia', 0.0)):,.0f}/${MONTO_MAXIMO_DIARIO:,.0f} | "
              f"{posiciones}")
-    if est.get("pausado"):
+    if st.session_state.get("auto_guardado_fallido"):
+        interfaz["automatico"].error("⚠️ Estado automático sin confirmar en Firebase — " + texto)
+    elif est.get("pausado"):
         interfaz["automatico"].warning(f"⏸️ PAUSADA ({est.get('motivo') or 'manual'}) — " + texto)
     else:
         interfaz["automatico"].success(texto)
@@ -1729,21 +1747,31 @@ def _auto_sidebar():
     if est is None:
         st.sidebar.error("No pude leer el estado en Firebase: no opera.")
         return
+    if st.session_state.get("auto_guardado_fallido"):
+        st.sidebar.error("Estado sin confirmar en Firebase. Revisa el servidor antes de operar.")
     if est.get("pausado"):
-        st.sidebar.warning(f"⏸️ Pausada: {est.get('motivo') or 'manual'}")
+        st.sidebar.warning(f"⏸️ Pausa {'sin confirmar' if st.session_state.get('auto_guardado_fallido') else 'activa'}: "
+                           f"{est.get('motivo') or 'manual'}")
         if st.sidebar.button("▶️ Reanudar operación automática"):
+            anterior = dict(est)
             est["pausado"] = False
             est["motivo"] = ""
             est["perdidas_seguidas"] = 0
-            _auto_guardar(est)
-            st.rerun()
+            if _auto_guardar(est):
+                st.rerun()
+            else:
+                est.update(anterior)
+                st.sidebar.error("No se pudo confirmar la reanudación en Firebase. Revisa el servidor.")
     else:
         st.sidebar.success("▶️ Activa")
         if st.sidebar.button("⏸️ Pausar operación automática"):
             est["pausado"] = True
             est["motivo"] = "pausa manual"
-            _auto_guardar(est)
-            st.rerun()
+            if _auto_guardar(est):
+                st.rerun()
+            else:
+                st.sidebar.error("No se pudo confirmar la pausa en Firebase. "
+                                 "El servidor podría seguir operando; revísalo.")
     st.sidebar.caption("Las ventas por TP/SL siguen activas aunque esté en pausa.")
 
 
@@ -3589,22 +3617,24 @@ SEGUNDOS_LATIDO_WORKER = 120
 
 
 def _worker_activo():
-    """True si un worker del servidor latió hace menos de 2 min (Firebase `worker`).
-    Mientras sea así, este panel no ejecuta ciclos para no duplicar señales ni órdenes."""
+    """True si el worker está activo, False si no, o None si no se puede comprobar."""
     if ES_WORKER or not FIREBASE_CONFIGURADO:
         return False
     cache = st.session_state.get("_worker_cache")
     ahora = time.time()
     if cache and (ahora - cache[0]) < 20:
         return cache[1]
-    activo = False
+    activo = None
     try:
         r = requests.get(f"{URL_FIREBASE}/worker.json", timeout=5)
-        datos = r.json() if r.status_code == 200 else None
-        if isinstance(datos, dict):
-            activo = (ahora - float(datos.get("ts", 0) or 0)) < SEGUNDOS_LATIDO_WORKER
+        if r.status_code == 200:
+            datos = r.json()
+            if datos is None:
+                activo = False
+            elif isinstance(datos, dict) and datos.get("ts") is not None:
+                activo = (ahora - float(datos["ts"])) < SEGUNDOS_LATIDO_WORKER
     except Exception:
-        activo = False
+        pass
     st.session_state["_worker_cache"] = (ahora, activo)
     return activo
 
@@ -3778,7 +3808,13 @@ def _panel():
         "estado": st.empty(),
         "mensajes": st.empty(),
     }
-    if _worker_activo():
+    estado_worker = _worker_activo()
+    if estado_worker is None:
+        interfaz["estado"].error(
+            "⚠️ No se puede comprobar el worker en Firebase. "
+            "Este panel no ejecutará ciclos hasta recuperar la conexión.")
+        return
+    if estado_worker:
         st.session_state["_cedido"] = True
         interfaz["estado"].info(
             "🛰️ El bot está corriendo en el servidor (worker). Este panel no ejecuta ciclos "
@@ -3794,9 +3830,13 @@ def _panel():
         return
     if st.session_state.get("_cedido"):
         # El worker dejó de latir: se relee el estado para no pisar lo que él guardó
+        if not restaurar_desde_archivo(iniciar_si_falla=False):
+            interfaz["estado"].error("⚠️ No se pudo recuperar el estado del bot. "
+                                    "Este panel no ejecutará ciclos hasta poder leerlo.")
+            return
         st.session_state["_cedido"] = False
-        st.session_state.pop("auto_estado", None)
-        restaurar_desde_archivo()
+        if not st.session_state.get("auto_guardado_fallido"):
+            st.session_state.pop("auto_estado", None)
     try:
         ejecutar_ciclo(interfaz)
     except Exception as e:
