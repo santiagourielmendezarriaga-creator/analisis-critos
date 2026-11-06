@@ -1763,7 +1763,8 @@ def _auto_sidebar():
                 est.update(anterior)
                 st.sidebar.error("No se pudo confirmar la reanudación en Firebase. Revisa el servidor.")
     else:
-        st.sidebar.success("▶️ Activa")
+        if not st.session_state.get("auto_guardado_fallido"):
+            st.sidebar.success("▶️ Activa")
         if st.sidebar.button("⏸️ Pausar operación automática"):
             est["pausado"] = True
             est["motivo"] = "pausa manual"

@@ -76,6 +76,14 @@ class FirebaseTests(unittest.TestCase):
         self.assertIn("servidor podría seguir operando", self.st.sidebar.error.call_args.args[0])
         self.st.rerun.assert_not_called()
 
+    def test_estado_sin_confirmar_no_se_muestra_como_activo(self):
+        self.ss["auto_guardado_fallido"] = True
+        self.ctx["_auto_estado"] = lambda: {"pausado": False}
+        self.st.sidebar.button.return_value = False
+        self.ctx["_auto_sidebar"]()
+        self.st.sidebar.success.assert_not_called()
+        self.st.sidebar.error.assert_called()
+
     def test_compra_bloqueada_si_estado_no_fue_guardado(self):
         self.ss["auto_guardado_fallido"] = True
         self.ctx["obtener_saldo_bitso"] = Mock()
