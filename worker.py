@@ -156,9 +156,18 @@ def latido(modulo):
 
 
 def bucle(modulo, st, maximo_ciclos=None):
+    try:   # el vigía puede pedir acciones de su lista cerrada; las ejecuta este hilo, el del bot
+        import vigia as _vigia
+    except Exception:
+        _vigia = None
     n = 0
     while maximo_ciclos is None or n < maximo_ciclos:
         n += 1
+        if _vigia is not None:
+            try:
+                _vigia.atender_solicitudes(modulo)
+            except Exception:
+                traceback.print_exc()
         try:
             if n % 6 == 0:
                 st.session_state.pop("auto_estado", None)   # releer pausa/reanudar desde Firebase
@@ -185,7 +194,7 @@ def main():
     _servidor_salud()
     modulo, st = cargar_app()
     latido(modulo)
-    try:   # Vigía opcional (VIGIA=true): solo lee y avisa por Telegram. Un fallo aquí no detiene al bot.
+    try:   # Vigía opcional (VIGIA=true): avisa por Telegram y puede pedir re-chequear datos. Un fallo aquí no detiene al bot.
         import vigia
         vigia.iniciar(modulo)
     except Exception:

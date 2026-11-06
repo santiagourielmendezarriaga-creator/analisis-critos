@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Agente vigía del bot: SOLO LEE y AVISA. No opera.
+Agente vigía del bot: LEE, AVISA y, como única acción, puede pedir que se re-chequeen los datos.
+No opera.
 
 Qué hace
   1. Cada cierto tiempo revisa, con reglas fijas, que el bot esté vivo (latido en Firebase) y que
@@ -9,24 +10,36 @@ Qué hace
      las últimas 24 h, compra periódica simulada y prueba de tendencia en vivo. Las cifras del
      resumen las calcula el código (las mismas funciones del bot); un modelo de IA (Groq) solo
      agrega una "lectura" de 2-3 frases usando esas herramientas.
+  3. Acción "rechequear_datos" (lista cerrada de UNA): si el bot está vivo pero el motor v2 lleva
+     más de 2 h sin chequear, o no pudo obtener velas, pide que el v2 vuelva a evaluar en el
+     siguiente ciclo (reinicia su reloj de 15 min y olvida la espera tras un fallo de datos).
+     Es mantenimiento: NO cambia cómo decide el bot ni ninguno de sus parámetros.
+     Quien decide si procede es este código con reglas fijas, no la IA.
 
 Qué NO puede hacer (por diseño)
-  - No escribe en Firebase: solo hace GET. Su memoria (cuándo avisó) vive en el proceso.
+  - Solo escribe en Firebase en UNA ruta propia (vigia_acciones) para anotar lo que hizo o habría
+    hecho; el bot no lee esa ruta. Todo lo demás es GET. Sus recuerdos de avisos viven en el proceso.
   - No compra ni vende, y no toca las llaves de Bitso: no tiene ninguna herramienta para eso.
+  - No cambia TP, SL, umbral, pesos, comisión ni el anti-spam, y no activa ni desactiva el modo real.
   - No escribe en el canal público de Telegram: solo en tu chat privado (TELEGRAM_CHAT_ID).
-  - La IA no manda mensajes: solo devuelve texto, y es este código quien lo envía.
-  - Tiene tope de pasos por consulta a la IA y de mensajes por día.
+  - La IA no manda mensajes ni ejecuta acciones: solo devuelve texto.
+  - La acción corre en el hilo del propio bot (no en el del vigía), con espera mínima de 2 h entre
+    una y otra y tope de 3 al día. Tiene tope de pasos por consulta a la IA y de mensajes por día.
 
 Cómo se enciende (en Render, variables de entorno; apagado por defecto)
   VIGIA=true                    enciende el vigía dentro del worker
   VIGIA_HORA_RESUMEN=8          hora de CDMX del resumen diario (0-23)
   VIGIA_MINUTOS=30              cada cuántos minutos revisa
   VIGIA_USAR_IA=true            false = resumen solo con las cifras, sin IA
+  VIGIA_ACCIONES=sombra         sombra (por defecto) = solo anota "habría re-chequeado" en Firebase y
+                                en el resumen diario, sin actuar · activo = además lo pide al bot y te
+                                avisa por Telegram · no = ni siquiera lo anota
 """
 import json
 import threading
 import time
 import traceback
+from collections import deque
 from datetime import datetime, timedelta, timezone
 
 ZONA_CDMX = timezone(timedelta(hours=-6))
@@ -37,6 +50,14 @@ UMBRAL_LATIDO_MIN = 10           # el worker late cada ~30-60 s
 UMBRAL_V2_HORAS = 2              # el motor v2 chequea cada 15 min
 ENFRIAMIENTO_ALERTA_HORAS = 6    # no repite el mismo aviso antes de este tiempo
 HERRAMIENTAS = ("estado_del_bot", "senales_recientes", "compra_periodica", "tendencia_en_vivo")
+
+# Acciones: lista cerrada. Cualquier otra cosa que llegue a la cola se descarta.
+ACCIONES = ("rechequear_datos",)
+MODOS_ACCION = ("no", "sombra", "activo")
+RUTA_ACCIONES = "vigia_acciones"  # única ruta de Firebase donde el vigía escribe
+ENFRIAMIENTO_ACCION_HORAS = 2     # espera mínima entre dos acciones
+MAX_ACCIONES_DIA = 3              # tope de acciones en 24 h
+SOLICITUDES = deque(maxlen=5)     # peticiones del vigía; las atiende el hilo del bot (ver atender_solicitudes)
 
 # Descripción de las herramientas que ve la IA (formato compatible con Groq/OpenAI).
 ESQUEMA = [
@@ -98,14 +119,18 @@ def _limpiar_lectura(texto):
 
 
 class Vigia:
-    def __init__(self, app, modelo=None, reloj=time.time, hora_resumen=8, usar_ia=True):
+    def __init__(self, app, modelo=None, reloj=time.time, hora_resumen=8, usar_ia=True,
+                 modo_acciones="sombra"):
         self.app = app
         self.reloj = reloj
         self.hora_resumen = hora_resumen
         self._modelo = modelo
         self.usar_ia = usar_ia and (modelo is not None or bool(getattr(app, "GROQ_API_KEY", "")))
+        self.modo_acciones = modo_acciones if modo_acciones in MODOS_ACCION else "sombra"
         self._alertas = {}        # tipo de aviso -> momento del último envío
         self._enviados = []       # momentos de los mensajes enviados (tope diario)
+        self._acciones = []       # momentos de las acciones (tope diario)
+        self._ultima_accion = 0.0
         self._resumen_fecha = None
         self._memo = {}
 
@@ -184,6 +209,48 @@ class Vigia:
                          "dentro": bool(res[m]["dentro"])}
         return salida
 
+    def acciones_recientes(self, horas=24):
+        """Cuántas veces actuó (o, en modo sombra, habría actuado) el vigía. Solo lectura."""
+        datos = self._leer(RUTA_ACCIONES, orderBy='"$key"', limitToLast=50)
+        corte = self.reloj() - horas * 3600
+        regs = [v for v in datos.values() if isinstance(v, dict)] if isinstance(datos, dict) else []
+        return {"horas": horas, "modo": self.modo_acciones,
+                "total": sum(1 for r in regs if float(r.get("ts", 0) or 0) >= corte)}
+
+    # ------------------------------------------------------------ acción (lista cerrada)
+    def proponer_rechequeo(self, motivo, estado):
+        """Decide con reglas fijas si procede la única acción. No interviene la IA.
+        sombra: solo la anota. activo: la anota, la pide al bot y te avisa. Devuelve el modo o None."""
+        if self.modo_acciones == "no":
+            return None
+        ahora = self.reloj()
+        self._acciones = [t for t in self._acciones if ahora - t < 86400]
+        if len(self._acciones) >= MAX_ACCIONES_DIA:
+            return None
+        if ahora - self._ultima_accion < ENFRIAMIENTO_ACCION_HORAS * 3600:
+            return None
+        self._acciones.append(ahora)
+        self._ultima_accion = ahora
+        self._registrar_accion({"ts": ahora, "accion": "rechequear_datos", "modo": self.modo_acciones,
+                                "motivo": motivo, "latido_hace_min": estado.get("latido_hace_min"),
+                                "motor_v2": estado.get("motor_v2")})
+        if self.modo_acciones == "activo":
+            SOLICITUDES.append("rechequear_datos")
+            self._enviar(f"🔧 Vigía: pedí al bot re-chequear los datos ({motivo}). Es mantenimiento: "
+                         "no cambia cómo decide el bot.")
+        else:
+            print(f"Vigía (sombra): habría pedido re-chequear los datos ({motivo}).")
+        return self.modo_acciones
+
+    def _registrar_accion(self, registro):
+        """Única escritura del vigía en Firebase: su propia ruta, para poder revisar después si sirvió."""
+        if not getattr(self.app, "FIREBASE_CONFIGURADO", False):
+            return
+        try:
+            self.app.requests.post(self.app._url_registro(RUTA_ACCIONES), json=registro, timeout=8)
+        except Exception as e:
+            print(f"Vigía: no pude anotar la acción ({type(e).__name__}).")
+
     # ------------------------------------------------------------ envío (solo chat privado)
     def _enviar(self, texto):
         ahora = self.reloj()
@@ -217,6 +284,15 @@ class Vigia:
             if v2 and v2["chequeo_hace_min"] > UMBRAL_V2_HORAS * 60:
                 alertas.append(("v2", "⚠️ Vigía: el motor v2 no chequea desde hace "
                                       f"{_hace(v2['chequeo_hace_min'])} (normalmente cada 15 min)."))
+            # Acción: solo si el bot está vivo (con el worker caído nadie atendería la petición).
+            if v2 and latido is not None and latido <= UMBRAL_LATIDO_MIN:
+                motivo = None
+                if v2["chequeo_hace_min"] > UMBRAL_V2_HORAS * 60:
+                    motivo = f"el motor v2 no chequea desde hace {_hace(v2['chequeo_hace_min'])}"
+                elif "sin velas" in (v2.get("BTC"), v2.get("ETH")):
+                    motivo = "el motor v2 no pudo obtener velas"
+                if motivo:
+                    self.proponer_rechequeo(motivo, estado)
         enviados = []
         ahora = self.reloj()
         for tipo, texto in alertas:
@@ -230,8 +306,11 @@ class Vigia:
     # ------------------------------------------------------------ resumen diario
     def datos_del_dia(self):
         datos = {}
-        for clave, nombre, kw in (("estado", "estado_del_bot", {}), ("senales", "senales_recientes", {"horas": 24}),
-                                  ("dca", "compra_periodica", {}), ("tendencia", "tendencia_en_vivo", {})):
+        consultas = [("estado", "estado_del_bot", {}), ("senales", "senales_recientes", {"horas": 24}),
+                     ("dca", "compra_periodica", {}), ("tendencia", "tendencia_en_vivo", {})]
+        if self.modo_acciones != "no":
+            consultas.append(("acciones", "acciones_recientes", {"horas": 24}))
+        for clave, nombre, kw in consultas:
             try:
                 datos[clave] = self._tool(nombre, **kw)
             except Exception as e:
@@ -278,6 +357,16 @@ class Vigia:
             partes = " · ".join(f"{m} regla {tr[m]['regla_pct']:+.1f}% vs mantener {tr[m]['mantener_pct']:+.1f}%"
                                 for m in ("BTC", "ETH"))
             out.append(f"• Tendencia en vivo ({tr['dias']} días): {partes}")
+        a = datos.get("acciones")
+        if a is not None:
+            if "error" in a:
+                out.append("• Acciones del vigía: no pude leerlas")
+            else:
+                veces = "1 vez" if a["total"] == 1 else f"{a['total']} veces"
+                if a["modo"] == "sombra":
+                    out.append(f"• Vigía en modo sombra: habría re-chequeado los datos {veces} en {a['horas']} h")
+                else:
+                    out.append(f"• Vigía: re-chequeó los datos {veces} en {a['horas']} h")
         return "\n".join(out)
 
     def resumen_diario(self):
@@ -350,6 +439,35 @@ class Vigia:
               f" · resumen diario: {resumen}")
 
 
+def _rechequear_datos(app):
+    """Acción 'rechequear_datos': el motor v2 vuelve a evaluar en el siguiente ciclo. Solo toca
+    relojes de caché del propio v2; no cambia parámetros ni lógica de decisión."""
+    sesion = app.st.session_state
+    for estado in (sesion.get("v2_estado") or {}).values():
+        if isinstance(estado, dict):
+            estado["chequeo"] = 0.0                    # ya no espera los 15 min
+    for clave in ("v2_velas", "v2_velas_binance"):
+        for cache in (sesion.get(clave) or {}).values():
+            if isinstance(cache, dict):
+                cache.pop("no_antes", None)            # olvida la espera tras un fallo de datos
+    print("Vigía: re-chequeo pedido; el motor v2 vuelve a evaluar en este ciclo.")
+
+
+def atender_solicitudes(app):
+    """La llama el worker al inicio de cada ciclo, en el hilo del propio bot (así no hay dos hilos
+    tocando su estado). Solo ejecuta acciones de la lista cerrada; el resto se descarta."""
+    hechas = []
+    while SOLICITUDES:
+        try:
+            accion = SOLICITUDES.popleft()
+        except IndexError:
+            break
+        if accion == "rechequear_datos" and accion in ACCIONES:
+            _rechequear_datos(app)
+            hechas.append(accion)
+    return hechas
+
+
 def _entero(app, nombre, defecto, minimo, maximo):
     try:
         valor = int(float(app._secreto(nombre, defecto)))
@@ -368,8 +486,12 @@ def iniciar(app, retraso_inicial=60):
     if faltan:
         print("Vigía: apagado, falta configurar " + " y ".join(faltan) + ".")
         return None
+    modo = str(app._secreto("VIGIA_ACCIONES", "sombra")).strip().lower()
+    if modo not in MODOS_ACCION:
+        print(f"Vigía: VIGIA_ACCIONES='{modo}' no es válido (no / sombra / activo); se usa sombra.")
+        modo = "sombra"
     vigia = Vigia(app, hora_resumen=_entero(app, "VIGIA_HORA_RESUMEN", 8, 0, 23),
-                  usar_ia=app._a_booleano(app._secreto("VIGIA_USAR_IA", True), True))
+                  usar_ia=app._a_booleano(app._secreto("VIGIA_USAR_IA", True), True), modo_acciones=modo)
     cada = _entero(app, "VIGIA_MINUTOS", 30, 5, 240) * 60
 
     def bucle():
@@ -383,6 +505,6 @@ def iniciar(app, retraso_inicial=60):
 
     hilo = threading.Thread(target=bucle, name="vigia", daemon=True)
     hilo.start()
-    print(f"👁️ Vigía en marcha (solo lectura y avisos; IA: {'sí' if vigia.usar_ia else 'no'}); "
-          f"primera revisión en {retraso_inicial} s")
+    print(f"👁️ Vigía en marcha (avisos y una acción de mantenimiento; acciones: {modo}; "
+          f"IA: {'sí' if vigia.usar_ia else 'no'}); primera revisión en {retraso_inicial} s")
     return hilo
