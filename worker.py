@@ -156,7 +156,8 @@ def latido(modulo):
 
 
 def bucle(modulo, st, maximo_ciclos=None):
-    try:   # el vigía puede pedir acciones de su lista cerrada; las ejecuta este hilo, el del bot
+    """Ejecuta ciclos y reintenta el estado pendiente cada seis iteraciones."""
+    try:  # el vigía puede pedir acciones de su lista cerrada; las ejecuta este hilo, el del bot
         import vigia as _vigia
     except Exception:
         _vigia = None
@@ -169,8 +170,13 @@ def bucle(modulo, st, maximo_ciclos=None):
             except Exception:
                 traceback.print_exc()
         try:
-            if n % 6 == 0 and not st.session_state.get("auto_guardado_fallido"):
-                st.session_state.pop("auto_estado", None)   # releer pausa/reanudar desde Firebase
+            if n % 6 == 0:
+                if st.session_state.get("auto_guardado_fallido"):
+                    modulo._auto_recuperar()
+                else:
+                    st.session_state.pop(
+                        "auto_estado", None
+                    )  # releer pausa/reanudar desde Firebase
             modulo._panel()
             ULTIMO["ciclos"] += 1
         except Exception:

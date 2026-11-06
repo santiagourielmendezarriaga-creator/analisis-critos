@@ -13,6 +13,7 @@ import re
 import hmac
 import hashlib
 import statistics
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from collections import deque
 from google import genai
@@ -499,6 +500,7 @@ def iniciar_estado_nuevo():
 
 
 def restaurar_desde_archivo(iniciar_si_falla=True):
+    """Restaura el estado; durante un relevo no inicia datos vacíos si falla."""
     datos = cargar_datos()
     if datos is None:
         if iniciar_si_falla:
@@ -1428,44 +1430,121 @@ def _auto_ruta():
     return f"{URL_FIREBASE}/automatico.json"
 
 
-def _auto_estado():
-    """Estado propio de la operación automática (pausa, pérdidas seguidas, costo de entrada).
-    Devuelve None si no se pudo leer: en ese caso NO se opera (nunca se asume un estado vacío)."""
-    est = st.session_state.get("auto_estado")
-    if isinstance(est, dict):
-        return est
+def _auto_leer():
+    """Lee el estado y su ETag; None significa que no se pudo verificar Firebase."""
     try:
-        r = requests.get(_auto_ruta(), timeout=10)
+        r = requests.get(_auto_ruta(), headers={"X-Firebase-ETag": "true"}, timeout=10)
         if r.status_code != 200:
             return None
         datos = r.json()
+        if datos is not None and not isinstance(datos, dict):
+            return None
+        est = {
+            "pausado": False,
+            "motivo": "",
+            "perdidas_seguidas": 0,
+            "costo": {"BTC": 0.0, "ETH": 0.0},
+        }
+        if isinstance(datos, dict):
+            est.update(datos)
+            est["pausado"] = _a_booleano(datos.get("pausado", False), False)
+            est["motivo"] = str(datos.get("motivo", "") or "")
+            est["perdidas_seguidas"] = _a_entero(datos.get("perdidas_seguidas", 0), 0)
+            costo = datos.get("costo")
+            if not isinstance(costo, dict):
+                costo = {}
+            est["costo"] = {
+                s: _a_decimal(costo.get(s, 0.0), 0.0) for s in ("BTC", "ETH")
+            }
+        return est, r.headers.get("ETag")
     except Exception:
         return None
-    est = {"pausado": False, "motivo": "", "perdidas_seguidas": 0,
-           "costo": {"BTC": 0.0, "ETH": 0.0}}
-    if isinstance(datos, dict):
-        est["pausado"] = _a_booleano(datos.get("pausado", False), False)
-        est["motivo"] = str(datos.get("motivo", "") or "")
-        est["perdidas_seguidas"] = _a_entero(datos.get("perdidas_seguidas", 0), 0)
-        costo = datos.get("costo")
-        if isinstance(costo, dict):
-            for s in ("BTC", "ETH"):
-                est["costo"][s] = _a_decimal(costo.get(s, 0.0), 0.0)
+
+
+def _auto_estado():
+    """Carga y recuerda la base confirmada para conciliar cambios posteriores."""
+    est = st.session_state.get("auto_estado")
+    if isinstance(est, dict):
+        return est
+    lectura = _auto_leer()
+    if lectura is None:
+        return None
+    est, _ = lectura
     st.session_state["auto_estado"] = est
+    st.session_state["auto_base"] = deepcopy(est)
     return est
 
 
+def _auto_conciliar(base, local, remoto):
+    """Combina cambios independientes; conserva en memoria los conflictos sin escribirlos."""
+    if local == base or local == remoto:
+        return deepcopy(remoto), False
+    if remoto == base:
+        return deepcopy(local), False
+    if all(isinstance(valor, dict) for valor in (base, local, remoto)):
+        combinado = {}
+        conflicto = False
+        for clave in base.keys() | local.keys() | remoto.keys():
+            combinado[clave], pendiente = _auto_conciliar(
+                base.get(clave), local.get(clave), remoto.get(clave)
+            )
+            conflicto = conflicto or pendiente
+        return combinado, conflicto
+    return deepcopy(local), True
+
+
 def _auto_guardar(est):
+    """Concilia con la base leída y escribe solo si el ETag sigue vigente.
+
+    Un error o un conflicto bloquea compras, conserva el estado pendiente y
+    permite que las salidas del worker continúen. Nunca sobrescribe a ciegas.
+    """
+    st.session_state["auto_guardado_fallido"] = True
+    lectura = _auto_leer()
+    if lectura is None or not lectura[1]:
+        return False
+    remoto, etag = lectura
+    base = st.session_state.get("auto_base")
+    if not isinstance(base, dict):
+        return False  # sin base no se puede atribuir un cambio a esta instancia
+    combinado, conflicto = _auto_conciliar(base, est, remoto)
+    # La pausa y su motivo son un solo control, no dos cambios independientes.
+    control_base = (base.get("pausado"), base.get("motivo"))
+    control_local = (est.get("pausado"), est.get("motivo"))
+    control_remoto = (remoto.get("pausado"), remoto.get("motivo"))
+    if (
+        control_local != control_base
+        and control_remoto != control_base
+        and control_local != control_remoto
+    ):
+        conflicto = True
+    if conflicto:
+        if remoto.get("pausado"):
+            est["pausado"] = True
+        return False
+    est.clear()
+    est.update(combinado)
+    st.session_state["auto_base"] = deepcopy(remoto)
     try:
-        respuesta = requests.put(_auto_ruta(), json=est, timeout=10)
+        respuesta = requests.put(
+            _auto_ruta(), json=combinado, headers={"if-match": etag}, timeout=10
+        )
         if respuesta.status_code == 200:
+            st.session_state["auto_base"] = deepcopy(combinado)
             st.session_state["auto_guardado_fallido"] = False
             return True
         print(f"Error guardando estado automático: HTTP {respuesta.status_code}")
     except Exception as e:
         print(f"Error guardando estado automático: {type(e).__name__}")
-    st.session_state["auto_guardado_fallido"] = True
     return False
+
+
+def _auto_recuperar():
+    """Reintenta conciliar pendientes aun sin posiciones; solo un guardado confirmado desbloquea."""
+    est = st.session_state.get("auto_estado")
+    if not isinstance(est, dict):
+        return False
+    return _auto_guardar(est)
 
 
 def _auto_aviso(texto, nivel="warning"):
@@ -1474,6 +1553,7 @@ def _auto_aviso(texto, nivel="warning"):
 
 
 def _auto_pausar(est, motivo):
+    """Pausa localmente e informa si Firebase confirmó el cambio."""
     est["pausado"] = True
     est["motivo"] = motivo
     if _auto_guardar(est):
@@ -1543,6 +1623,7 @@ def _auto_puede_operar():
 
 
 def auto_comprar(simbolo, precio, probabilidad, gemini_valido, segunda, senal="BUY"):
+    """Compra solo con estado confirmado, sin pausa y dentro de los límites configurados."""
     ok, motivo = _auto_puede_operar()
     if not ok:
         if motivo:
@@ -1714,6 +1795,7 @@ def auto_revisar_salidas(precios):
 
 
 def _render_auto(interfaz, precios):
+    """Muestra posiciones y distingue el estado confirmado del pendiente."""
     if not OPERAR_AUTOMATICO:
         return
     est = st.session_state.get("auto_estado") or {}
@@ -1740,6 +1822,7 @@ def _render_auto(interfaz, precios):
 
 
 def _auto_sidebar():
+    """Permite pausar o reanudar e informa los fallos de confirmación."""
     if not OPERAR_AUTOMATICO:
         return
     st.sidebar.header("🤖 Operación automática")
@@ -3793,6 +3876,7 @@ def _render_saldo_solo_lectura(interfaz):
 
 
 def _panel():
+    """Ejecuta ciclos solo cuando puede comprobar y asumir el control del worker."""
     interfaz = {
         "tabla": st.container(),
         "horario": st.empty(),
@@ -3813,13 +3897,15 @@ def _panel():
     if estado_worker is None:
         interfaz["estado"].error(
             "⚠️ No se puede comprobar el worker en Firebase. "
-            "Este panel no ejecutará ciclos hasta recuperar la conexión.")
+            "Este panel no ejecutará ciclos hasta recuperar la conexión."
+        )
         return
     if estado_worker:
         st.session_state["_cedido"] = True
         interfaz["estado"].info(
             "🛰️ El bot está corriendo en el servidor (worker). Este panel no ejecuta ciclos "
-            "para no duplicar señales ni órdenes; muestra solo los resultados guardados.")
+            "para no duplicar señales ni órdenes; muestra solo los resultados guardados."
+        )
         try:
             _render_saldo_solo_lectura(interfaz)
         except Exception as e:
@@ -3830,20 +3916,31 @@ def _panel():
             print(f"Error mostrando resultados: {type(e).__name__}")
         return
     if st.session_state.get("_cedido"):
+        if st.session_state.get("auto_guardado_fallido") and not _auto_recuperar():
+            interfaz["estado"].error(
+                "⚠️ Hay cambios automáticos pendientes de conciliar. "
+                "No se puede asumir el control del worker todavía."
+            )
+            return
         # El worker dejó de latir: se relee el estado para no pisar lo que él guardó
         if not restaurar_desde_archivo(iniciar_si_falla=False):
-            interfaz["estado"].error("⚠️ No se pudo recuperar el estado del bot. "
-                                    "Este panel no ejecutará ciclos hasta poder leerlo.")
+            interfaz["estado"].error(
+                "⚠️ No se pudo recuperar el estado del bot. "
+                "Este panel no ejecutará ciclos hasta poder leerlo."
+            )
             return
         st.session_state["_cedido"] = False
         if not st.session_state.get("auto_guardado_fallido"):
             st.session_state.pop("auto_estado", None)
+    if not ES_WORKER and st.session_state.get("auto_guardado_fallido"):
+        _auto_recuperar()
     try:
         ejecutar_ciclo(interfaz)
     except Exception as e:
         print(f"Error en el ciclo: {e}")
         interfaz["estado"].error(f"❌ Error en el ciclo: {e}")
         # ══════════════════ PARTE 11/11: refresco y arranque ══════════════════
+
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**⏱️ Intervalo de actualización**")
