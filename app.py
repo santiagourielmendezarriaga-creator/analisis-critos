@@ -1467,8 +1467,14 @@ def _auto_estado():
     if isinstance(est, dict):
         return est
     lectura = _auto_leer()
-    if lectura is None:
-        return None
+    if lectura is None or not lectura[1]:
+        st.session_state["auto_guardado_fallido"] = True
+        respaldo = st.session_state.get("auto_base")
+        if not isinstance(respaldo, dict):
+            return None
+        est = deepcopy(respaldo)
+        st.session_state["auto_estado"] = est
+        return est
     est, _ = lectura
     st.session_state["auto_estado"] = est
     st.session_state["auto_base"] = deepcopy(est)
@@ -1542,6 +1548,8 @@ def _auto_guardar(est):
 def _auto_recuperar():
     """Reintenta conciliar pendientes aun sin posiciones; solo un guardado confirmado desbloquea."""
     est = st.session_state.get("auto_estado")
+    if not isinstance(est, dict):
+        est = _auto_estado()
     if not isinstance(est, dict):
         return False
     return _auto_guardar(est)
@@ -1630,55 +1638,88 @@ def auto_comprar(simbolo, precio, probabilidad, gemini_valido, segunda, senal="B
             avisar(motivo, "warning")
         return
     if st.session_state.get("auto_guardado_fallido"):
-        avisar("No se confirmó el guardado del estado automático; no se compra.", "warning")
+        avisar(
+            "No se confirmó el guardado del estado automático; no se compra.", "warning"
+        )
         return
     est = _auto_estado()
     if est is None:
-        avisar("No se pudo leer el estado de la operación automática; no se compra.", "warning")
+        avisar(
+            "No se pudo leer el estado de la operación automática; no se compra.",
+            "warning",
+        )
+        return
+    if st.session_state.get("auto_guardado_fallido"):
+        avisar(
+            "No se confirmó el estado automático en Firebase; no se compra.", "warning"
+        )
         return
     if est.get("pausado"):
-        avisar(f"Operación automática en pausa ({est.get('motivo') or 'manual'}): no se compra {simbolo}.", "info")
+        avisar(
+            f"Operación automática en pausa ({est.get('motivo') or 'manual'}): no se compra {simbolo}.",
+            "info",
+        )
         return
-    if float(st.session_state.posiciones.get(simbolo, 0.0)) > 0 \
-            or st.session_state.get(f"orden_pendiente_{simbolo}"):
+    if float(st.session_state.posiciones.get(simbolo, 0.0)) > 0 or st.session_state.get(
+        f"orden_pendiente_{simbolo}"
+    ):
         return  # ya hay posición u orden: una a la vez por moneda
     monto = MONTO_AUTOMATICO
     if float(st.session_state.get("monto_del_dia", 0.0)) + monto > MONTO_MAXIMO_DIARIO:
-        avisar(f"Tope diario alcanzado (${MONTO_MAXIMO_DIARIO:,.0f}): no se compra {simbolo}.", "info")
+        avisar(
+            f"Tope diario alcanzado (${MONTO_MAXIMO_DIARIO:,.0f}): no se compra {simbolo}.",
+            "info",
+        )
         return
     saldo = obtener_saldo_bitso(usar_cache=False)
     if saldo is None:
         avisar("No pude leer el saldo de Bitso; no se compra.", "warning")
         return
     if float(saldo.get("mxn", {}).get("available", 0.0)) < monto:
-        avisar(f"Saldo MXN insuficiente para ${monto:,.0f}: no se compra {simbolo}.", "warning")
+        avisar(
+            f"Saldo MXN insuficiente para ${monto:,.0f}: no se compra {simbolo}.",
+            "warning",
+        )
         return
     # El costo máximo queda por debajo del monto (la comisión de Bitso se cobra en la moneda)
     cantidad = _auto_redondear(monto * (1 - COMISION - 0.002) / precio)
     if cantidad <= 0:
         return
-    orden = colocar_orden_bitso(AUTO_LIBROS[simbolo], "buy", f"{cantidad:.8f}", precio, tipo="market")
+    orden = colocar_orden_bitso(
+        AUTO_LIBROS[simbolo], "buy", f"{cantidad:.8f}", precio, tipo="market"
+    )
     if not orden or orden.get("error") or not orden.get("oid"):
-        _auto_aviso(f"❌ Compra automática de {simbolo} falló: "
-                    f"{(orden or {}).get('error', 'sin respuesta')}")
+        _auto_aviso(
+            f"❌ Compra automática de {simbolo} falló: "
+            f"{(orden or {}).get('error', 'sin respuesta')}"
+        )
         return
     oid = orden["oid"]
     fill = _auto_fills(oid, simbolo)
     if fill is None:
-        _auto_pausar(est, f"No pude confirmar la compra {oid} de {simbolo}. Revisa Bitso.")
+        _auto_pausar(
+            est, f"No pude confirmar la compra {oid} de {simbolo}. Revisa Bitso."
+        )
         return
     qty = fill["mayor"] - fill["com_mayor"]
     costo = fill["menor"] + fill["com_mxn"]
-    st.session_state.posiciones[simbolo] = float(st.session_state.posiciones.get(simbolo, 0.0)) + qty
+    st.session_state.posiciones[simbolo] = (
+        float(st.session_state.posiciones.get(simbolo, 0.0)) + qty
+    )
     st.session_state.precio_entrada[simbolo] = fill["precio"]
     st.session_state.precio_maximo[simbolo] = fill["precio"]
     st.session_state.ops_del_dia += 1
-    st.session_state.monto_del_dia = float(st.session_state.get("monto_del_dia", 0.0)) + costo
+    st.session_state.monto_del_dia = (
+        float(st.session_state.get("monto_del_dia", 0.0)) + costo
+    )
     est["costo"][simbolo] = costo
     _auto_guardar(est)
-    st.session_state.operaciones.append((
-        datetime.now(),
-        f"COMPRA {simbolo} AUTO ${costo:,.2f} @ ${fill['precio']:,.2f} | cant {qty:.8f}"))
+    st.session_state.operaciones.append(
+        (
+            datetime.now(),
+            f"COMPRA {simbolo} AUTO ${costo:,.2f} @ ${fill['precio']:,.2f} | cant {qty:.8f}",
+        )
+    )
     guardado, detalle = guardar_datos()
     coincide = coincidencia_ias(senal, gemini_valido, segunda)
     _auto_aviso(
@@ -1687,7 +1728,8 @@ def auto_comprar(simbolo, precio, probabilidad, gemini_valido, segunda, senal="B
         f"🎯 Fuerza de la señal: {probabilidad:.1f}% | 🤝 IAs coinciden: {coincide}\n"
         f"🛡️ Salida: +{AUTO_TP_PCT}% / -{AUTO_SL_PCT}% (o señal contraria)"
         + ("" if guardado else f"\n⚠️ No se pudo guardar el estado: {detalle}"),
-        "success")
+        "success",
+    )
 
 
 def _auto_vender(simbolo, precio, motivo):
@@ -1831,20 +1873,38 @@ def _auto_sidebar():
         st.sidebar.error("No pude leer el estado en Firebase: no opera.")
         return
     if st.session_state.get("auto_guardado_fallido"):
-        st.sidebar.error("Estado sin confirmar en Firebase. Revisa el servidor antes de operar.")
+        st.sidebar.error(
+            "Estado sin confirmar en Firebase. Revisa el servidor antes de operar."
+        )
     if est.get("pausado"):
-        st.sidebar.warning(f"⏸️ Pausa {'sin confirmar' if st.session_state.get('auto_guardado_fallido') else 'activa'}: "
-                           f"{est.get('motivo') or 'manual'}")
+        st.sidebar.warning(
+            f"⏸️ Pausa {'sin confirmar' if st.session_state.get('auto_guardado_fallido') else 'activa'}: "
+            f"{est.get('motivo') or 'manual'}"
+        )
         if st.sidebar.button("▶️ Reanudar operación automática"):
-            anterior = dict(est)
+            anterior = {
+                k: est.get(k) for k in ("pausado", "motivo", "perdidas_seguidas")
+            }
+            cambios = {
+                k
+                for k, valor in (
+                    ("pausado", False),
+                    ("motivo", ""),
+                    ("perdidas_seguidas", 0),
+                )
+                if anterior[k] != valor
+            }
             est["pausado"] = False
             est["motivo"] = ""
             est["perdidas_seguidas"] = 0
             if _auto_guardar(est):
                 st.rerun()
             else:
-                est.update(anterior)
-                st.sidebar.error("No se pudo confirmar la reanudación en Firebase. Revisa el servidor.")
+                for clave in cambios:
+                    est[clave] = anterior[clave]
+                st.sidebar.error(
+                    "No se pudo confirmar la reanudación en Firebase. Revisa el servidor."
+                )
     else:
         if not st.session_state.get("auto_guardado_fallido"):
             st.sidebar.success("▶️ Activa")
@@ -1854,8 +1914,10 @@ def _auto_sidebar():
             if _auto_guardar(est):
                 st.rerun()
             else:
-                st.sidebar.error("No se pudo confirmar la pausa en Firebase. "
-                                 "El servidor podría seguir operando; revísalo.")
+                st.sidebar.error(
+                    "No se pudo confirmar la pausa en Firebase. "
+                    "El servidor podría seguir operando; revísalo."
+                )
     st.sidebar.caption("Las ventas por TP/SL siguen activas aunque esté en pausa.")
 
 

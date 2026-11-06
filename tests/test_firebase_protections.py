@@ -34,6 +34,10 @@ class Estado(dict):
         """Obtiene un valor del estado por su nombre."""
         return self[nombre]
 
+    def __setattr__(self, nombre, valor):
+        """Actualiza el estado mediante el acceso por atributo."""
+        self[nombre] = valor
+
 
 class FirebaseTests(unittest.TestCase):
     def setUp(self):
@@ -62,6 +66,7 @@ class FirebaseTests(unittest.TestCase):
                 "_auto_pausar",
                 "_auto_sidebar",
                 "auto_comprar",
+                "_auto_vender",
                 "_worker_activo",
                 "_panel",
                 "restaurar_desde_archivo",
@@ -427,6 +432,85 @@ class FirebaseTests(unittest.TestCase):
         self.assertTrue(local["pausado"])
         self.assertTrue(self.ss["auto_guardado_fallido"])
         self.requests.put.assert_not_called()
+
+    def test_reanudacion_fallida_conserva_costo_remoto_en_reintento(self):
+        """Revertir la pausa no debe convertir el costo remoto en una edición local."""
+        base = dict(
+            deepcopy(self.base), pausado=True, motivo="manual", perdidas_seguidas=2
+        )
+        local = deepcopy(base)
+        remoto = deepcopy(base)
+        remoto["costo"]["BTC"] = 30.0
+        self.ss.update(auto_base=base, auto_estado=local)
+        self.remoto(remoto)
+        self.requests.put.return_value = SimpleNamespace(status_code=500)
+        self.st.sidebar.button.return_value = True
+        self.ctx["_auto_sidebar"]()
+        self.assertEqual(local["costo"]["BTC"], 30.0)
+        self.assertTrue(local["pausado"])
+        self.assertEqual(local["perdidas_seguidas"], 2)
+        self.requests.put.return_value = SimpleNamespace(status_code=200)
+        self.assertTrue(self.ctx["_auto_recuperar"]())
+        self.assertEqual(
+            self.requests.put.call_args.kwargs["json"]["costo"]["BTC"], 30.0
+        )
+
+    def test_fallo_lectura_restringe_compra_y_permite_venta_protectora(self):
+        """Tras limpiar caché, el respaldo permite vender pero no comprar durante una caída."""
+        self.ss.update(
+            posiciones={"BTC": 1.0},
+            precio_entrada={"BTC": 10.0},
+            precio_maximo={"BTC": 10.0},
+            ops_del_dia=0,
+            operaciones=[],
+        )
+        self.requests.get.side_effect = TimeoutError()
+        saldo = Mock(return_value={"btc": {"total": 1.0, "available": 1.0}})
+        self.ctx.update(
+            obtener_saldo_bitso=saldo,
+            _auto_redondear=lambda x: x,
+            AUTO_LIBROS={"BTC": "btc_mxn"},
+            colocar_orden_bitso=Mock(return_value={"oid": "test"}),
+            _auto_fills=lambda *args: {"menor": 11.0, "com_mxn": 0.0, "precio": 11.0},
+            guardar_datos=lambda: (True, ""),
+            AUTO_MAX_PERDIDAS_SEGUIDAS=2,
+            datetime=SimpleNamespace(now=lambda: "ahora"),
+        )
+        self.ctx["auto_comprar"]("BTC", 10, 80, True, None)
+        saldo.assert_not_called()
+        self.assertTrue(self.ss["auto_guardado_fallido"])
+        self.assertTrue(self.ctx["_auto_vender"]("BTC", 11, "TP"))
+        self.ctx["colocar_orden_bitso"].assert_called_once_with(
+            "btc_mxn", "sell", "1.00000000", 11, tipo="market"
+        )
+        self.assertEqual(self.ss["auto_estado"]["costo"]["BTC"], 0.0)
+        self.assertTrue(self.ss["auto_guardado_fallido"])
+        self.remoto(dict(deepcopy(self.base), pausado=True, motivo="panel"))
+        self.requests.put.return_value = SimpleNamespace(status_code=200)
+        self.assertTrue(self.ctx["_auto_recuperar"]())
+        self.assertTrue(self.ss["auto_estado"]["pausado"])
+        self.assertEqual(self.ss["auto_estado"]["costo"]["BTC"], 0.0)
+
+    def test_fallo_lectura_sin_respaldo_bloquea_compra_y_venta(self):
+        """Sin ningún estado confirmado no se supone el costo ni se inicia una operación."""
+        self.ss.pop("auto_base")
+        self.requests.get.side_effect = TimeoutError()
+        self.ctx["obtener_saldo_bitso"] = Mock()
+        self.ctx["auto_comprar"]("BTC", 10, 80, True, None)
+        self.assertFalse(self.ctx["_auto_vender"]("BTC", 11, "TP"))
+        self.ctx["obtener_saldo_bitso"].assert_not_called()
+        self.assertTrue(self.ss["auto_guardado_fallido"])
+
+    def test_recupera_si_primera_lectura_fallo_sin_respaldo(self):
+        """Tras restablecer Firebase, puede recuperarse una primera lectura fallida."""
+        self.ss.pop("auto_base")
+        self.requests.get.side_effect = TimeoutError()
+        self.assertIsNone(self.ctx["_auto_estado"]())
+        self.assertTrue(self.ss["auto_guardado_fallido"])
+        self.remoto(self.base)
+        self.requests.put.return_value = SimpleNamespace(status_code=200)
+        self.assertTrue(self.ctx["_auto_recuperar"]())
+        self.assertFalse(self.ss["auto_guardado_fallido"])
 
 
 if __name__ == "__main__":
