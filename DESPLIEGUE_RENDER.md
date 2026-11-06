@@ -14,7 +14,7 @@ el panel NO ejecuta ciclos, así no se duplican señales ni órdenes.
 4. En UptimeRobot crea un monitor HTTP(s) a esa dirección, cada 5 minutos.
 5. Comprueba en Telegram/Firebase que el bot avanza (el nodo `worker` se actualiza cada ~30 s).
 
-## Vigía (opcional): un agente que solo lee y avisa
+## Vigía (opcional): un agente que lee, avisa y puede re-chequear datos
 Apagado por defecto. Para encenderlo, en Render → Environment pon `VIGIA=true` (necesita
 Firebase y Telegram ya configurados). Con eso, dentro del mismo worker:
 - Cada 30 min revisa con reglas fijas que el bot lata y que el motor v2 siga chequeando; si no,
@@ -22,9 +22,18 @@ Firebase y Telegram ya configurados). Con eso, dentro del mismo worker:
 - Una vez al día (después de las 8:00 de CDMX) te manda un resumen con cifras exactas: señales de
   24 h, compra periódica simulada y tendencia en vivo. Si hay `GROQ_API_KEY`, la IA agrega una
   "lectura" de 2-3 frases; las cifras las calcula el código, no la IA.
-- **No puede operar**: no escribe en Firebase, no usa las llaves de Bitso, no tiene herramientas de
-  compra/venta, solo escribe a tu chat privado (`TELEGRAM_CHAT_ID`, nunca al canal) y tiene tope
-  de 10 mensajes al día.
+- **No puede operar**: no usa las llaves de Bitso, no tiene herramientas de compra/venta, no cambia
+  TP, SL, umbral ni ningún parámetro, solo escribe a tu chat privado (`TELEGRAM_CHAT_ID`, nunca al
+  canal) y tiene tope de 10 mensajes al día. En Firebase solo escribe en su propia ruta
+  `vigia_acciones` (un registro de lo que hizo o habría hecho); el bot no la lee.
+- **Una sola acción, de mantenimiento: re-chequear datos.** Si el bot está vivo pero el motor v2
+  lleva más de 2 h sin chequear, o no pudo obtener velas, el vigía pide que el v2 vuelva a evaluar
+  en el siguiente ciclo (no espera los 15 min y olvida la pausa tras un fallo de datos). No cambia
+  cómo decide el bot. Decide un código con reglas fijas, no la IA; espera mínima de 2 h entre
+  acciones y máximo 3 al día. La ejecuta el hilo del propio bot.
+- `VIGIA_ACCIONES`: `sombra` (por defecto) solo anota "habría re-chequeado" en `vigia_acciones` y en
+  el resumen diario, sin actuar; `activo` además lo pide y te avisa por Telegram; `no` lo desactiva.
+  Recomendado: dejar `sombra` unas 2 semanas, revisar cuántas veces habría actuado y pasar a `activo`.
 - Opcionales: `VIGIA_HORA_RESUMEN` (0-23, por defecto 8), `VIGIA_MINUTOS` (5-240, por defecto 30)
   y `VIGIA_USAR_IA=false` para el resumen solo con cifras.
 - Si Render reinicia el servicio, el vigía puede repetir el resumen de ese día una vez.

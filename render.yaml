@@ -24,6 +24,8 @@ services:
         value: "100"
       - key: VIGIA
         sync: false
+      - key: VIGIA_ACCIONES
+        sync: false
       - key: FIREBASE_URL
         sync: false
       - key: FIREBASE_RUTA
