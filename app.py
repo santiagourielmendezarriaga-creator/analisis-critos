@@ -633,8 +633,8 @@ def enviar_telegram(mensaje):
         cuerpo = {"chat_id": CHAT_ID_TELEGRAM, "text": mensaje}
         respuesta = requests.post(url, json={**cuerpo, "parse_mode": "Markdown"}, timeout=5)
         if respuesta.status_code != 200:
-            requests.post(url, json=cuerpo, timeout=5)
-        return True
+            respuesta = requests.post(url, json=cuerpo, timeout=5)
+        return respuesta.status_code == 200
     except Exception:
         return False
 
@@ -654,8 +654,8 @@ def enviar_canal_telegram(mensaje):
         respuesta = requests.post(url, json=cuerpo, timeout=5)
         if respuesta.status_code != 200:
             cuerpo.pop("parse_mode", None)
-            requests.post(url, json=cuerpo, timeout=5)
-        return True
+            respuesta = requests.post(url, json=cuerpo, timeout=5)
+        return respuesta.status_code == 200
     except Exception:
         return False
 
