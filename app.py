@@ -13,6 +13,7 @@ import re
 import hmac
 import hashlib
 import statistics
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from collections import deque
 from google import genai
@@ -498,11 +499,13 @@ def iniciar_estado_nuevo():
     st.session_state.ultimo_respaldo_operaciones = 0
 
 
-def restaurar_desde_archivo():
+def restaurar_desde_archivo(iniciar_si_falla=True):
+    """Restaura el estado; durante un relevo no inicia datos vacíos si falla."""
     datos = cargar_datos()
     if datos is None:
-        iniciar_estado_nuevo()
-        return
+        if iniciar_si_falla:
+            iniciar_estado_nuevo()
+        return False
     try:
         operaciones = []
         for marca, msg in _leer(datos, "operaciones", "trades", []):
@@ -558,9 +561,12 @@ def restaurar_desde_archivo():
         st.session_state.ultimo_respaldo_operaciones = _a_entero(
             _leer(datos, "ultimo_respaldo_operaciones", "ultimo_backup_trades", 0), 0)
         print(f"✅ Datos restaurados. Ciclo: {st.session_state.ciclo}")
+        return True
     except Exception as e:
         print(f"Error al restaurar: {e}")
-        iniciar_estado_nuevo()
+        if iniciar_si_falla:
+            iniciar_estado_nuevo()
+        return False
 
 
 def crear_respaldo():
@@ -1424,38 +1430,129 @@ def _auto_ruta():
     return f"{URL_FIREBASE}/automatico.json"
 
 
-def _auto_estado():
-    """Estado propio de la operación automática (pausa, pérdidas seguidas, costo de entrada).
-    Devuelve None si no se pudo leer: en ese caso NO se opera (nunca se asume un estado vacío)."""
-    est = st.session_state.get("auto_estado")
-    if isinstance(est, dict):
-        return est
+def _auto_leer():
+    """Lee el estado y su ETag; None significa que no se pudo verificar Firebase."""
     try:
-        r = requests.get(_auto_ruta(), timeout=10)
+        r = requests.get(_auto_ruta(), headers={"X-Firebase-ETag": "true"}, timeout=10)
         if r.status_code != 200:
             return None
         datos = r.json()
+        if datos is not None and not isinstance(datos, dict):
+            return None
+        est = {
+            "pausado": False,
+            "motivo": "",
+            "perdidas_seguidas": 0,
+            "costo": {"BTC": 0.0, "ETH": 0.0},
+        }
+        if isinstance(datos, dict):
+            est.update(datos)
+            est["pausado"] = _a_booleano(datos.get("pausado", False), False)
+            est["motivo"] = str(datos.get("motivo", "") or "")
+            est["perdidas_seguidas"] = _a_entero(datos.get("perdidas_seguidas", 0), 0)
+            costo = datos.get("costo")
+            if not isinstance(costo, dict):
+                costo = {}
+            est["costo"] = {
+                s: _a_decimal(costo.get(s, 0.0), 0.0) for s in ("BTC", "ETH")
+            }
+        return est, r.headers.get("ETag")
     except Exception:
         return None
-    est = {"pausado": False, "motivo": "", "perdidas_seguidas": 0,
-           "costo": {"BTC": 0.0, "ETH": 0.0}}
-    if isinstance(datos, dict):
-        est["pausado"] = _a_booleano(datos.get("pausado", False), False)
-        est["motivo"] = str(datos.get("motivo", "") or "")
-        est["perdidas_seguidas"] = _a_entero(datos.get("perdidas_seguidas", 0), 0)
-        costo = datos.get("costo")
-        if isinstance(costo, dict):
-            for s in ("BTC", "ETH"):
-                est["costo"][s] = _a_decimal(costo.get(s, 0.0), 0.0)
+
+
+def _auto_estado():
+    """Carga y recuerda la base confirmada para conciliar cambios posteriores."""
+    est = st.session_state.get("auto_estado")
+    if isinstance(est, dict):
+        return est
+    lectura = _auto_leer()
+    if lectura is None or not lectura[1]:
+        st.session_state["auto_guardado_fallido"] = True
+        respaldo = st.session_state.get("auto_base")
+        if not isinstance(respaldo, dict):
+            return None
+        est = deepcopy(respaldo)
+        st.session_state["auto_estado"] = est
+        return est
+    est, _ = lectura
     st.session_state["auto_estado"] = est
+    st.session_state["auto_base"] = deepcopy(est)
     return est
 
 
+def _auto_conciliar(base, local, remoto):
+    """Combina cambios independientes; conserva en memoria los conflictos sin escribirlos."""
+    if local == base or local == remoto:
+        return deepcopy(remoto), False
+    if remoto == base:
+        return deepcopy(local), False
+    if all(isinstance(valor, dict) for valor in (base, local, remoto)):
+        combinado = {}
+        conflicto = False
+        for clave in base.keys() | local.keys() | remoto.keys():
+            combinado[clave], pendiente = _auto_conciliar(
+                base.get(clave), local.get(clave), remoto.get(clave)
+            )
+            conflicto = conflicto or pendiente
+        return combinado, conflicto
+    return deepcopy(local), True
+
+
 def _auto_guardar(est):
+    """Concilia con la base leída y escribe solo si el ETag sigue vigente.
+
+    Un error o un conflicto bloquea compras, conserva el estado pendiente y
+    permite que las salidas del worker continúen. Nunca sobrescribe a ciegas.
+    """
+    st.session_state["auto_guardado_fallido"] = True
+    lectura = _auto_leer()
+    if lectura is None or not lectura[1]:
+        return False
+    remoto, etag = lectura
+    base = st.session_state.get("auto_base")
+    if not isinstance(base, dict):
+        return False  # sin base no se puede atribuir un cambio a esta instancia
+    combinado, conflicto = _auto_conciliar(base, est, remoto)
+    # La pausa y su motivo son un solo control, no dos cambios independientes.
+    control_base = (base.get("pausado"), base.get("motivo"))
+    control_local = (est.get("pausado"), est.get("motivo"))
+    control_remoto = (remoto.get("pausado"), remoto.get("motivo"))
+    if (
+        control_local != control_base
+        and control_remoto != control_base
+        and control_local != control_remoto
+    ):
+        conflicto = True
+    if conflicto:
+        if remoto.get("pausado"):
+            est["pausado"] = True
+        return False
+    est.clear()
+    est.update(combinado)
+    st.session_state["auto_base"] = deepcopy(remoto)
     try:
-        requests.put(_auto_ruta(), json=est, timeout=10)
+        respuesta = requests.put(
+            _auto_ruta(), json=combinado, headers={"if-match": etag}, timeout=10
+        )
+        if respuesta.status_code == 200:
+            st.session_state["auto_base"] = deepcopy(combinado)
+            st.session_state["auto_guardado_fallido"] = False
+            return True
+        print(f"Error guardando estado automático: HTTP {respuesta.status_code}")
     except Exception as e:
         print(f"Error guardando estado automático: {type(e).__name__}")
+    return False
+
+
+def _auto_recuperar():
+    """Reintenta conciliar pendientes aun sin posiciones; solo un guardado confirmado desbloquea."""
+    est = st.session_state.get("auto_estado")
+    if not isinstance(est, dict):
+        est = _auto_estado()
+    if not isinstance(est, dict):
+        return False
+    return _auto_guardar(est)
 
 
 def _auto_aviso(texto, nivel="warning"):
@@ -1464,10 +1561,14 @@ def _auto_aviso(texto, nivel="warning"):
 
 
 def _auto_pausar(est, motivo):
+    """Pausa localmente e informa si Firebase confirmó el cambio."""
     est["pausado"] = True
     est["motivo"] = motivo
-    _auto_guardar(est)
-    _auto_aviso(f"⏸️ Operación automática PAUSADA: {motivo}")
+    if _auto_guardar(est):
+        _auto_aviso(f"⏸️ Operación automática PAUSADA: {motivo}")
+    else:
+        _auto_aviso(f"⚠️ No se pudo guardar la pausa en Firebase: {motivo}. "
+                     "Las compras se bloquean en esta instancia; revisa las demás instancias.")
 
 
 def _auto_redondear(cantidad):
@@ -1530,58 +1631,95 @@ def _auto_puede_operar():
 
 
 def auto_comprar(simbolo, precio, probabilidad, gemini_valido, segunda, senal="BUY"):
+    """Compra solo con estado confirmado, sin pausa y dentro de los límites configurados."""
     ok, motivo = _auto_puede_operar()
     if not ok:
         if motivo:
             avisar(motivo, "warning")
         return
+    if st.session_state.get("auto_guardado_fallido"):
+        avisar(
+            "No se confirmó el guardado del estado automático; no se compra.", "warning"
+        )
+        return
     est = _auto_estado()
     if est is None:
-        avisar("No se pudo leer el estado de la operación automática; no se compra.", "warning")
+        avisar(
+            "No se pudo leer el estado de la operación automática; no se compra.",
+            "warning",
+        )
+        return
+    if st.session_state.get("auto_guardado_fallido"):
+        avisar(
+            "No se confirmó el estado automático en Firebase; no se compra.", "warning"
+        )
         return
     if est.get("pausado"):
-        avisar(f"Operación automática en pausa ({est.get('motivo') or 'manual'}): no se compra {simbolo}.", "info")
+        avisar(
+            f"Operación automática en pausa ({est.get('motivo') or 'manual'}): no se compra {simbolo}.",
+            "info",
+        )
         return
-    if float(st.session_state.posiciones.get(simbolo, 0.0)) > 0 \
-            or st.session_state.get(f"orden_pendiente_{simbolo}"):
+    if float(st.session_state.posiciones.get(simbolo, 0.0)) > 0 or st.session_state.get(
+        f"orden_pendiente_{simbolo}"
+    ):
         return  # ya hay posición u orden: una a la vez por moneda
     monto = MONTO_AUTOMATICO
     if float(st.session_state.get("monto_del_dia", 0.0)) + monto > MONTO_MAXIMO_DIARIO:
-        avisar(f"Tope diario alcanzado (${MONTO_MAXIMO_DIARIO:,.0f}): no se compra {simbolo}.", "info")
+        avisar(
+            f"Tope diario alcanzado (${MONTO_MAXIMO_DIARIO:,.0f}): no se compra {simbolo}.",
+            "info",
+        )
         return
     saldo = obtener_saldo_bitso(usar_cache=False)
     if saldo is None:
         avisar("No pude leer el saldo de Bitso; no se compra.", "warning")
         return
     if float(saldo.get("mxn", {}).get("available", 0.0)) < monto:
-        avisar(f"Saldo MXN insuficiente para ${monto:,.0f}: no se compra {simbolo}.", "warning")
+        avisar(
+            f"Saldo MXN insuficiente para ${monto:,.0f}: no se compra {simbolo}.",
+            "warning",
+        )
         return
     # El costo máximo queda por debajo del monto (la comisión de Bitso se cobra en la moneda)
     cantidad = _auto_redondear(monto * (1 - COMISION - 0.002) / precio)
     if cantidad <= 0:
         return
-    orden = colocar_orden_bitso(AUTO_LIBROS[simbolo], "buy", f"{cantidad:.8f}", precio, tipo="market")
+    orden = colocar_orden_bitso(
+        AUTO_LIBROS[simbolo], "buy", f"{cantidad:.8f}", precio, tipo="market"
+    )
     if not orden or orden.get("error") or not orden.get("oid"):
-        _auto_aviso(f"❌ Compra automática de {simbolo} falló: "
-                    f"{(orden or {}).get('error', 'sin respuesta')}")
+        _auto_aviso(
+            f"❌ Compra automática de {simbolo} falló: "
+            f"{(orden or {}).get('error', 'sin respuesta')}"
+        )
         return
     oid = orden["oid"]
     fill = _auto_fills(oid, simbolo)
     if fill is None:
-        _auto_pausar(est, f"No pude confirmar la compra {oid} de {simbolo}. Revisa Bitso.")
+        _auto_pausar(
+            est, f"No pude confirmar la compra {oid} de {simbolo}. Revisa Bitso."
+        )
         return
     qty = fill["mayor"] - fill["com_mayor"]
     costo = fill["menor"] + fill["com_mxn"]
-    st.session_state.posiciones[simbolo] = float(st.session_state.posiciones.get(simbolo, 0.0)) + qty
+    st.session_state.posiciones[simbolo] = (
+        float(st.session_state.posiciones.get(simbolo, 0.0)) + qty
+    )
     st.session_state.precio_entrada[simbolo] = fill["precio"]
     st.session_state.precio_maximo[simbolo] = fill["precio"]
     st.session_state.ops_del_dia += 1
-    st.session_state.monto_del_dia = float(st.session_state.get("monto_del_dia", 0.0)) + costo
+    st.session_state.monto_del_dia = (
+        float(st.session_state.get("monto_del_dia", 0.0)) + costo
+    )
     est["costo"][simbolo] = costo
     _auto_guardar(est)
-    st.session_state.operaciones.append((
-        datetime.now(),
-        f"COMPRA {simbolo} AUTO ${costo:,.2f} @ ${fill['precio']:,.2f} | cant {qty:.8f}"))
+    st.session_state.operaciones.append(
+        (
+            datetime.now(),
+            f"COMPRA {simbolo} AUTO ${costo:,.2f} @ ${fill['precio']:,.2f} | cant {qty:.8f}",
+        )
+    )
     guardado, detalle = guardar_datos()
     coincide = coincidencia_ias(senal, gemini_valido, segunda)
     _auto_aviso(
@@ -1590,7 +1728,8 @@ def auto_comprar(simbolo, precio, probabilidad, gemini_valido, segunda, senal="B
         f"🎯 Fuerza de la señal: {probabilidad:.1f}% | 🤝 IAs coinciden: {coincide}\n"
         f"🛡️ Salida: +{AUTO_TP_PCT}% / -{AUTO_SL_PCT}% (o señal contraria)"
         + ("" if guardado else f"\n⚠️ No se pudo guardar el estado: {detalle}"),
-        "success")
+        "success",
+    )
 
 
 def _auto_vender(simbolo, precio, motivo):
@@ -1698,6 +1837,7 @@ def auto_revisar_salidas(precios):
 
 
 def _render_auto(interfaz, precios):
+    """Muestra posiciones y distingue el estado confirmado del pendiente."""
     if not OPERAR_AUTOMATICO:
         return
     est = st.session_state.get("auto_estado") or {}
@@ -1715,13 +1855,16 @@ def _render_auto(interfaz, precios):
     texto = (f"🤖 Operación automática REAL — ${MONTO_AUTOMATICO:,.0f} por operación | "
              f"hoy ${float(st.session_state.get('monto_del_dia', 0.0)):,.0f}/${MONTO_MAXIMO_DIARIO:,.0f} | "
              f"{posiciones}")
-    if est.get("pausado"):
+    if st.session_state.get("auto_guardado_fallido"):
+        interfaz["automatico"].error("⚠️ Estado automático sin confirmar en Firebase — " + texto)
+    elif est.get("pausado"):
         interfaz["automatico"].warning(f"⏸️ PAUSADA ({est.get('motivo') or 'manual'}) — " + texto)
     else:
         interfaz["automatico"].success(texto)
 
 
 def _auto_sidebar():
+    """Permite pausar o reanudar e informa los fallos de confirmación."""
     if not OPERAR_AUTOMATICO:
         return
     st.sidebar.header("🤖 Operación automática")
@@ -1729,21 +1872,52 @@ def _auto_sidebar():
     if est is None:
         st.sidebar.error("No pude leer el estado en Firebase: no opera.")
         return
+    if st.session_state.get("auto_guardado_fallido"):
+        st.sidebar.error(
+            "Estado sin confirmar en Firebase. Revisa el servidor antes de operar."
+        )
     if est.get("pausado"):
-        st.sidebar.warning(f"⏸️ Pausada: {est.get('motivo') or 'manual'}")
+        st.sidebar.warning(
+            f"⏸️ Pausa {'sin confirmar' if st.session_state.get('auto_guardado_fallido') else 'activa'}: "
+            f"{est.get('motivo') or 'manual'}"
+        )
         if st.sidebar.button("▶️ Reanudar operación automática"):
+            anterior = {
+                k: est.get(k) for k in ("pausado", "motivo", "perdidas_seguidas")
+            }
+            cambios = {
+                k
+                for k, valor in (
+                    ("pausado", False),
+                    ("motivo", ""),
+                    ("perdidas_seguidas", 0),
+                )
+                if anterior[k] != valor
+            }
             est["pausado"] = False
             est["motivo"] = ""
             est["perdidas_seguidas"] = 0
-            _auto_guardar(est)
-            st.rerun()
+            if _auto_guardar(est):
+                st.rerun()
+            else:
+                for clave in cambios:
+                    est[clave] = anterior[clave]
+                st.sidebar.error(
+                    "No se pudo confirmar la reanudación en Firebase. Revisa el servidor."
+                )
     else:
-        st.sidebar.success("▶️ Activa")
+        if not st.session_state.get("auto_guardado_fallido"):
+            st.sidebar.success("▶️ Activa")
         if st.sidebar.button("⏸️ Pausar operación automática"):
             est["pausado"] = True
             est["motivo"] = "pausa manual"
-            _auto_guardar(est)
-            st.rerun()
+            if _auto_guardar(est):
+                st.rerun()
+            else:
+                st.sidebar.error(
+                    "No se pudo confirmar la pausa en Firebase. "
+                    "El servidor podría seguir operando; revísalo."
+                )
     st.sidebar.caption("Las ventas por TP/SL siguen activas aunque esté en pausa.")
 
 
@@ -3589,22 +3763,24 @@ SEGUNDOS_LATIDO_WORKER = 120
 
 
 def _worker_activo():
-    """True si un worker del servidor latió hace menos de 2 min (Firebase `worker`).
-    Mientras sea así, este panel no ejecuta ciclos para no duplicar señales ni órdenes."""
+    """True si el worker está activo, False si no, o None si no se puede comprobar."""
     if ES_WORKER or not FIREBASE_CONFIGURADO:
         return False
     cache = st.session_state.get("_worker_cache")
     ahora = time.time()
     if cache and (ahora - cache[0]) < 20:
         return cache[1]
-    activo = False
+    activo = None
     try:
         r = requests.get(f"{URL_FIREBASE}/worker.json", timeout=5)
-        datos = r.json() if r.status_code == 200 else None
-        if isinstance(datos, dict):
-            activo = (ahora - float(datos.get("ts", 0) or 0)) < SEGUNDOS_LATIDO_WORKER
+        if r.status_code == 200:
+            datos = r.json()
+            if datos is None:
+                activo = False
+            elif isinstance(datos, dict) and datos.get("ts") is not None:
+                activo = (ahora - float(datos["ts"])) < SEGUNDOS_LATIDO_WORKER
     except Exception:
-        activo = False
+        pass
     st.session_state["_worker_cache"] = (ahora, activo)
     return activo
 
@@ -3762,6 +3938,7 @@ def _render_saldo_solo_lectura(interfaz):
 
 
 def _panel():
+    """Ejecuta ciclos solo cuando puede comprobar y asumir el control del worker."""
     interfaz = {
         "tabla": st.container(),
         "horario": st.empty(),
@@ -3778,11 +3955,19 @@ def _panel():
         "estado": st.empty(),
         "mensajes": st.empty(),
     }
-    if _worker_activo():
+    estado_worker = _worker_activo()
+    if estado_worker is None:
+        interfaz["estado"].error(
+            "⚠️ No se puede comprobar el worker en Firebase. "
+            "Este panel no ejecutará ciclos hasta recuperar la conexión."
+        )
+        return
+    if estado_worker:
         st.session_state["_cedido"] = True
         interfaz["estado"].info(
             "🛰️ El bot está corriendo en el servidor (worker). Este panel no ejecuta ciclos "
-            "para no duplicar señales ni órdenes; muestra solo los resultados guardados.")
+            "para no duplicar señales ni órdenes; muestra solo los resultados guardados."
+        )
         try:
             _render_saldo_solo_lectura(interfaz)
         except Exception as e:
@@ -3793,16 +3978,31 @@ def _panel():
             print(f"Error mostrando resultados: {type(e).__name__}")
         return
     if st.session_state.get("_cedido"):
+        if st.session_state.get("auto_guardado_fallido") and not _auto_recuperar():
+            interfaz["estado"].error(
+                "⚠️ Hay cambios automáticos pendientes de conciliar. "
+                "No se puede asumir el control del worker todavía."
+            )
+            return
         # El worker dejó de latir: se relee el estado para no pisar lo que él guardó
+        if not restaurar_desde_archivo(iniciar_si_falla=False):
+            interfaz["estado"].error(
+                "⚠️ No se pudo recuperar el estado del bot. "
+                "Este panel no ejecutará ciclos hasta poder leerlo."
+            )
+            return
         st.session_state["_cedido"] = False
-        st.session_state.pop("auto_estado", None)
-        restaurar_desde_archivo()
+        if not st.session_state.get("auto_guardado_fallido"):
+            st.session_state.pop("auto_estado", None)
+    if not ES_WORKER and st.session_state.get("auto_guardado_fallido"):
+        _auto_recuperar()
     try:
         ejecutar_ciclo(interfaz)
     except Exception as e:
         print(f"Error en el ciclo: {e}")
         interfaz["estado"].error(f"❌ Error en el ciclo: {e}")
         # ══════════════════ PARTE 11/11: refresco y arranque ══════════════════
+
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**⏱️ Intervalo de actualización**")
