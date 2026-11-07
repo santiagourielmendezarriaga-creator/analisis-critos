@@ -1,0 +1,13 @@
+Una operación que sube 1 % puede hacerte perder dinero. 📉
+
+Cada operación paga comisión al comprar y al vender. Con 0.78 % por lado (la que uso en mi simulador), el viaje de ida y vuelta cuesta 1.56 %. Revisa la comisión de tu exchange: depende de tu volumen.
+
+Y con TP 5 % / SL 1 %, después de comisiones hay que acertar al menos 42.7 % de las veces solo para empatar.
+
+Por eso mi bot de señales corre en modo simulador, sin dinero real: primero se mide, después se decide. 🧪
+
+¿Quieres ver cómo lo mido? Escríbeme por mensaje directo.
+
+⚠️ Contenido educativo. No es asesoría financiera. Operar criptomonedas puede hacerte perder dinero.
+
+#python #criptomonedas #bitcoin #trading #programacion #datos
