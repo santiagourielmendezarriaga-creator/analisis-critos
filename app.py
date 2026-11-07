@@ -1930,6 +1930,12 @@ HORIZONTES_HORAS = (1, 4, 24)
 SEGUNDOS_ENTRE_EVALUACIONES = 60
 SEGUNDOS_CACHE_ESTADISTICAS = 300
 MUESTRA_MINIMA_CONFIABLE = 30
+# Las señales que la segunda IA bloquea también se guardan y se miden, pero en su propia ruta
+# (senales_bloqueadas/) para que no se mezclen con las cifras de las enviadas. Sirven para ver
+# después si el bloqueo tuvo razón. Solo se guarda una por moneda y dirección cada 15 minutos
+# (como el anti-spam de las enviadas), porque el bloqueo se repite en cada ciclo.
+RUTA_BLOQUEADAS = "senales_bloqueadas"
+SEGUNDOS_ENTRE_BLOQUEADAS = 900
 
 
 def _url_registro(ruta):
@@ -1982,6 +1988,49 @@ def registrar_senal(simbolo, tipo, precio, probabilidad, gemini_valido, segunda,
         return id_senal
     except Exception as e:
         print(f"Error registrando la señal: {type(e).__name__}")
+        return None
+
+
+def registrar_senal_bloqueada(simbolo, tipo, precio, probabilidad, segunda):
+    """Guarda una señal que la segunda IA bloqueó y la deja pendiente de evaluar, para medir
+    después si el bloqueo tuvo razón. No se envía ni se opera; va a su propia ruta, aparte de
+    las señales enviadas. Nunca rompe el ciclo."""
+    if not FIREBASE_CONFIGURADO:
+        return None
+    try:
+        ahora = time.time()
+        vistas = st.session_state.setdefault("bloqueadas_ultima", {})
+        clave = f"{simbolo}:{tipo}"
+        if ahora - vistas.get(clave, 0) < SEGUNDOS_ENTRE_BLOQUEADAS:
+            return None   # el mismo bloqueo se repite en cada ciclo: una vez por ventana
+        vistas[clave] = ahora   # aunque la escritura falle, no insistir en cada ciclo
+        zona = timezone(timedelta(hours=-6))
+        segunda = segunda or {}
+        registro = {
+            "ts": ahora,
+            "fecha": datetime.now(zona).strftime("%Y-%m-%d %H:%M:%S"),
+            "simbolo": simbolo,
+            "tipo": tipo,
+            "precio": precio,
+            "probabilidad": round(float(probabilidad), 1),
+            "bloqueada_por": segunda.get("proveedor"),
+            "segunda_decision": segunda.get("decision"),
+            "razon": str(segunda.get("razon") or "")[:240],
+            "motor": "bloqueada",
+        }
+        respuesta = requests.post(_url_registro(RUTA_BLOQUEADAS), json=registro, timeout=5)
+        if respuesta.status_code != 200:
+            return None
+        id_senal = respuesta.json().get("name")
+        if not id_senal:
+            return None
+        pendiente = {"ts": ahora, "simbolo": simbolo, "tipo": tipo, "precio": precio,
+                     "ruta": RUTA_BLOQUEADAS}
+        requests.put(_url_registro(f"senales_pendientes/{id_senal}"), json=pendiente, timeout=5)
+        st.session_state.setdefault("senales_pendientes", {})[id_senal] = pendiente
+        return id_senal
+    except Exception as e:
+        print(f"Error registrando la señal bloqueada: {type(e).__name__}")
         return None
 
 
@@ -2042,8 +2091,10 @@ def evaluar_senales_pendientes(precios):
                 }
             if not nuevos:
                 continue
+            # Las bloqueadas se miden igual, pero su resultado va a su propia ruta
+            ruta = RUTA_BLOQUEADAS if pend.get("ruta") == RUTA_BLOQUEADAS else "senales"
             respuesta = requests.patch(
-                _url_registro(f"senales/{id_senal}/resultados"), json=nuevos, timeout=5)
+                _url_registro(f"{ruta}/{id_senal}/resultados"), json=nuevos, timeout=5)
             if respuesta.status_code != 200:
                 continue
             hechos.update({k: True for k in nuevos})
@@ -2120,6 +2171,55 @@ def calcular_estadisticas_senales(registros):
             })
     sin_resultados = sum(1 for r in registros if not r.get("resultados"))
     return filas, len(registros), sin_resultados
+
+
+def _leer_registros_bloqueadas(maximo=500):
+    """Últimas señales bloqueadas por la segunda IA (caché de 5 min). [] si no hay o no se pudo leer."""
+    cache = st.session_state.get("bloqueadas_stats_cache")
+    ahora = time.time()
+    if cache and (ahora - cache["ts"]) < SEGUNDOS_CACHE_ESTADISTICAS:
+        return cache["registros"]
+    registros = cache["registros"] if cache else []
+    try:
+        respuesta = requests.get(
+            _url_registro(RUTA_BLOQUEADAS),
+            params={"orderBy": '"$key"', "limitToLast": maximo}, timeout=8)
+        if respuesta.status_code == 200:
+            datos = respuesta.json() or {}
+            valores = datos.values() if isinstance(datos, dict) else datos
+            registros = [v for v in valores if isinstance(v, dict)]
+    except Exception as e:
+        print(f"Error leyendo las señales bloqueadas: {type(e).__name__}")
+    st.session_state["bloqueadas_stats_cache"] = {"ts": ahora, "registros": registros}
+    return registros
+
+
+def calcular_estadisticas_bloqueadas(registros):
+    """Filas por plazo con lo que habría pasado si las señales bloqueadas se hubieran enviado
+    (mismo criterio de acierto que las enviadas; el retorno no descuenta comisiones)."""
+    filas = []
+    for horas in HORIZONTES_HORAS:
+        clave = f"{horas}h"
+        resultados = []
+        for r in registros:
+            res = (r.get("resultados") or {}).get(clave)
+            if isinstance(res, dict) and not res.get("omitido") and "acierto" in res:
+                resultados.append(res)
+        n = len(resultados)
+        if n == 0:
+            continue
+        aciertos = sum(1 for x in resultados if x.get("acierto"))
+        retorno = sum(float(x.get("retorno_pct", 0)) for x in resultados) / n
+        filas.append({
+            "Plazo": clave,
+            "Evaluadas": n,
+            "Habrían acertado": aciertos,
+            "Habrían fallado": n - aciertos,
+            "% acierto": f"{aciertos / n * 100:.1f}%",
+            "Retorno medio": f"{retorno:+.2f}%",
+            "Muestra": "✓" if n >= MUESTRA_MINIMA_CONFIABLE else "⚠️ pocas",
+        })
+    return filas
 
 
 def simular_tp_sl(registros, velas_por_simbolo, horas_maximas=24,
@@ -2828,6 +2928,24 @@ def _render_arbol(cont, registros, velas):
         "Que una rama pase no garantiza ganancias futuras; sirve para no gastar dinero en ideas sin evidencia.")
 
 
+def _render_bloqueadas(cont):
+    """Qué habría pasado con las señales que la segunda IA bloqueó. Aparte de las cifras de arriba."""
+    bloqueadas = _leer_registros_bloqueadas()
+    cont.markdown("**🛡️ Señales que la segunda IA bloqueó (qué habría pasado si se hubieran enviado)**")
+    if not bloqueadas:
+        cont.caption("Todavía no hay señales bloqueadas con registro. Aparecerán aquí cuando la segunda IA bloquee una.")
+        return
+    filas = calcular_estadisticas_bloqueadas(bloqueadas)
+    pendientes = sum(1 for r in bloqueadas if not r.get("resultados"))
+    cont.caption(f"{len(bloqueadas)} bloqueadas registradas · {pendientes} todavía esperan su primer resultado (1 h). "
+                 "No cuentan en las cifras de arriba y no cambian al bot.")
+    if filas:
+        cont.table(filas)
+        cont.caption("Compara el % de acierto de las bloqueadas con el de la fila «Todas» de arriba: "
+                     "si es claramente menor, la segunda IA está filtrando bien; si es parecido, no aporta. "
+                     f"Con menos de {MUESTRA_MINIMA_CONFIABLE} señales por fila no es confiable.")
+
+
 def _render_resultados_senales(interfaz):
     cont = interfaz["resultados_senales"]
     cont.subheader("🧪 Resultados de las señales")
@@ -2845,6 +2963,10 @@ def _render_resultados_senales(interfaz):
     cont.caption(f"{total} señales registradas · {sin_resultados} todavía esperan su primer resultado (1 h).")
     if filas:
         cont.table(filas)
+    try:
+        _render_bloqueadas(cont)
+    except Exception as e:
+        print(f"Error mostrando las señales bloqueadas: {type(e).__name__}")
     try:
         velas = {sim: obtener_velas_horarias(sim) for sim in ("BTC", "ETH")}
         resumen = simular_tp_sl(registros, velas)
@@ -3496,6 +3618,8 @@ def ejecutar_ciclo(interfaz):
                 if segunda and segunda.get("validada") and segunda.get("decision") != senal_actual:
                     avisar(f"🛡️ {segunda.get('proveedor', 'IA')} bloqueó {senal_actual} de {sim_actual}: "
                            f"{segunda.get('razon', '')}", "warning")
+                    # Se guarda (aparte, una vez por ventana) para medir después si el bloqueo acertó
+                    registrar_senal_bloqueada(sim_actual, senal_actual, precio_actual, prob_actual, segunda)
                     continue  # el resultado queda en caché 15 min, así no se reconsulta cada ciclo
 
                 # 🧠 GEMINI SOLO INFORMA (opcional: sin GEMINI_API_KEY no se consulta). Caché 15 min
