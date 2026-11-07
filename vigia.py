@@ -346,7 +346,8 @@ class Vigia:
         elif "nota" in d:
             out.append(f"• Compra periódica simulada: {d['nota']}")
         else:
-            out.append(f"• Compra periódica simulada: {d['compras']} compras desde {d['desde']} · "
+            n = d["compras"]
+            out.append(f"• Compra periódica simulada: {'1 compra' if n == 1 else f'{n} compras'} desde {d['desde']} · "
                        f"BTC {d['BTC']['resultado_pct']:+.1f}% · ETH {d['ETH']['resultado_pct']:+.1f}%")
         tr = datos.get("tendencia", {})
         if "error" in tr:
