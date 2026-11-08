@@ -59,6 +59,20 @@ def _plazo(clave):
     return clave[:-1] + " h" if clave.endswith("h") else clave
 
 
+def _ts(registro):
+    """Marca de tiempo del registro como número (0 si falta o no es un número)."""
+    try:
+        return float(registro.get("ts", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _desde(registros):
+    """' desde el 5 nov 2026' con la fecha del registro más antiguo (vacío si no hay ninguna)."""
+    marcas = [t for t in (_ts(r) for r in registros) if t > 0]
+    return f" desde el {_fecha_texto(min(marcas))}" if marcas else ""
+
+
 def _lista(datos):
     if isinstance(datos, dict):
         return [v for v in datos.values() if isinstance(v, dict)]
@@ -91,10 +105,11 @@ def construir_mensaje(app, senales, bloqueadas, ahora):
     limite = ahora - 86400
 
     def reciente(r):
-        return float(r.get("ts", 0) or 0) >= limite
+        return _ts(r) >= limite
 
     # Solo el motor actual pasa por Telegram; el motor v2 es un experimento que solo se registra.
-    enviadas = [r for r in senales if r.get("motor", "actual") == "actual" and reciente(r)]
+    del_motor_actual = [r for r in senales if r.get("motor", "actual") == "actual"]
+    enviadas = [r for r in del_motor_actual if reciente(r)]
     lineas = [f"📊 Resumen del día · {_fecha_texto(ahora)}",
               "Simulador educativo: no se opera con dinero real.", "", "Últimas 24 h"]
     monedas = Counter(r.get("simbolo", "?") for r in enviadas)
@@ -106,7 +121,7 @@ def construir_mensaje(app, senales, bloqueadas, ahora):
     pocas = False
     filas, _, _ = app.calcular_estadisticas_senales(senales)
     todas = {f["Plazo"]: f for f in filas if f["Grupo"] == "Todas"}
-    lineas += ["", "Resultado observado de las señales enviadas (acumulado)"]
+    lineas += ["", f"Resultado observado de las señales enviadas (acumulado{_desde(del_motor_actual)})"]
     if not todas:
         lineas.append("· Todavía no hay señales con resultado evaluado.")
     for clave in ("1h", "4h", "24h"):
@@ -120,7 +135,8 @@ def construir_mensaje(app, senales, bloqueadas, ahora):
 
     filas_b = app.calcular_estadisticas_bloqueadas(bloqueadas) if bloqueadas else []
     if filas_b:
-        lineas += ["", "Si se hubieran enviado las señales bloqueadas"]
+        d_b = _desde(bloqueadas)
+        lineas += ["", "Si se hubieran enviado las señales bloqueadas" + (f" (registradas{d_b})" if d_b else "")]
         for f in filas_b:
             marca = " ⚠️" if str(f.get("Muestra", "")).startswith("⚠️") else ""
             pocas = pocas or bool(marca)
@@ -132,8 +148,8 @@ def construir_mensaje(app, senales, bloqueadas, ahora):
     lineas += ["", "Acierto = el precio se movió en la dirección de la señal al cumplirse el plazo. "
                    f"Los retornos son antes de comisiones (el simulador usa {comision:.2f} % de ida y vuelta)."]
     if pocas:
-        lineas.append(f"⚠️ Con menos de {app.MUESTRA_MINIMA_CONFIABLE} señales por fila, las cifras "
-                      "todavía no permiten concluir nada.")
+        lineas.append(f"Las filas marcadas con ⚠️ tienen menos de {app.MUESTRA_MINIMA_CONFIABLE} señales "
+                      "evaluadas: esas cifras todavía no permiten concluir nada.")
     lineas += ["", AVISO]
     return "\n".join(lineas)
 
