@@ -40,6 +40,25 @@ Firebase y Telegram ya configurados). Con eso, dentro del mismo worker:
 - En los Logs deja una línea `Vigía: revisión ...` en cada vuelta (la primera, 1 min después de
   arrancar). Si no aparece, la línea `Vigía: apagado ...` dice qué falta.
 
+## Resumen diario a un canal de Telegram (opcional)
+Apagado por defecto. Una vez al día manda UN mensaje con cifras agregadas: señales enviadas y
+bloqueadas por la segunda IA en 24 h, resultado observado a 1, 4 y 24 h, qué habría pasado con las
+bloqueadas y el aviso de que es un simulador educativo (no es asesoría financiera, se puede perder
+dinero). Lo arma el código, sin IA; no incluye saldos, llaves, posiciones ni operaciones y no dice
+"probabilidad de acierto".
+- `CANAL_RESUMEN=vista_previa`: lo manda **solo a tu chat privado** (`TELEGRAM_CHAT_ID`) con el
+  encabezado "VISTA PREVIA". Empieza por aquí y revisa uno o dos días el texto y las cifras.
+- `CANAL_RESUMEN=publicar` + `CANAL_RESUMEN_ID=@nombre_del_canal`: lo publica en el canal. El bot
+  debe ser administrador del canal con permiso solo para publicar mensajes. Si `CANAL_RESUMEN_ID` no
+  es válido, no publica y se queda en vista previa.
+- `CANAL_RESUMEN_HORA` (0-23, por defecto 20): hora de CDMX a partir de la cual sale.
+- **No es `TELEGRAM_CANAL_ID`.** Esa variable existe desde antes y hace que cada señal se mande a ese
+  canal EN LUGAR de a tu chat privado (con el formato actual, que dice "Probabilidad" y no trae aviso
+  legal). Para el resumen usa solo `CANAL_RESUMEN_ID`.
+- En Firebase solo escribe en su propia ruta `resumen_publico` (para no repetir el mensaje del día);
+  el bot no la lee. Si Render reinicia el servicio, el mensaje de ese día puede repetirse una vez.
+- Mientras haya menos de 30 señales por fila, el mensaje lo avisa: las cifras no concluyen nada.
+
 ## Cosas a saber
 - Render gratis puede reiniciar el servicio en cualquier momento; el estado vive en Firebase,
   así que retoma solo, con un hueco de 1 a 2 minutos.

@@ -205,6 +205,11 @@ def main():
         vigia.iniciar(modulo)
     except Exception:
         traceback.print_exc()
+    try:   # Resumen diario a un canal (CANAL_RESUMEN=vista_previa|publicar): apagado por defecto. Un fallo aquí no detiene al bot.
+        import resumen_publico
+        resumen_publico.iniciar(modulo)
+    except Exception:
+        traceback.print_exc()
     print("🚀 Worker en marcha")
     bucle(modulo, st)
 
