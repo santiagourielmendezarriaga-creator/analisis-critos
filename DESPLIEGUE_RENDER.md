@@ -57,7 +57,8 @@ dinero). Lo arma el código, sin IA; no incluye saldos, llaves, posiciones ni op
   legal). Para el resumen usa solo `CANAL_RESUMEN_ID`.
 - En Firebase solo escribe en su propia ruta `resumen_publico` (para no repetir el mensaje del día);
   el bot no la lee. Si Render reinicia el servicio, el mensaje de ese día puede repetirse una vez.
-- Mientras haya menos de 30 señales por fila, el mensaje lo avisa: las cifras no concluyen nada.
+- Las filas con menos de 30 señales evaluadas llevan ⚠️ y el mensaje avisa que esas cifras no concluyen
+  nada. Los acumulados dicen desde qué fecha cuentan (la del registro más antiguo que leyó).
 
 ## Cosas a saber
 - Render gratis puede reiniciar el servicio en cualquier momento; el estado vive en Firebase,
